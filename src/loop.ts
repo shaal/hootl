@@ -182,6 +182,7 @@ export async function runCompletionLoop(
   task: Task,
   backend: TaskBackend,
   config: Config,
+  verbose = false,
 ): Promise<void> {
   const taskDir = join(getProjectDir(), "tasks", task.id);
   const costLogDir = join(getProjectDir(), "logs");
@@ -250,6 +251,7 @@ export async function runCompletionLoop(
           prompt: planUserPrompt,
           systemPrompt: planSystemPrompt,
           maxTurns: 20,
+          verbose,
         }),
       );
 
@@ -278,6 +280,7 @@ export async function runCompletionLoop(
           prompt: executeUserPrompt,
           systemPrompt: executeSystemPrompt,
           maxTurns: 50,
+          verbose,
         }),
       );
 
@@ -320,6 +323,7 @@ export async function runCompletionLoop(
           prompt: reviewUserPrompt,
           systemPrompt: reviewSystemPrompt,
           maxTurns: 20,
+          verbose,
         }),
       );
 
