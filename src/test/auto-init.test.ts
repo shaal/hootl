@@ -91,4 +91,120 @@ describe("autoInit", () => {
     assert.equal(config.budgets.maxAttemptsPerTask, 10);
     assert.equal(config.notifications.summaryFile, true);
   });
+
+  it("non-interactive (default) writes empty hooks array", async () => {
+    await autoInit();
+
+    const configContent = await readFile(
+      join(tmpDir, ".hootl", "config.json"),
+      "utf-8",
+    );
+    const config = ConfigSchema.parse(JSON.parse(configContent));
+    assert.deepEqual(config.hooks, []);
+  });
+
+  it("non-interactive still creates hooks-example.json", async () => {
+    await autoInit();
+
+    const examplePath = join(tmpDir, ".hootl", "hooks-example.json");
+    assert.ok(existsSync(examplePath));
+
+    const content = JSON.parse(await readFile(examplePath, "utf-8"));
+    assert.ok(Array.isArray(content.available_triggers));
+    assert.ok(Array.isArray(content.examples));
+  });
+
+  it("interactive with accepted hook writes simplify hook to config", async () => {
+    await autoInit({
+      interactive: true,
+      confirm: async () => true,
+    });
+
+    const configContent = await readFile(
+      join(tmpDir, ".hootl", "config.json"),
+      "utf-8",
+    );
+    const config = ConfigSchema.parse(JSON.parse(configContent));
+
+    assert.equal(config.hooks.length, 1);
+    const hook = config.hooks[0]!;
+    assert.equal(hook.trigger, "on_confidence_met");
+    assert.equal(hook.skill, "simplify");
+    assert.equal(hook.blocking, true);
+  });
+
+  it("interactive with declined hook writes empty hooks array", async () => {
+    await autoInit({
+      interactive: true,
+      confirm: async () => false,
+    });
+
+    const configContent = await readFile(
+      join(tmpDir, ".hootl", "config.json"),
+      "utf-8",
+    );
+    const config = ConfigSchema.parse(JSON.parse(configContent));
+    assert.deepEqual(config.hooks, []);
+  });
+
+  it("interactive confirm receives the expected question text", async () => {
+    let receivedQuestion = "";
+    await autoInit({
+      interactive: true,
+      confirm: async (q) => {
+        receivedQuestion = q;
+        return false;
+      },
+    });
+
+    assert.ok(receivedQuestion.includes("simplify"));
+    assert.ok(receivedQuestion.includes("hook"));
+  });
+
+  it("hooks-example.json contains all four trigger points", async () => {
+    await autoInit();
+
+    const content = JSON.parse(
+      await readFile(join(tmpDir, ".hootl", "hooks-example.json"), "utf-8"),
+    );
+
+    const triggers = content.available_triggers as string[];
+    assert.ok(triggers.some((t: string) => t.includes("on_confidence_met")));
+    assert.ok(triggers.some((t: string) => t.includes("on_review_complete")));
+    assert.ok(triggers.some((t: string) => t.includes("on_blocked")));
+    assert.ok(triggers.some((t: string) => t.includes("on_execute_start")));
+  });
+
+  it("hooks-example.json documents all hook fields", async () => {
+    await autoInit();
+
+    const content = JSON.parse(
+      await readFile(join(tmpDir, ".hootl", "hooks-example.json"), "utf-8"),
+    );
+
+    const fields = content.hook_fields;
+    assert.ok(fields.trigger);
+    assert.ok(fields.skill);
+    assert.ok(fields.prompt);
+    assert.ok(fields.blocking);
+    assert.ok(fields.conditions);
+    assert.ok(fields.conditions.minConfidence);
+  });
+
+  it("hooks-example.json contains multiple example configurations", async () => {
+    await autoInit();
+
+    const content = JSON.parse(
+      await readFile(join(tmpDir, ".hootl", "hooks-example.json"), "utf-8"),
+    );
+
+    assert.ok(content.examples.length >= 3);
+    // Verify examples cover different triggers
+    const exampleTriggers = content.examples.map(
+      (e: { trigger: string }) => e.trigger,
+    );
+    assert.ok(exampleTriggers.includes("on_confidence_met"));
+    assert.ok(exampleTriggers.includes("on_review_complete"));
+    assert.ok(exampleTriggers.includes("on_execute_start"));
+  });
 });

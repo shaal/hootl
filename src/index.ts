@@ -113,10 +113,11 @@ program
         return;
       }
 
-      await autoInit();
+      await autoInit({ interactive: true });
 
       uiSuccess("Initialized .hootl/ directory.");
       uiInfo("Created: .hootl/config.json, .hootl/tasks/, .hootl/logs/");
+      uiInfo("See .hootl/hooks-example.json for hook configuration reference.");
     } catch (err: unknown) {
       uiError(errorMsg(err));
       process.exitCode = 1;
