@@ -121,16 +121,24 @@ export function parseHookResult(output: string): {
   }
 }
 
-/**
- * Runs a single hook: resolves its prompt, invokes Claude, parses the result.
- */
-export async function runHook(
-  hook: Hook,
-  context: HookContext,
-): Promise<HookResult> {
-  const prompt = await buildHookPrompt(hook);
+/** Dependencies that can be injected for testing. */
+export interface HookDeps {
+  invoke: typeof invokeClaude;
+  log: typeof logCost;
+  warn: typeof uiWarn;
+}
 
-  const systemPrompt = [
+const defaultDeps: HookDeps = {
+  invoke: invokeClaude,
+  log: logCost,
+  warn: uiWarn,
+};
+
+/**
+ * Builds the system prompt that provides task context to the hook validator.
+ */
+export function buildHookSystemPrompt(context: HookContext): string {
+  return [
     "You are a hook validator for an autonomous task completion system.",
     `Task: ${context.task.title}`,
     `Description: ${context.task.description}`,
@@ -144,8 +152,20 @@ export async function runHook(
     '  - "issues": string[] (list of issues found)',
     '  - "remediationActions": string[] (suggested fixes)',
   ].join("\n");
+}
 
-  const result = await invokeClaude({
+/**
+ * Runs a single hook: resolves its prompt, invokes Claude, parses the result.
+ */
+export async function runHook(
+  hook: Hook,
+  context: HookContext,
+  deps: HookDeps = defaultDeps,
+): Promise<HookResult> {
+  const prompt = await buildHookPrompt(hook);
+  const systemPrompt = buildHookSystemPrompt(context);
+
+  const result = await deps.invoke({
     prompt,
     systemPrompt,
     maxTurns: 3,
@@ -172,24 +192,25 @@ export async function runHooks(
   triggerPoint: HookTrigger,
   context: HookContext,
   config: Config,
+  deps: HookDeps = defaultDeps,
 ): Promise<{ allPassed: boolean; results: HookResult[] }> {
   const matchingHooks = getHooksForTrigger(triggerPoint, config.hooks, context);
   const results: HookResult[] = [];
   const logDir = join(process.cwd(), ".hootl", "logs");
 
   for (const hook of matchingHooks) {
-    const result = await runHook(hook, context);
+    const result = await runHook(hook, context, deps);
     results.push(result);
 
     // Log cost for this hook invocation
-    await logCost(logDir, context.task.id, `hook:${triggerPoint}`, result.costUsd);
+    await deps.log(logDir, context.task.id, `hook:${triggerPoint}`, result.costUsd);
 
     if (!result.success) {
       if (hook.blocking) {
         return { allPassed: false, results };
       }
       // Advisory: warn and continue
-      uiWarn(
+      deps.warn(
         `Advisory hook failed for trigger "${triggerPoint}": ${result.issues.join(", ") || "no details"}`,
       );
     }

@@ -34,6 +34,7 @@ src/
   plan-memory.ts      Planning memory: records lessons from task outcomes, injects into plan prompts
   plan-review.ts      Plan critique pass (self-review before task creation)
   plan-summary.ts     TL;DR plan summary with Accept/Revise/Cancel confirmation
+  hooks.ts            Hook execution engine (filter, prompt resolution, run, orchestrate)
   status.ts           Status summary writer (grouped by state)
   tasks/
     types.ts           Zod schemas for Task, TaskState, TaskBackend interface
@@ -316,6 +317,7 @@ Test coverage:
 - **preflight.test.ts** -- Template existence, role declaration, verdict values, JSON output fields, no-implementation constraints, bug reproduction instructions, scope assessment
 - **plan-review.test.ts** -- Critique prompt building (goal inclusion, task JSON, indices, dependsOn), task parsing (valid, markdown-wrapped, missing fields, non-integer deps), fallback on invalid input
 - **plan-summary.test.ts** -- Summary generation (single/multiple/many tasks, truncation), priority counting (mixed, default-to-medium), empty array, priority ordering
+- **hooks.test.ts** -- Trigger filtering (condition evaluation, minConfidence), prompt resolution (inline vs file path, fallback), result parsing (JSON extraction, brace-matching, graceful degradation), system prompt construction, runHook integration (pass/fail, cost, context forwarding), runHooks orchestration (blocking short-circuit, advisory continues, cost logging, trigger filtering)
 - **prioritize.test.ts** -- userPriority schema backward compat, sort order (userPriority before auto), dependency enforcement (findRunnableTask)
 
 ## Dependencies

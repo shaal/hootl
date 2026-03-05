@@ -3,10 +3,18 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { getHooksForTrigger, buildHookPrompt, parseHookResult } from "../hooks.js";
-import type { HookContext } from "../hooks.js";
+import {
+  getHooksForTrigger,
+  buildHookPrompt,
+  buildHookSystemPrompt,
+  parseHookResult,
+  runHook,
+  runHooks,
+} from "../hooks.js";
+import type { HookContext, HookDeps, HookResult } from "../hooks.js";
 import type { Hook } from "../config.js";
 import type { Task } from "../tasks/types.js";
+import type { InvokeResult } from "../invoke.js";
 import { ConfigSchema } from "../config.js";
 
 function makeTask(overrides: Partial<Task> = {}): Task {
@@ -352,5 +360,308 @@ describe("hook cost tracking", () => {
     const parsed = parseHookResult(input);
     assert.equal(parsed.pass, true);
     // HookResult.costUsd is set separately in runHook from invoke result
+  });
+});
+
+// --- buildHookSystemPrompt ---
+
+describe("buildHookSystemPrompt", () => {
+  it("includes task title and description", () => {
+    const ctx = makeContext({ task: makeTask({ title: "Fix login bug", description: "Users cannot log in" }) });
+    const prompt = buildHookSystemPrompt(ctx);
+    assert.ok(prompt.includes("Fix login bug"));
+    assert.ok(prompt.includes("Users cannot log in"));
+  });
+
+  it("includes confidence percentage", () => {
+    const ctx = makeContext({ confidence: 92 });
+    const prompt = buildHookSystemPrompt(ctx);
+    assert.ok(prompt.includes("Confidence: 92%"));
+  });
+
+  it("includes branch info", () => {
+    const ctx = makeContext({ branchName: "hootl/t5-feature", baseBranch: "develop" });
+    const prompt = buildHookSystemPrompt(ctx);
+    assert.ok(prompt.includes("Branch: hootl/t5-feature"));
+    assert.ok(prompt.includes("Base branch: develop"));
+  });
+
+  it("shows 'none' when branchName is null", () => {
+    const ctx = makeContext({ branchName: null });
+    const prompt = buildHookSystemPrompt(ctx);
+    assert.ok(prompt.includes("Branch: none"));
+  });
+});
+
+// --- runHook (with injected deps) ---
+
+function makeMockDeps(overrides: Partial<HookDeps> = {}): HookDeps & {
+  invokeCalls: Array<{ prompt: string; systemPrompt?: string }>;
+  logCalls: Array<{ taskId: string; phase: string; cost: number }>;
+  warnCalls: string[];
+} {
+  const invokeCalls: Array<{ prompt: string; systemPrompt?: string }> = [];
+  const logCalls: Array<{ taskId: string; phase: string; cost: number }> = [];
+  const warnCalls: string[] = [];
+
+  return {
+    invokeCalls,
+    logCalls,
+    warnCalls,
+    invoke: overrides.invoke ?? (async (opts) => {
+      invokeCalls.push({ prompt: opts.prompt, systemPrompt: opts.systemPrompt });
+      return { output: '{"pass": true, "issues": [], "remediationActions": []}', costUsd: 0.01, exitCode: 0, durationMs: 100 } as InvokeResult;
+    }),
+    log: overrides.log ?? (async (_dir, taskId, phase, cost) => {
+      logCalls.push({ taskId, phase, cost });
+    }),
+    warn: overrides.warn ?? ((msg: string) => {
+      warnCalls.push(msg);
+    }),
+  };
+}
+
+describe("runHook", () => {
+  it("returns success: true when invoke returns pass: true", async () => {
+    const deps = makeMockDeps({
+      invoke: async () => ({
+        output: '{"pass": true, "issues": [], "remediationActions": []}',
+        costUsd: 0.01,
+        exitCode: 0,
+        durationMs: 50,
+      }),
+    });
+    const hook = makeHook({ prompt: "Check code quality" });
+    const ctx = makeContext();
+
+    const result = await runHook(hook, ctx, deps);
+    assert.equal(result.success, true);
+    assert.equal(result.costUsd, 0.01);
+    assert.deepEqual(result.issues, []);
+  });
+
+  it("returns success: false with issues when invoke returns pass: false", async () => {
+    const deps = makeMockDeps({
+      invoke: async () => ({
+        output: '{"pass": false, "issues": ["bad code", "no tests"], "remediationActions": ["add tests"]}',
+        costUsd: 0.02,
+        exitCode: 0,
+        durationMs: 200,
+      }),
+    });
+    const hook = makeHook({ prompt: "Validate implementation" });
+    const ctx = makeContext();
+
+    const result = await runHook(hook, ctx, deps);
+    assert.equal(result.success, false);
+    assert.equal(result.costUsd, 0.02);
+    assert.deepEqual(result.issues, ["bad code", "no tests"]);
+    assert.deepEqual(result.remediationActions, ["add tests"]);
+  });
+
+  it("passes correct system prompt to invokeClaude", async () => {
+    const deps = makeMockDeps();
+    const hook = makeHook({ prompt: "Check security" });
+    const ctx = makeContext({
+      task: makeTask({ title: "Auth fix", description: "Fix auth bug" }),
+      confidence: 85,
+      branchName: "hootl/t2-auth",
+      baseBranch: "main",
+    });
+
+    await runHook(hook, ctx, deps);
+
+    assert.equal(deps.invokeCalls.length, 1);
+    const call = deps.invokeCalls[0]!;
+    assert.equal(call.prompt, "Check security");
+    assert.ok(call.systemPrompt?.includes("Auth fix"));
+    assert.ok(call.systemPrompt?.includes("Fix auth bug"));
+    assert.ok(call.systemPrompt?.includes("85%"));
+    assert.ok(call.systemPrompt?.includes("hootl/t2-auth"));
+  });
+
+  it("gracefully handles non-JSON invoke output (defaults to pass)", async () => {
+    const deps = makeMockDeps({
+      invoke: async () => ({
+        output: "I could not evaluate this hook properly.",
+        costUsd: 0.005,
+        exitCode: 0,
+        durationMs: 80,
+      }),
+    });
+    const hook = makeHook({ prompt: "Check quality" });
+    const ctx = makeContext();
+
+    const result = await runHook(hook, ctx, deps);
+    assert.equal(result.success, true); // graceful degradation
+    assert.equal(result.costUsd, 0.005);
+  });
+
+  it("preserves raw output from invoke", async () => {
+    const rawOutput = 'Some preamble\n{"pass": true, "issues": []}\nSome epilogue';
+    const deps = makeMockDeps({
+      invoke: async () => ({
+        output: rawOutput,
+        costUsd: 0.01,
+        exitCode: 0,
+        durationMs: 100,
+      }),
+    });
+    const hook = makeHook({ prompt: "Review" });
+    const ctx = makeContext();
+
+    const result = await runHook(hook, ctx, deps);
+    assert.equal(result.output, rawOutput);
+  });
+});
+
+// --- runHooks (with injected deps) ---
+
+describe("runHooks", () => {
+  it("returns allPassed: true when no hooks match", async () => {
+    const deps = makeMockDeps();
+    const ctx = makeContext();
+    const config = ConfigSchema.parse({ hooks: [] });
+
+    const result = await runHooks("on_confidence_met", ctx, config, deps);
+    assert.equal(result.allPassed, true);
+    assert.equal(result.results.length, 0);
+    assert.equal(deps.invokeCalls.length, 0);
+  });
+
+  it("short-circuits on blocking hook failure", async () => {
+    let callCount = 0;
+    const deps = makeMockDeps({
+      invoke: async () => {
+        callCount++;
+        return {
+          output: '{"pass": false, "issues": ["critical issue"]}',
+          costUsd: 0.03,
+          exitCode: 0,
+          durationMs: 150,
+        };
+      },
+    });
+    const ctx = makeContext();
+    const config = ConfigSchema.parse({
+      hooks: [
+        { trigger: "on_confidence_met", prompt: "Hook 1", blocking: true },
+        { trigger: "on_confidence_met", prompt: "Hook 2", blocking: true },
+      ],
+    });
+
+    const result = await runHooks("on_confidence_met", ctx, config, deps);
+    assert.equal(result.allPassed, false);
+    assert.equal(result.results.length, 1); // second hook never ran
+    assert.equal(callCount, 1);
+  });
+
+  it("continues past advisory hook failure", async () => {
+    let callCount = 0;
+    const deps = makeMockDeps({
+      invoke: async () => {
+        callCount++;
+        if (callCount === 1) {
+          return {
+            output: '{"pass": false, "issues": ["minor issue"]}',
+            costUsd: 0.01,
+            exitCode: 0,
+            durationMs: 100,
+          };
+        }
+        return {
+          output: '{"pass": true, "issues": []}',
+          costUsd: 0.02,
+          exitCode: 0,
+          durationMs: 100,
+        };
+      },
+    });
+    const ctx = makeContext();
+    const config = ConfigSchema.parse({
+      hooks: [
+        { trigger: "on_blocked", prompt: "Advisory hook", blocking: false },
+        { trigger: "on_blocked", prompt: "Blocking hook", blocking: true },
+      ],
+    });
+
+    const result = await runHooks("on_blocked", ctx, config, deps);
+    assert.equal(result.allPassed, true); // advisory failure doesn't block
+    assert.equal(result.results.length, 2); // both hooks ran
+    assert.equal(callCount, 2);
+    assert.equal(deps.warnCalls.length, 1);
+    assert.ok(deps.warnCalls[0]?.includes("Advisory hook failed"));
+  });
+
+  it("logs cost for each hook execution", async () => {
+    const deps = makeMockDeps();
+    const ctx = makeContext({ task: makeTask({ id: "task-42" }) });
+    const config = ConfigSchema.parse({
+      hooks: [
+        { trigger: "on_review_complete", prompt: "Hook A", blocking: false },
+        { trigger: "on_review_complete", prompt: "Hook B", blocking: false },
+      ],
+    });
+
+    await runHooks("on_review_complete", ctx, config, deps);
+    assert.equal(deps.logCalls.length, 2);
+    assert.equal(deps.logCalls[0]?.taskId, "task-42");
+    assert.equal(deps.logCalls[0]?.phase, "hook:on_review_complete");
+    assert.equal(deps.logCalls[0]?.cost, 0.01);
+    assert.equal(deps.logCalls[1]?.taskId, "task-42");
+  });
+
+  it("only runs hooks matching the trigger point", async () => {
+    const deps = makeMockDeps();
+    const ctx = makeContext();
+    const config = ConfigSchema.parse({
+      hooks: [
+        { trigger: "on_confidence_met", prompt: "Match", blocking: false },
+        { trigger: "on_blocked", prompt: "No match", blocking: false },
+        { trigger: "on_execute_start", prompt: "No match", blocking: false },
+      ],
+    });
+
+    const result = await runHooks("on_confidence_met", ctx, config, deps);
+    assert.equal(result.results.length, 1);
+    assert.equal(deps.invokeCalls.length, 1);
+  });
+
+  it("returns allPassed: true when all blocking hooks pass", async () => {
+    const deps = makeMockDeps();
+    const ctx = makeContext();
+    const config = ConfigSchema.parse({
+      hooks: [
+        { trigger: "on_execute_start", prompt: "Hook 1", blocking: true },
+        { trigger: "on_execute_start", prompt: "Hook 2", blocking: true },
+      ],
+    });
+
+    const result = await runHooks("on_execute_start", ctx, config, deps);
+    assert.equal(result.allPassed, true);
+    assert.equal(result.results.length, 2);
+    assert.ok(result.results.every((r) => r.success));
+  });
+
+  it("warns but does not short-circuit when advisory hook has no issues text", async () => {
+    const deps = makeMockDeps({
+      invoke: async () => ({
+        output: '{"pass": false, "issues": []}',
+        costUsd: 0.01,
+        exitCode: 0,
+        durationMs: 50,
+      }),
+    });
+    const ctx = makeContext();
+    const config = ConfigSchema.parse({
+      hooks: [
+        { trigger: "on_blocked", prompt: "Advisory", blocking: false },
+      ],
+    });
+
+    const result = await runHooks("on_blocked", ctx, config, deps);
+    assert.equal(result.allPassed, true);
+    assert.equal(deps.warnCalls.length, 1);
+    assert.ok(deps.warnCalls[0]?.includes("no details"));
   });
 });
