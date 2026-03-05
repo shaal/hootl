@@ -175,3 +175,7 @@ export function uiWarn(message: string): void {
 export function uiSuccess(message: string): void {
   console.log(`${green("OK:")} ${message}`);
 }
+
+export function errorMsg(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}

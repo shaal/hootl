@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { invokeClaude, logCost } from "./invoke.js";
 import { type Config, type OnConfidenceMode, getProjectDir, resolveOnConfidenceMode } from "./config.js";
 import { type Task, type TaskBackend, type TaskPriority, type TaskType, TaskPriority as TaskPriorityEnum, TaskType as TaskTypeEnum } from "./tasks/types.js";
-import { uiInfo, uiWarn, uiError, uiSuccess, uiSpinner } from "./ui.js";
+import { uiInfo, uiWarn, uiError, uiSuccess, uiSpinner, errorMsg } from "./ui.js";
 import { isGitRepo, createTaskBranch, commitTaskChanges, switchBranch, getBaseBranch, getHeadSha, resetToSha, mergeBranch, deleteBranch, pushBranch, createDraftPR } from "./git.js";
 import { checkGlobalBudget } from "./budget.js";
 import { generateMemoryEntry, appendMemoryEntry } from "./plan-memory.js";
@@ -377,7 +377,7 @@ export async function handleConfidenceMet(
         return { state: "in_progress", mergedSuccessfully: false };
       }
     } catch (err: unknown) {
-      uiWarn(`Hook execution error: ${err instanceof Error ? err.message : String(err)} — proceeding anyway`);
+      uiWarn(`Hook execution error: ${errorMsg(err)} — proceeding anyway`);
     }
   }
 
@@ -512,7 +512,7 @@ export async function fireHooks(
       await runHooks(trigger, hookContext, config);
     }
   } catch (err: unknown) {
-    uiWarn(`Hook error (${trigger}): ${err instanceof Error ? err.message : String(err)}`);
+    uiWarn(`Hook error (${trigger}): ${errorMsg(err)}`);
   }
 }
 
@@ -556,7 +556,7 @@ export async function runCompletionLoop(
       taskBranch = await createTaskBranch(task.id, task.title, config.git.branchPrefix);
       currentTask = await backend.updateTask(task.id, { branch: taskBranch });
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errorMsg(err);
       uiWarn(`Could not create task branch: ${msg}`);
       const isDirtyWorktree = msg.includes("local changes") || msg.includes("Please commit your changes or stash");
       const blocker = isDirtyWorktree
@@ -669,7 +669,7 @@ export async function runCompletionLoop(
         }
       }
     } catch (err: unknown) {
-      uiWarn(`Preflight phase error: ${err instanceof Error ? err.message : String(err)} — proceeding anyway`);
+      uiWarn(`Preflight phase error: ${errorMsg(err)} — proceeding anyway`);
     }
   }
 
@@ -773,7 +773,7 @@ export async function runCompletionLoop(
         try {
           preExecuteSha = await getHeadSha();
         } catch (err: unknown) {
-          uiWarn(`Could not record pre-execute SHA: ${err instanceof Error ? err.message : String(err)}`);
+          uiWarn(`Could not record pre-execute SHA: ${errorMsg(err)}`);
         }
       }
 
@@ -819,7 +819,7 @@ export async function runCompletionLoop(
         try {
           await commitTaskChanges(task.id, `attempt-${attempt}`, `[${task.id}] Execute attempt ${attempt}`);
         } catch (err: unknown) {
-          uiWarn(`Could not auto-commit: ${err instanceof Error ? err.message : String(err)}`);
+          uiWarn(`Could not auto-commit: ${errorMsg(err)}`);
         }
       }
 
@@ -995,7 +995,7 @@ export async function runCompletionLoop(
     try {
       await switchBranch(baseBranch);
     } catch (err: unknown) {
-      uiWarn(`Could not switch back to ${baseBranch}: ${err instanceof Error ? err.message : String(err)}`);
+      uiWarn(`Could not switch back to ${baseBranch}: ${errorMsg(err)}`);
     }
   }
 }

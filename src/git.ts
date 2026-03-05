@@ -1,5 +1,5 @@
 import { execa } from "execa";
-import { uiInfo, uiWarn } from "./ui.js";
+import { uiInfo, uiWarn, errorMsg } from "./ui.js";
 
 export function slugify(text: string): string {
   return text
@@ -93,7 +93,7 @@ export async function mergeBranch(taskBranch: string, baseBranch: string): Promi
     await execa("git", ["merge", taskBranch]);
     return true;
   } catch (err: unknown) {
-    uiWarn(`Merge failed: ${err instanceof Error ? err.message : String(err)}`);
+    uiWarn(`Merge failed: ${errorMsg(err)}`);
     // Abort any in-progress merge and try to get back to a clean state
     try {
       await execa("git", ["merge", "--abort"]);
@@ -113,7 +113,7 @@ export async function deleteBranch(branchName: string): Promise<void> {
   try {
     await execa("git", ["branch", "-d", branchName]);
   } catch (err: unknown) {
-    uiWarn(`Could not delete branch ${branchName}: ${err instanceof Error ? err.message : String(err)}`);
+    uiWarn(`Could not delete branch ${branchName}: ${errorMsg(err)}`);
   }
 }
 
@@ -122,7 +122,7 @@ export async function pushBranch(branchName: string): Promise<boolean> {
     await execa("git", ["push", "-u", "origin", branchName]);
     return true;
   } catch (err: unknown) {
-    uiWarn(`Push failed: ${err instanceof Error ? err.message : String(err)}`);
+    uiWarn(`Push failed: ${errorMsg(err)}`);
     return false;
   }
 }
@@ -183,7 +183,7 @@ export async function createDraftPR(title: string, body: string): Promise<boolea
     uiInfo(`Draft PR created: ${title}`);
     return true;
   } catch (err: unknown) {
-    uiWarn(`PR creation failed: ${err instanceof Error ? err.message : String(err)}`);
+    uiWarn(`PR creation failed: ${errorMsg(err)}`);
     return false;
   }
 }

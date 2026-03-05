@@ -19,6 +19,7 @@ import {
   uiWarn,
   uiSuccess,
   uiSpinner,
+  errorMsg,
 } from "./ui.js";
 import { gatherProjectContext, formatContextForPrompt } from "./context.js";
 import { autoInit } from "./init.js";
@@ -94,7 +95,7 @@ program
           break;
       }
     } catch (err: unknown) {
-      uiError(err instanceof Error ? err.message : String(err));
+      uiError(errorMsg(err));
       process.exitCode = 1;
     }
   });
@@ -117,7 +118,7 @@ program
       uiSuccess("Initialized .hootl/ directory.");
       uiInfo("Created: .hootl/config.json, .hootl/tasks/, .hootl/logs/");
     } catch (err: unknown) {
-      uiError(err instanceof Error ? err.message : String(err));
+      uiError(errorMsg(err));
       process.exitCode = 1;
     }
   });
@@ -432,7 +433,7 @@ program
     try {
       await planCommand(options);
     } catch (err: unknown) {
-      uiError(err instanceof Error ? err.message : String(err));
+      uiError(errorMsg(err));
       process.exitCode = 1;
     }
   });
@@ -512,7 +513,7 @@ program
       }
       await runCommand(taskId, cliFlags);
     } catch (err: unknown) {
-      uiError(err instanceof Error ? err.message : String(err));
+      uiError(errorMsg(err));
       process.exitCode = 1;
     }
   });
@@ -589,7 +590,7 @@ program
     try {
       await statusCommand();
     } catch (err: unknown) {
-      uiError(err instanceof Error ? err.message : String(err));
+      uiError(errorMsg(err));
       process.exitCode = 1;
     }
   });
@@ -685,7 +686,7 @@ program
         options.clear,
       );
     } catch (err: unknown) {
-      uiError(err instanceof Error ? err.message : String(err));
+      uiError(errorMsg(err));
       process.exitCode = 1;
     }
   });
@@ -773,7 +774,7 @@ program
     try {
       await clarifyCommand();
     } catch (err: unknown) {
-      uiError(err instanceof Error ? err.message : String(err));
+      uiError(errorMsg(err));
       process.exitCode = 1;
     }
   });
@@ -785,7 +786,7 @@ program
     try {
       await discussCommand(taskId);
     } catch (err: unknown) {
-      uiError(err instanceof Error ? err.message : String(err));
+      uiError(errorMsg(err));
       process.exitCode = 1;
     }
   });
