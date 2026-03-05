@@ -233,6 +233,55 @@ describe("buildPlanPrompt", () => {
       await rm(dir, { recursive: true });
     }
   });
+
+  it("includes understanding.md content in plan prompt", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hootl-plan-"));
+    try {
+      await writeFile(join(dir, "understanding.md"), "The bug is in the auth flow for SSO users.", "utf-8");
+      const prompt = await buildPlanPrompt(makeTask(), dir);
+      assert.ok(prompt.includes("## Task Understanding"));
+      assert.ok(prompt.includes("bug is in the auth flow for SSO users"));
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+
+  it("omits understanding section when understanding.md is missing", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hootl-plan-"));
+    try {
+      const prompt = await buildPlanPrompt(makeTask(), dir);
+      assert.ok(!prompt.includes("Task Understanding"));
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+
+  it("omits understanding section when understanding.md is empty", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hootl-plan-"));
+    try {
+      await writeFile(join(dir, "understanding.md"), "   \n  ", "utf-8");
+      const prompt = await buildPlanPrompt(makeTask(), dir);
+      assert.ok(!prompt.includes("Task Understanding"));
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+
+  it("places understanding before blockers in plan prompt", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hootl-plan-"));
+    try {
+      await writeFile(join(dir, "understanding.md"), "Understanding content here", "utf-8");
+      await writeFile(join(dir, "blockers.md"), "Some blocker info", "utf-8");
+      const prompt = await buildPlanPrompt(makeTask(), dir);
+      const understandingIdx = prompt.indexOf("## Task Understanding");
+      const blockersIdx = prompt.indexOf("## Previous Blockers");
+      assert.ok(understandingIdx >= 0, "Understanding section should exist");
+      assert.ok(blockersIdx >= 0, "Blockers section should exist");
+      assert.ok(understandingIdx < blockersIdx, "Understanding should come before Blockers");
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
 });
 
 describe("isSessionBudgetExceeded", () => {

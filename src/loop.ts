@@ -42,6 +42,13 @@ export async function buildPlanPrompt(
   parts.push("");
   parts.push(task.description);
 
+  const understanding = await readFileOrEmpty(join(taskDir, "understanding.md"));
+  if (understanding.trim().length > 0) {
+    parts.push("");
+    parts.push("## Task Understanding");
+    parts.push(understanding);
+  }
+
   const blockers = await readFileOrEmpty(join(taskDir, "blockers.md"));
   if (blockers.trim().length > 0) {
     parts.push("");
