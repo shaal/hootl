@@ -28,7 +28,8 @@ src/
   budget.ts           Global daily budget enforcement (reads cost.csv, checks against budgets.global)
   loop.ts             Core completion loop (preflight -> plan -> execute -> review). Budget/attempt tracking
   invoke.ts           Wrapper around `claude -p` via execa. Parses cost from JSON output
-  git.ts              Git operations: task branches, auto-commit, branch switching
+  git.ts              Git operations: task branches, auto-commit, branch switching, merged-branch detection
+  sync.ts             Review-task sync: auto-promotes tasks to done when branches are merged externally
   guided.ts           Interactive goal clarification (generates questions via Claude, collects answers via gum)
   ui.ts               Terminal UI helpers using `gum` with stdin fallback
   plan-memory.ts      Planning memory: records lessons from task outcomes, injects into plan prompts
@@ -54,6 +55,7 @@ src/
     git.test.ts        Slugify, branch naming
     discuss.test.ts    buildDiscussArgs, system prompt construction
     prioritize.test.ts userPriority sort, dependency enforcement, schema backward compat
+    sync.test.ts       Review task sync integration tests (real git repo + LocalTaskBackend)
 templates/
   preflight.md         System prompt for preflight validation phase (Phase 0)
   plan.md              System prompt for planning phase
@@ -118,6 +120,20 @@ When a task reaches the confidence target, `handleConfidenceMet()` in `src/loop.
 **Default is null** (infer from auto level). Since `auto.defaultLevel` defaults to `proactive`, the effective default is `merge` — meaning tasks that reach confidence will auto-merge unless overridden.
 
 All git operations (`mergeBranch`, `deleteBranch`, `pushBranch`, `createDraftPR`) are wrapped in try/catch. On failure, they warn and fall back to `none` behavior (task moves to `review`). The `resolveOnConfidenceMode()` helper in `src/config.ts` is a pure function that encapsulates the priority logic.
+
+### Review Task Sync (externally merged branches)
+
+When `onConfidence` is `pr` or `none`, or when merge fails, tasks land in `review` state. If the user then merges those branches manually (via GitHub, `git merge`, etc.), the tasks would otherwise stay in `review` forever. `syncReviewTasks()` in `src/sync.ts` detects this and auto-promotes them to `done`.
+
+**How it works:** For all `review`-state tasks that have a `branch` recorded, it runs a batch check via `getMergedOrGoneBranches()` in `src/git.ts`:
+- Calls `git branch --format "%(refname:short)"` once to get all local branches
+- Calls `git branch --merged <base> --format "%(refname:short)"` once to get all merged branches
+- Returns two sets: `merged` (branch exists but is merged into base) and `gone` (branch no longer exists locally)
+- Tasks in either set are promoted to `done`
+
+This is O(2) git subprocesses regardless of how many review tasks exist. Called at the start of `statusCommand()` and `runCommand()`.
+
+**Edge case:** A force-deleted (never-merged) branch will be detected as "gone" and the task promoted. The UI message distinguishes "branch merged" from "branch removed" so the user can spot this.
 
 ### Planning Memory
 
@@ -194,6 +210,8 @@ All hook calls receive a `HookContext` with task, branch info, confidence, and c
 
 ```
 proposed --> ready --> in_progress --> review --> done
+                          |              |
+                          |              +--> done (auto-sync: branch merged/deleted externally)
                           |
                           +--> blocked (budget, max attempts, or review blockers)
                           |       |
@@ -324,6 +342,7 @@ All interactive TUI calls go through helpers in `src/ui.ts` (`uiChoose`, `uiConf
 - Auto-commit after each execute phase
 - All git operations wrapped in try/catch -- warn on failure, never crash
 - Switches back to base branch (main/master) when loop finishes
+- `getMergedOrGoneBranches()` uses `--format "%(refname:short)"` for robust branch name parsing (avoids regex on `*` prefix)
 
 ## Testing
 
@@ -341,7 +360,8 @@ Test coverage:
 - **invoke-robustness.test.ts** -- Timeout handling, `is_error` detection, edge cases
 - **local-backend.test.ts** -- Task CRUD, filtering, atomic writes
 - **loop.test.ts** -- Review JSON parsing (inline, code-block, nested, remediationPlan), prompt building, preflight integration (understanding.md in execute prompt), confidence regression detection, global budget integration, preflight subtask priority parsing, too_broad subtask auto-creation (priority inheritance, ready state, parent ready with dependencies, understanding.md cleanup, dependency accumulation), handleConfidenceMet hook integration (blocking failure returns in_progress without state update, context forwarding, cost logging with trigger label), fireHooks (context propagation, no-op on empty hooks, error swallowing), moveToBlocked (on_blocked hook firing, error resilience, blocker forwarding)
-- **git.test.ts** -- Slugify edge cases, branch name construction, getHeadSha, resetToSha rollback
+- **git.test.ts** -- Slugify edge cases, branch name construction, getHeadSha, resetToSha rollback, getMergedOrGoneBranches (gone, merged, unmerged, mixed batch, empty input)
+- **sync.test.ts** -- Review task sync: branch merged+deleted promotes to done, branch merged but exists promotes to done, unmerged branch stays review, null branch skipped, no review tasks returns 0
 - **discuss.test.ts** -- buildDiscussArgs, system prompt construction, section ordering
 - **dependencies.test.ts** -- Dependency inference (explicit indices, heuristic fallback, cycle detection, out-of-range filtering), keyword extraction, index-to-ID resolution
 - **guided.test.ts** -- Clarification prompt building, question JSON parsing (valid, malformed, capped), constraints formatting, edge cases
