@@ -23,6 +23,7 @@ src/
   dependencies.ts     Post-planning dependency inference and index-to-ID resolution
   selection.ts        Dependency-aware task selection (findRunnableTask)
   discuss.ts          Interactive Claude session launcher (stdio: 'inherit' for full TTY control)
+  hooks.ts             Hook execution engine: skill registry, prompt resolution, condition evaluation, orchestrator
   config.ts           Zod-validated config. 3-layer merge: ~/.hootl/config.json < .hootl/config.json < env vars
   context.ts          Project context gathering for plan command (spec, structure, tasks, git log)
   budget.ts           Global daily budget enforcement (reads cost.csv, checks against budgets.global)
@@ -58,6 +59,7 @@ templates/
   plan.md              System prompt for planning phase
   execute.md           System prompt for execution phase
   review.md            System prompt for review phase
+  simplify.md          System prompt for /simplify hook skill (code quality review)
 docs/
   spec.md              Full project specification
 .hootl/                Runtime data directory (tasks, logs, status)
@@ -117,6 +119,33 @@ When a task reaches the confidence target, `handleConfidenceMet()` in `src/loop.
 **Default is null** (infer from auto level). Since `auto.defaultLevel` defaults to `proactive`, the effective default is `merge` — meaning tasks that reach confidence will auto-merge unless overridden.
 
 All git operations (`mergeBranch`, `deleteBranch`, `pushBranch`, `createDraftPR`) are wrapped in try/catch. On failure, they warn and fall back to `none` behavior (task moves to `review`). The `resolveOnConfidenceMode()` helper in `src/config.ts` is a pure function that encapsulates the priority logic.
+
+### Hooks Engine
+
+The hooks engine (`src/hooks.ts`) runs configurable Claude invocations at key points in the completion loop. Hooks are defined in `config.hooks` as an array of `{ trigger, prompt, blocking, conditions? }`.
+
+**Trigger points:**
+- `on_confidence_met` — runs after confidence reaches the target, before state transition. Blocking hooks here prevent merge/PR/review transition.
+- `on_review_complete` — after each review phase (not yet integrated)
+- `on_execute_start` — before each execute phase (not yet integrated)
+- `on_blocked` — when a task moves to blocked (not yet integrated)
+
+**Prompt resolution** (`resolvePrompt`):
+- `/skillName` — looks up a built-in skill in the skill registry (e.g., `/simplify`)
+- `templates/file.md` — loads a template file from the templates directory
+- Anything else — used as an inline prompt
+
+**Skill registry** — a `Map<string, (ctx: HookContext) => string>` of built-in prompt builders. The first skill is `simplify`, which generates a prompt to compare the task branch against main, review changed code for quality/reuse/efficiency, and fix issues.
+
+**Blocking vs advisory:**
+- `blocking: true` — if the hook fails (`pass: false`), `allPassed` is `false` and the state transition is prevented. The loop continues for another attempt.
+- `blocking: false` (default) — failures are logged as warnings but don't prevent transitions.
+
+**Condition evaluation** — hooks can specify `conditions.minConfidence` to only run when confidence meets a threshold. Hooks with unmet conditions are silently skipped.
+
+**Cost tracking** — hook invocations are logged to `cost.csv` as `hook:<prompt>` and accumulated into task `totalCost` and session `phaseCost` for proper budget enforcement.
+
+**Output parsing** (`parseHookOutput`) — expects JSON `{ "pass": boolean, "issues": string[], "fixed": string[] }`. Falls back to treating non-empty output as success.
 
 ### Planning Memory
 
@@ -310,6 +339,7 @@ Test coverage:
 - **loop.test.ts** -- Review JSON parsing (inline, code-block, nested, remediationPlan), prompt building, preflight integration (understanding.md in execute prompt), confidence regression detection, global budget integration, preflight subtask priority parsing, too_broad subtask auto-creation (priority inheritance, ready state, parent done state, ID references)
 - **git.test.ts** -- Slugify edge cases, branch name construction, getHeadSha, resetToSha rollback
 - **discuss.test.ts** -- buildDiscussArgs, system prompt construction, section ordering
+- **hooks.test.ts** -- Condition evaluation (minConfidence, null confidence, empty conditions), prompt resolution (inline, /skill, templates/, unknown skill), output parsing (pass/fail, JSON extraction, empty/non-JSON fallback), skill registry (simplify registration, prompt content), orchestration (trigger filtering, condition skipping, blocking vs advisory, error handling)
 - **dependencies.test.ts** -- Dependency inference (explicit indices, heuristic fallback, cycle detection, out-of-range filtering), keyword extraction, index-to-ID resolution
 - **guided.test.ts** -- Clarification prompt building, question JSON parsing (valid, malformed, capped), constraints formatting, edge cases
 - **plan-memory.test.ts** -- Memory entry generation (success/blocked variants, blocker categorization, truncation), append/rotation (50-entry cap, FIFO), pattern loading (recent count, empty file), metrics computation (averages, completion rate, blocker reasons), prompt formatting

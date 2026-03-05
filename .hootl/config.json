@@ -3,7 +3,7 @@
   "budgets": {
     "perSession": 1.5,
     "perTask": 5,
-    "global": 50,
+    "global": 150,
     "maxAttemptsPerTask": 10
   },
   "confidence": {

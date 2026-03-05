@@ -9,6 +9,8 @@ import { uiInfo, uiWarn, uiError, uiSuccess, uiSpinner } from "./ui.js";
 import { isGitRepo, createTaskBranch, commitTaskChanges, switchBranch, getBaseBranch, getHeadSha, resetToSha, mergeBranch, deleteBranch, pushBranch, createDraftPR } from "./git.js";
 import { checkGlobalBudget } from "./budget.js";
 import { generateMemoryEntry, appendMemoryEntry } from "./plan-memory.js";
+import { runHooks } from "./hooks.js";
+import type { HookContext } from "./hooks.js";
 
 export async function readFileOrEmpty(path: string): Promise<string> {
   try {
@@ -802,6 +804,35 @@ export async function runCompletionLoop(
         uiSuccess(
           `Task ${task.id} reached ${review.confidence}% confidence.`,
         );
+
+        // Run on_confidence_met hooks before transitioning state
+        const hookCtx: HookContext = {
+          task: currentTask,
+          taskDir,
+          baseBranch,
+          taskBranch,
+          confidence: review.confidence,
+          config,
+        };
+        const hookRun = await runHooks("on_confidence_met", hookCtx);
+        phaseCost += hookRun.totalCost;
+        currentTask = await backend.updateTask(task.id, {
+          totalCost: currentTask.totalCost + hookRun.totalCost,
+        });
+
+        if (!hookRun.allPassed) {
+          uiWarn("Blocking hook(s) failed — not transitioning to done/review. Continuing loop.");
+
+          // Auto-commit any fixes made by hooks
+          if (taskBranch !== null) {
+            try {
+              await commitTaskChanges(task.id, `hook-fixes-${attempt}`, `[${task.id}] Hook fixes attempt ${attempt}`);
+            } catch { /* best-effort */ }
+          }
+
+          continue;
+        }
+
         const result = await handleConfidenceMet(
           currentTask, config, backend, taskBranch, baseBranch, taskDir, cliFlags,
         );
