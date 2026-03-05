@@ -26,6 +26,11 @@ import { checkGlobalBudget } from "./budget.js";
 import { discussCommand } from "./discuss.js";
 import { findRunnableTask } from "./selection.js";
 import { inferDependencies, resolveIndicesToIds } from "./dependencies.js";
+import {
+  generateClarifyingQuestions,
+  collectAnswers,
+  formatConstraints,
+} from "./guided.js";
 
 function getBackend(config: Config): TaskBackend {
   const tasksDir = join(process.cwd(), ".hootl", "tasks");
@@ -113,7 +118,7 @@ program
     }
   });
 
-async function planCommand(cliMode?: { fromSpec?: boolean; goal?: string; analyze?: boolean; next?: boolean }): Promise<void> {
+async function planCommand(cliMode?: { fromSpec?: boolean; goal?: string; analyze?: boolean; next?: boolean; guided?: boolean }): Promise<void> {
   await autoInit();
   const config = await loadConfig();
   const backend = getBackend(config);
@@ -164,11 +169,26 @@ async function planCommand(cliMode?: { fromSpec?: boolean; goal?: string; analyz
       break;
     case "Break down a goal": {
       const goal = cliMode?.goal ?? await uiInput("Describe the goal:");
+
+      let constraintsBlock = "";
+      if (cliMode?.guided) {
+        const questions = await uiSpinner("Analyzing goal...", () =>
+          generateClarifyingQuestions(goal, formattedContext, isVerbose()),
+        );
+        if (questions.length > 0) {
+          const answers = await collectAnswers(questions);
+          constraintsBlock = formatConstraints(questions, answers);
+        } else {
+          uiWarn("No clarifying questions generated — proceeding with unguided planning.");
+        }
+      }
+
       prompt =
         `You are a task planner. Break down the following goal into concrete, ` +
         `actionable coding tasks. For each task provide a title, description, priority, and dependencies on other tasks in this batch. ` +
         jsonSchemaInstruction + `\n` +
         `Goal: ${goal}\n\n` +
+        (constraintsBlock !== "" ? constraintsBlock + `\n\n` : "") +
         `<context>\n${formattedContext}\n</context>`;
       break;
     }
@@ -280,7 +300,8 @@ program
   .option("--goal <goal>", "Break down a specific goal into tasks")
   .option("--analyze", "Analyze codebase for improvements")
   .option("--next", "Suggest what to work on next")
-  .action(async (options: { fromSpec?: boolean; goal?: string; analyze?: boolean; next?: boolean }) => {
+  .option("--guided", "Interactive clarification before planning (use with --goal)")
+  .action(async (options: { fromSpec?: boolean; goal?: string; analyze?: boolean; next?: boolean; guided?: boolean }) => {
     try {
       await planCommand(options);
     } catch (err: unknown) {

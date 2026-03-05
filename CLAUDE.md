@@ -29,6 +29,7 @@ src/
   loop.ts             Core 3-phase completion loop (plan -> execute -> review). Budget/attempt tracking
   invoke.ts           Wrapper around `claude -p` via execa. Parses cost from JSON output
   git.ts              Git operations: task branches, auto-commit, branch switching
+  guided.ts           Interactive goal clarification (generates questions via Claude, collects answers via gum)
   ui.ts               Terminal UI helpers using `gum` with stdin fallback
   status.ts           Status summary writer (grouped by state)
   tasks/
@@ -158,6 +159,7 @@ hootl init                     Initialize .hootl/ directory
 hootl plan                     Plan tasks (interactive mode selector)
 hootl plan --from-spec         Auto-detect spec gaps and create tasks
 hootl plan --goal "..."        Break down a specific goal into tasks
+hootl plan --goal "..." --guided  Interactive clarification before planning (2-4 questions via gum)
 hootl plan --analyze           Analyze codebase for improvements
 hootl plan --next              Suggest what to work on next
 hootl run [id]                 Run a task (or next ready task) through the completion loop
@@ -267,6 +269,7 @@ Test coverage:
 - **git.test.ts** -- Slugify edge cases, branch name construction, getHeadSha, resetToSha rollback
 - **discuss.test.ts** -- buildDiscussArgs, system prompt construction, section ordering
 - **dependencies.test.ts** -- Dependency inference (explicit indices, heuristic fallback, cycle detection, out-of-range filtering), keyword extraction, index-to-ID resolution
+- **guided.test.ts** -- Clarification prompt building, question JSON parsing (valid, malformed, capped), constraints formatting, edge cases
 - **prioritize.test.ts** -- userPriority schema backward compat, sort order (userPriority before auto), dependency enforcement (findRunnableTask)
 
 ## Dependencies
