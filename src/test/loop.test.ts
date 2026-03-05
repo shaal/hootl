@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { parseReviewResult, parsePreflightResult, isSessionBudgetExceeded, applySessionBudgetExceeded, buildPlanPrompt, buildPreflightPrompt, isConfidenceRegression, handleConfidenceMet } from "../loop.js";
+import { parseReviewResult, parsePreflightResult, isSessionBudgetExceeded, applySessionBudgetExceeded, buildPlanPrompt, buildExecutePrompt, buildPreflightPrompt, isConfidenceRegression, handleConfidenceMet } from "../loop.js";
 import { checkGlobalBudget } from "../budget.js";
 import { ConfigSchema } from "../config.js";
 import type { TaskBackend } from "../tasks/types.js";
@@ -746,5 +746,77 @@ Please review.`;
     const result = parsePreflightResult(input);
     assert.equal(result.verdict, "cannot_reproduce");
     assert.equal(result.reproductionResult, "Tried 5 times, no failure");
+  });
+});
+
+describe("preflight integration — buildExecutePrompt", () => {
+  const makeTask = (overrides: Partial<Task> = {}): Task => ({
+    id: "task-001",
+    title: "Test task",
+    description: "A test task description",
+    priority: "medium",
+    state: "in_progress",
+    dependencies: [],
+    backend: "local",
+    backendRef: null,
+    confidence: 0,
+    attempts: 0,
+    totalCost: 0,
+    branch: null,
+    worktree: null,
+    userPriority: null,
+    blockers: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    ...overrides,
+  });
+
+  it("includes understanding.md content in execute prompt", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hootl-exec-"));
+    try {
+      await writeFile(join(dir, "understanding.md"), "The task requires fixing the auth flow for SSO users.", "utf-8");
+      const prompt = await buildExecutePrompt(makeTask(), dir);
+      assert.ok(prompt.includes("## Task Understanding"));
+      assert.ok(prompt.includes("fixing the auth flow for SSO users"));
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+
+  it("omits understanding section when understanding.md is missing", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hootl-exec-"));
+    try {
+      const prompt = await buildExecutePrompt(makeTask(), dir);
+      assert.ok(!prompt.includes("Task Understanding"));
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+
+  it("omits understanding section when understanding.md is empty", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hootl-exec-"));
+    try {
+      await writeFile(join(dir, "understanding.md"), "   \n  ", "utf-8");
+      const prompt = await buildExecutePrompt(makeTask(), dir);
+      assert.ok(!prompt.includes("Task Understanding"));
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+
+  it("places understanding before plan in execute prompt", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hootl-exec-"));
+    try {
+      await writeFile(join(dir, "understanding.md"), "Understanding content here", "utf-8");
+      await writeFile(join(dir, "plan.md"), "Plan content here", "utf-8");
+      const prompt = await buildExecutePrompt(makeTask(), dir);
+      const understandingIdx = prompt.indexOf("## Task Understanding");
+      const planIdx = prompt.indexOf("## Plan");
+      assert.ok(understandingIdx >= 0, "Understanding section should exist");
+      assert.ok(planIdx >= 0, "Plan section should exist");
+      assert.ok(understandingIdx < planIdx, "Understanding should come before Plan");
+    } finally {
+      await rm(dir, { recursive: true });
+    }
   });
 });

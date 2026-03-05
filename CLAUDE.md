@@ -26,7 +26,7 @@ src/
   config.ts           Zod-validated config. 3-layer merge: ~/.hootl/config.json < .hootl/config.json < env vars
   context.ts          Project context gathering for plan command (spec, structure, tasks, git log)
   budget.ts           Global daily budget enforcement (reads cost.csv, checks against budgets.global)
-  loop.ts             Core 3-phase completion loop (plan -> execute -> review). Budget/attempt tracking
+  loop.ts             Core completion loop (preflight -> plan -> execute -> review). Budget/attempt tracking
   invoke.ts           Wrapper around `claude -p` via execa. Parses cost from JSON output
   git.ts              Git operations: task branches, auto-commit, branch switching
   guided.ts           Interactive goal clarification (generates questions via Claude, collects answers via gum)
@@ -65,10 +65,17 @@ docs/
 
 ## Architecture
 
-### 3-Phase Completion Loop
+### Completion Loop (Phase 0 + 3-Phase Attempts)
 
-Each task runs through repeated attempts of:
+Each task begins with a one-time preflight validation, then runs through repeated attempts of plan/execute/review:
 
+0. **PREFLIGHT** (once per task) -- Claude validates the task's clarity, scope, and reproducibility. Produces `understanding.md` for context bridging. Based on the verdict:
+   - `proceed` → continue to the attempt loop
+   - `too_broad` → task moves to `blocked` with suggested subtasks
+   - `unclear` → task moves to `blocked` with clarification questions
+   - `cannot_reproduce` → task moves to `blocked` with reproduction failure details
+   - Skipped if `understanding.md` already exists (task is resuming after human resolved a blocker)
+   - On preflight failure (timeout, error, empty output): graceful degradation — proceed to the loop anyway
 1. **PLAN** -- Claude analyzes the task, prior progress, and blockers to produce `plan.md`
 2. **EXECUTE** -- Claude implements the plan; output appended to `progress.md`; changes auto-committed
 3. **REVIEW** -- Claude runs tests, examines `git diff`, produces a JSON confidence assessment
@@ -80,7 +87,7 @@ The loop continues until:
 - Budget or max attempts exhausted --> task moves to `blocked` state
 - Permanent error --> task stays `in_progress` for later resume
 
-Context bridges between fresh `claude -p` calls via files in `.hootl/tasks/<id>/`: `plan.md`, `progress.md`, `test_results.md`, `blockers.md`, `last_confidence.txt`.
+Context bridges between fresh `claude -p` calls via files in `.hootl/tasks/<id>/`: `understanding.md`, `plan.md`, `progress.md`, `test_results.md`, `blockers.md`, `last_confidence.txt`.
 
 ### Rollback Safety (confidence regression)
 
@@ -300,7 +307,7 @@ Test coverage:
 - **invoke.test.ts** -- Arg building, cost parsing (`total_cost_usd` / `cost_usd`), text extraction from JSON
 - **invoke-robustness.test.ts** -- Timeout handling, `is_error` detection, edge cases
 - **local-backend.test.ts** -- Task CRUD, filtering, atomic writes
-- **loop.test.ts** -- Review JSON parsing (inline, code-block, nested, remediationPlan), prompt building, confidence regression detection, global budget integration
+- **loop.test.ts** -- Review JSON parsing (inline, code-block, nested, remediationPlan), prompt building, preflight integration (understanding.md in execute prompt), confidence regression detection, global budget integration
 - **git.test.ts** -- Slugify edge cases, branch name construction, getHeadSha, resetToSha rollback
 - **discuss.test.ts** -- buildDiscussArgs, system prompt construction, section ordering
 - **dependencies.test.ts** -- Dependency inference (explicit indices, heuristic fallback, cycle detection, out-of-range filtering), keyword extraction, index-to-ID resolution

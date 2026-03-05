@@ -1,4 +1,5 @@
 import { readFile, writeFile, appendFile, mkdir } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { invokeClaude, logCost } from "./invoke.js";
@@ -100,6 +101,13 @@ export async function buildExecutePrompt(
   parts.push(`# Task: ${task.title}`);
   parts.push("");
   parts.push(task.description);
+
+  const understanding = await readFileOrEmpty(join(taskDir, "understanding.md"));
+  if (understanding.trim().length > 0) {
+    parts.push("");
+    parts.push("## Task Understanding");
+    parts.push(understanding);
+  }
 
   const plan = await readFileOrEmpty(join(taskDir, "plan.md"));
   if (plan.trim().length > 0) {
@@ -428,6 +436,92 @@ export async function runCompletionLoop(
     }
   } catch {
     // Ignore — first run or corrupted file
+  }
+
+  // Phase 0: PREFLIGHT — runs once per task, not per attempt.
+  // Skip if understanding.md already exists (task is resuming after a human resolved a blocker).
+  const understandingPath = join(taskDir, "understanding.md");
+  if (existsSync(understandingPath)) {
+    uiInfo("Phase 0: PREFLIGHT [SKIPPED — understanding.md exists, task is resuming]");
+  } else {
+    uiInfo(`Phase 0: PREFLIGHT [${new Date().toLocaleTimeString()}]`);
+    try {
+      const preflightSystemPrompt = await loadTemplate("preflight");
+      const preflightUserPrompt = await buildPreflightPrompt(currentTask, taskDir);
+
+      const preflightResult = await uiSpinner("Running preflight validation...", () =>
+        invokeClaude({
+          prompt: preflightUserPrompt,
+          systemPrompt: preflightSystemPrompt,
+          maxTurns: 20,
+          verbose,
+        }),
+      );
+
+      // Log cost immediately — even if parsing fails, spend is captured
+      await logCost(costLogDir, task.id, "preflight", preflightResult.costUsd);
+      currentTask = await backend.updateTask(task.id, {
+        totalCost: currentTask.totalCost + preflightResult.costUsd,
+      });
+
+      if (preflightResult.exitCode !== 0 || preflightResult.output.trim() === "") {
+        uiWarn("Preflight phase failed or returned empty output — proceeding anyway (graceful degradation)");
+      } else {
+        uiInfo(`Phase 0 done [${new Date().toLocaleTimeString()}] (${preflightResult.durationMs}ms, $${preflightResult.costUsd.toFixed(4)}, exit=${preflightResult.exitCode})`);
+
+        const preflight = parsePreflightResult(preflightResult.output);
+
+        // Persist understanding for context bridging (even for non-proceed verdicts)
+        await writeFile(understandingPath, preflight.understanding || preflightResult.output, "utf-8");
+
+        if (preflight.verdict === "proceed") {
+          uiSuccess("Preflight: task validated — proceeding to completion loop.");
+        } else if (preflight.verdict === "too_broad") {
+          const subtaskLines = preflight.subtasks.slice(0, 5).map(
+            (s, i) => `${i + 1}. **${s.title}**: ${s.description}`,
+          );
+          const truncNote = preflight.subtasks.length > 5 ? `\n...and ${preflight.subtasks.length - 5} more` : "";
+          const blockerMsg = `Task is too broad. Suggested subtasks:\n${subtaskLines.join("\n")}${truncNote}`;
+          uiWarn(`Preflight: ${blockerMsg}`);
+          const updatedTask = await backend.updateTask(task.id, {
+            state: "blocked",
+            blockers: [...currentTask.blockers, blockerMsg],
+          });
+          await recordMemory(updatedTask, getProjectDir());
+          // Switch back to base branch before returning
+          if (baseBranch !== null && taskBranch !== null) {
+            try { await switchBranch(baseBranch); } catch { /* best-effort */ }
+          }
+          return;
+        } else if (preflight.verdict === "unclear") {
+          const blockerMsg = preflight.understanding || "Task requirements are unclear — needs clarification.";
+          uiWarn(`Preflight: ${blockerMsg}`);
+          const updatedTask = await backend.updateTask(task.id, {
+            state: "blocked",
+            blockers: [...currentTask.blockers, blockerMsg],
+          });
+          await recordMemory(updatedTask, getProjectDir());
+          if (baseBranch !== null && taskBranch !== null) {
+            try { await switchBranch(baseBranch); } catch { /* best-effort */ }
+          }
+          return;
+        } else if (preflight.verdict === "cannot_reproduce") {
+          const blockerMsg = preflight.reproductionResult || "Could not reproduce the reported issue.";
+          uiWarn(`Preflight: ${blockerMsg}`);
+          const updatedTask = await backend.updateTask(task.id, {
+            state: "blocked",
+            blockers: [...currentTask.blockers, blockerMsg],
+          });
+          await recordMemory(updatedTask, getProjectDir());
+          if (baseBranch !== null && taskBranch !== null) {
+            try { await switchBranch(baseBranch); } catch { /* best-effort */ }
+          }
+          return;
+        }
+      }
+    } catch (err: unknown) {
+      uiWarn(`Preflight phase error: ${err instanceof Error ? err.message : String(err)} — proceeding anyway`);
+    }
   }
 
   while (true) {
