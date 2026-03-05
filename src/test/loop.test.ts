@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { parseReviewResult, isSessionBudgetExceeded, applySessionBudgetExceeded, buildPlanPrompt } from "../loop.js";
+import { parseReviewResult, isSessionBudgetExceeded, applySessionBudgetExceeded, buildPlanPrompt, isConfidenceRegression } from "../loop.js";
 import type { TaskBackend } from "../tasks/types.js";
 import type { Task } from "../tasks/types.js";
 
@@ -310,5 +310,35 @@ describe("applySessionBudgetExceeded", () => {
     );
     assert.notEqual(result, null);
     assert.equal(result?.totalCost, 0.50);
+  });
+});
+
+describe("isConfidenceRegression", () => {
+  it("returns true when current confidence is lower than previous", () => {
+    assert.equal(isConfidenceRegression(80, 90), true);
+  });
+
+  it("returns false when current confidence is higher than previous", () => {
+    assert.equal(isConfidenceRegression(90, 80), false);
+  });
+
+  it("returns false when previous is null (first attempt)", () => {
+    assert.equal(isConfidenceRegression(80, null), false);
+  });
+
+  it("returns false when confidences are equal", () => {
+    assert.equal(isConfidenceRegression(80, 80), false);
+  });
+
+  it("returns true for small regressions", () => {
+    assert.equal(isConfidenceRegression(89, 90), true);
+  });
+
+  it("returns false when current is 0 and previous is null", () => {
+    assert.equal(isConfidenceRegression(0, null), false);
+  });
+
+  it("returns true when current is 0 and previous was positive", () => {
+    assert.equal(isConfidenceRegression(0, 50), true);
   });
 });

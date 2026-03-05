@@ -59,11 +59,24 @@ Each task runs through repeated attempts of:
 
 The loop continues until:
 - Confidence >= target (default 95%) --> task moves to `review` state
+- Confidence regression detected --> task moves to `blocked` state (changes rolled back)
 - Blockers detected --> task moves to `blocked` state
 - Budget or max attempts exhausted --> task moves to `blocked` state
 - Permanent error --> task stays `in_progress` for later resume
 
-Context bridges between fresh `claude -p` calls via files in `.hootl/tasks/<id>/`: `plan.md`, `progress.md`, `test_results.md`, `blockers.md`.
+Context bridges between fresh `claude -p` calls via files in `.hootl/tasks/<id>/`: `plan.md`, `progress.md`, `test_results.md`, `blockers.md`, `last_confidence.txt`.
+
+### Rollback Safety (confidence regression)
+
+Before each Phase 2 (execute), the loop records the current git HEAD SHA via `getHeadSha()`. After Phase 3 (review), if confidence is lower than the previous attempt's confidence, the loop:
+
+1. **Rolls back** -- `git reset --hard <saved-sha>` reverts the execute phase's changes
+2. **Logs** -- Appends a "ROLLED BACK" entry to `progress.md` noting the regression
+3. **Blocks** -- Moves the task to `blocked` state with a descriptive blocker message
+
+Confidence is tracked across runs via `last_confidence.txt` in the task directory. The `isConfidenceRegression(current, previous)` helper returns `true` only when `previous !== null && current < previous` — first attempts and equal scores never trigger rollback.
+
+Git helpers: `getHeadSha()` returns the 40-char HEAD SHA; `resetToSha(sha)` runs `git reset --hard`. Both are in `src/git.ts`.
 
 ### Remediation Plan Flow (confidence < target)
 
@@ -178,8 +191,8 @@ Test coverage:
 - **invoke.test.ts** -- Arg building, cost parsing (`total_cost_usd` / `cost_usd`), text extraction from JSON
 - **invoke-robustness.test.ts** -- Timeout handling, `is_error` detection, edge cases
 - **local-backend.test.ts** -- Task CRUD, filtering, atomic writes
-- **loop.test.ts** -- Review JSON parsing (inline, code-block, nested, remediationPlan), prompt building
-- **git.test.ts** -- Slugify edge cases, branch name construction
+- **loop.test.ts** -- Review JSON parsing (inline, code-block, nested, remediationPlan), prompt building, confidence regression detection
+- **git.test.ts** -- Slugify edge cases, branch name construction, getHeadSha, resetToSha rollback
 
 ## Dependencies
 
