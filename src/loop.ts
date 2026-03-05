@@ -1,4 +1,4 @@
-import { readFile, writeFile, appendFile, mkdir } from "node:fs/promises";
+import { readFile, writeFile, appendFile, mkdir, unlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -402,6 +402,7 @@ export async function handleTooBroad(
   backend: TaskBackend,
   currentTask: Task,
   preflight: PreflightResult,
+  taskDir: string,
 ): Promise<{ createdIds: string[]; updatedTask: Task }> {
   const createdIds: string[] = [];
   for (const sub of preflight.subtasks) {
@@ -419,9 +420,17 @@ export async function handleTooBroad(
   const idList = createdIds.join(", ");
   const note = `Decomposed into subtasks: ${idList}`;
   const updatedTask = await backend.updateTask(currentTask.id, {
-    state: "done",
+    state: "ready",
+    dependencies: [...currentTask.dependencies, ...createdIds],
     blockers: [...currentTask.blockers, note],
   });
+  // Remove understanding.md so preflight runs fresh when the parent is picked up again
+  // (the original understanding reflects a "too broad" assessment that won't apply after subtasks complete)
+  try {
+    await unlink(join(taskDir, "understanding.md"));
+  } catch {
+    // Ignore — file may not exist
+  }
   return { createdIds, updatedTask };
 }
 
@@ -528,9 +537,9 @@ export async function runCompletionLoop(
             });
             await recordMemory(updatedTask, getProjectDir());
           } else {
-            const { createdIds, updatedTask } = await handleTooBroad(backend, currentTask, preflight);
+            const { createdIds, updatedTask } = await handleTooBroad(backend, currentTask, preflight, taskDir);
             const idList = createdIds.join(", ");
-            uiSuccess(`Preflight: task too broad — created ${createdIds.length} subtasks (${idList})`);
+            uiSuccess(`Preflight: task too broad — created ${createdIds.length} subtasks (${idList}); parent waiting on dependencies`);
             await recordMemory(updatedTask, getProjectDir());
           }
           if (baseBranch !== null && taskBranch !== null) {

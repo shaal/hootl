@@ -747,9 +747,15 @@ describe("handleTooBroad subtask auto-creation", () => {
     return { backend, createdTasks, updates };
   }
 
+  async function makeTempTaskDir(): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), "hootl-toobroad-"));
+    return dir;
+  }
+
   it("creates subtasks from preflight result", async () => {
     const { backend, createdTasks } = makeSubtaskMockBackend();
     const task = makeTooBroadTask();
+    const taskDir = await makeTempTaskDir();
     const preflight = {
       verdict: "too_broad" as const,
       understanding: "Task covers multiple areas",
@@ -761,18 +767,20 @@ describe("handleTooBroad subtask auto-creation", () => {
       reproductionResult: "",
     };
 
-    const { createdIds } = await handleTooBroad(backend, task, preflight);
+    const { createdIds } = await handleTooBroad(backend, task, preflight, taskDir);
 
     assert.equal(createdIds.length, 3);
     assert.equal(createdTasks.length, 3);
     assert.equal(createdTasks[0]?.input.title, "Sub A");
     assert.equal(createdTasks[1]?.input.title, "Sub B");
     assert.equal(createdTasks[2]?.input.title, "Sub C");
+    await rm(taskDir, { recursive: true, force: true });
   });
 
   it("subtasks inherit parent priority when none specified", async () => {
     const { backend, createdTasks } = makeSubtaskMockBackend();
     const task = makeTooBroadTask({ priority: "high" });
+    const taskDir = await makeTempTaskDir();
     const preflight = {
       verdict: "too_broad" as const,
       understanding: "Broad",
@@ -782,14 +790,16 @@ describe("handleTooBroad subtask auto-creation", () => {
       reproductionResult: "",
     };
 
-    await handleTooBroad(backend, task, preflight);
+    await handleTooBroad(backend, task, preflight, taskDir);
 
     assert.equal(createdTasks[0]?.input.priority, "high");
+    await rm(taskDir, { recursive: true, force: true });
   });
 
   it("subtasks use Claude-specified priority when provided", async () => {
     const { backend, createdTasks } = makeSubtaskMockBackend();
     const task = makeTooBroadTask({ priority: "medium" });
+    const taskDir = await makeTempTaskDir();
     const preflight = {
       verdict: "too_broad" as const,
       understanding: "Broad",
@@ -800,15 +810,17 @@ describe("handleTooBroad subtask auto-creation", () => {
       reproductionResult: "",
     };
 
-    await handleTooBroad(backend, task, preflight);
+    await handleTooBroad(backend, task, preflight, taskDir);
 
     assert.equal(createdTasks[0]?.input.priority, "critical");
     assert.equal(createdTasks[1]?.input.priority, "medium"); // inherited from parent
+    await rm(taskDir, { recursive: true, force: true });
   });
 
   it("moves subtasks to ready state", async () => {
     const { backend, updates } = makeSubtaskMockBackend();
     const task = makeTooBroadTask();
+    const taskDir = await makeTempTaskDir();
     const preflight = {
       verdict: "too_broad" as const,
       understanding: "Broad",
@@ -819,16 +831,18 @@ describe("handleTooBroad subtask auto-creation", () => {
       reproductionResult: "",
     };
 
-    await handleTooBroad(backend, task, preflight);
+    await handleTooBroad(backend, task, preflight, taskDir);
 
-    // First two updates are subtask state changes to 'ready', third is parent update
-    const readyUpdates = updates.filter(u => u.updates.state === "ready");
-    assert.equal(readyUpdates.length, 2);
+    // Two subtask state changes to 'ready' + parent also goes to 'ready' (with dependencies)
+    const subtaskReadyUpdates = updates.filter(u => u.updates.state === "ready" && u.id !== task.id);
+    assert.equal(subtaskReadyUpdates.length, 2);
+    await rm(taskDir, { recursive: true, force: true });
   });
 
-  it("moves parent task to done with subtask ID references", async () => {
+  it("keeps parent task in ready state with subtask dependencies", async () => {
     const { backend, updates } = makeSubtaskMockBackend();
     const task = makeTooBroadTask();
+    const taskDir = await makeTempTaskDir();
     const preflight = {
       verdict: "too_broad" as const,
       understanding: "Broad",
@@ -838,23 +852,27 @@ describe("handleTooBroad subtask auto-creation", () => {
       reproductionResult: "",
     };
 
-    const { updatedTask } = await handleTooBroad(backend, task, preflight);
+    const { updatedTask } = await handleTooBroad(backend, task, preflight, taskDir);
 
-    // Parent should be moved to done
+    // Parent should be moved back to ready (waiting on subtask dependencies)
     const parentUpdate = updates.find(u => u.id === "task-001");
     assert.ok(parentUpdate);
-    assert.equal(parentUpdate.updates.state, "done");
+    assert.equal(parentUpdate.updates.state, "ready");
+    // Parent should have subtask IDs as dependencies
+    assert.deepEqual(parentUpdate.updates.dependencies, ["sub-001"]);
     // Blockers should contain reference to created subtask IDs
     const blockerNote = parentUpdate.updates.blockers?.[0];
     assert.ok(blockerNote);
     assert.ok(blockerNote.includes("sub-001"));
     assert.ok(blockerNote.startsWith("Decomposed into subtasks:"));
-    assert.equal(updatedTask.state, "done");
+    assert.equal(updatedTask.state, "ready");
+    await rm(taskDir, { recursive: true, force: true });
   });
 
   it("returns created subtask IDs", async () => {
     const { backend } = makeSubtaskMockBackend();
     const task = makeTooBroadTask();
+    const taskDir = await makeTempTaskDir();
     const preflight = {
       verdict: "too_broad" as const,
       understanding: "Broad",
@@ -865,9 +883,54 @@ describe("handleTooBroad subtask auto-creation", () => {
       reproductionResult: "",
     };
 
-    const { createdIds } = await handleTooBroad(backend, task, preflight);
+    const { createdIds } = await handleTooBroad(backend, task, preflight, taskDir);
 
     assert.deepEqual(createdIds, ["sub-001", "sub-002"]);
+    await rm(taskDir, { recursive: true, force: true });
+  });
+
+  it("removes understanding.md so preflight runs fresh on re-run", async () => {
+    const { backend } = makeSubtaskMockBackend();
+    const task = makeTooBroadTask();
+    const taskDir = await makeTempTaskDir();
+    // Simulate understanding.md written by the preflight phase
+    await writeFile(join(taskDir, "understanding.md"), "Too broad understanding", "utf-8");
+    const preflight = {
+      verdict: "too_broad" as const,
+      understanding: "Broad",
+      subtasks: [
+        { title: "Sub A", description: "Do A" },
+      ],
+      reproductionResult: "",
+    };
+
+    await handleTooBroad(backend, task, preflight, taskDir);
+
+    const { existsSync } = await import("node:fs");
+    assert.equal(existsSync(join(taskDir, "understanding.md")), false);
+    await rm(taskDir, { recursive: true, force: true });
+  });
+
+  it("appends subtask dependencies to existing parent dependencies", async () => {
+    const { backend, updates } = makeSubtaskMockBackend();
+    const task = makeTooBroadTask({ dependencies: ["existing-dep"] });
+    const taskDir = await makeTempTaskDir();
+    const preflight = {
+      verdict: "too_broad" as const,
+      understanding: "Broad",
+      subtasks: [
+        { title: "Sub A", description: "Do A" },
+        { title: "Sub B", description: "Do B" },
+      ],
+      reproductionResult: "",
+    };
+
+    await handleTooBroad(backend, task, preflight, taskDir);
+
+    const parentUpdate = updates.find(u => u.id === "task-001");
+    assert.ok(parentUpdate);
+    assert.deepEqual(parentUpdate.updates.dependencies, ["existing-dep", "sub-001", "sub-002"]);
+    await rm(taskDir, { recursive: true, force: true });
   });
 });
 
