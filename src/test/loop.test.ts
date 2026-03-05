@@ -130,6 +130,22 @@ Please address the issues above.`;
     assert.equal(result.remediationPlan, "");
   });
 
+  it("extracts JSON when remediationPlan contains nested code fences", () => {
+    const input = "Here is my review:\n\n```json\n" + JSON.stringify({
+      confidence: 90,
+      summary: "Needs minor improvements",
+      issues: ["duplicated code"],
+      suggestions: ["extract helper"],
+      blockers: [],
+      remediationPlan: "## Steps\n1. Extract helper:\n```typescript\nfunction foo() {}\n```\n2. Run tests",
+    }) + "\n```\n\nThat's my assessment.";
+
+    const result = parseReviewResult(input);
+    assert.equal(result.confidence, 90);
+    assert.equal(result.summary, "Needs minor improvements");
+    assert.ok(result.remediationPlan.includes("Extract helper"));
+  });
+
   it("returns 0 confidence when confidence is a string", () => {
     const input = JSON.stringify({
       confidence: "85",

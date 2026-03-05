@@ -141,14 +141,13 @@ export function parseReviewResult(output: string): ReviewResult {
   const codeBlockMatch = /```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/.exec(output);
   const jsonCandidate = codeBlockMatch ? codeBlockMatch[1] : output;
 
-  // Try parsing the candidate directly, or scan for a JSON object
+  // Try parsing the candidate directly, then fall back to brace matching.
+  // Always try brace matching — code block extraction can fail when the JSON
+  // contains nested code fences (e.g. remediationPlan with ```typescript blocks).
   const candidates: string[] = [jsonCandidate ?? ""];
-  if (!codeBlockMatch) {
-    // Try to find a JSON object in the raw output
-    const braceMatch = /\{[\s\S]*\}/.exec(output);
-    if (braceMatch) {
-      candidates.push(braceMatch[0]);
-    }
+  const braceMatch = /\{[\s\S]*\}/.exec(output);
+  if (braceMatch && braceMatch[0] !== jsonCandidate) {
+    candidates.push(braceMatch[0]);
   }
 
   for (const candidate of candidates) {
