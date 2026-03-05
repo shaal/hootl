@@ -122,7 +122,9 @@ interface ReviewResult {
   confidence: number;
   summary: string;
   issues: string[];
+  suggestions: string[];
   blockers: string[];
+  remediationPlan: string;
 }
 
 export function parseReviewResult(output: string): ReviewResult {
@@ -130,21 +132,22 @@ export function parseReviewResult(output: string): ReviewResult {
     confidence: 0,
     summary: "",
     issues: [],
+    suggestions: [],
     blockers: [],
+    remediationPlan: "",
   };
 
   // Try to extract JSON from the output — it may be wrapped in markdown code blocks
   const codeBlockMatch = /```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/.exec(output);
   const jsonCandidate = codeBlockMatch ? codeBlockMatch[1] : output;
 
-  // Try parsing the candidate directly, or scan for a JSON object
+  // Try parsing the candidate directly, then fall back to brace matching.
+  // Always try brace matching — code block extraction can fail when the JSON
+  // contains nested code fences (e.g. remediationPlan with ```typescript blocks).
   const candidates: string[] = [jsonCandidate ?? ""];
-  if (!codeBlockMatch) {
-    // Try to find a JSON object in the raw output
-    const braceMatch = /\{[\s\S]*\}/.exec(output);
-    if (braceMatch) {
-      candidates.push(braceMatch[0]);
-    }
+  const braceMatch = /\{[\s\S]*\}/.exec(output);
+  if (braceMatch && braceMatch[0] !== jsonCandidate) {
+    candidates.push(braceMatch[0]);
   }
 
   for (const candidate of candidates) {
@@ -164,18 +167,44 @@ export function parseReviewResult(output: string): ReviewResult {
         ? (record["issues"] as unknown[])
             .filter((v): v is string => typeof v === "string")
         : [];
+      const suggestions = Array.isArray(record["suggestions"])
+        ? (record["suggestions"] as unknown[])
+            .filter((v): v is string => typeof v === "string")
+        : [];
       const blockers = Array.isArray(record["blockers"])
         ? (record["blockers"] as unknown[])
             .filter((v): v is string => typeof v === "string")
         : [];
+      const remediationPlan =
+        typeof record["remediationPlan"] === "string"
+          ? record["remediationPlan"]
+          : "";
 
-      return { confidence, summary, issues, blockers };
+      return { confidence, summary, issues, suggestions, blockers, remediationPlan };
     } catch {
       continue;
     }
   }
 
   return defaultResult;
+}
+
+export function isSessionBudgetExceeded(phaseCost: number, perSession: number): boolean {
+  return phaseCost >= perSession;
+}
+
+export async function applySessionBudgetExceeded(
+  backend: TaskBackend,
+  taskId: string,
+  currentTask: Task,
+  phaseCost: number,
+  perSession: number,
+): Promise<Task | null> {
+  if (!isSessionBudgetExceeded(phaseCost, perSession)) return null;
+  uiWarn(
+    `Session budget exceeded ($${phaseCost.toFixed(4)} >= $${perSession.toFixed(2)}). Ending attempt early.`,
+  );
+  return backend.updateTask(taskId, { totalCost: currentTask.totalCost + phaseCost });
 }
 
 export async function runCompletionLoop(
@@ -204,6 +233,8 @@ export async function runCompletionLoop(
       uiWarn(`Could not create task branch: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
+
+  let hasRemediationPlan = false;
 
   while (true) {
     // Check budget
@@ -241,34 +272,47 @@ export async function runCompletionLoop(
     let phaseCost = 0;
 
     try {
-      // Phase 1: PLAN
-      const planSystemPrompt = await loadTemplate("plan");
-      const planUserPrompt = await buildPlanPrompt(currentTask, taskDir);
+      // Phase 1: PLAN (skipped when the previous review wrote a remediation plan)
+      if (hasRemediationPlan) {
+        uiInfo(`Phase 1: PLAN [SKIPPED — using remediation plan from previous review]`);
+        hasRemediationPlan = false;
+      } else {
+        const planSystemPrompt = await loadTemplate("plan");
+        const planUserPrompt = await buildPlanPrompt(currentTask, taskDir);
 
-      uiInfo(`Phase 1: PLAN [${new Date().toLocaleTimeString()}]`);
-      const planResult = await uiSpinner("Planning...", () =>
-        invokeClaude({
-          prompt: planUserPrompt,
-          systemPrompt: planSystemPrompt,
-          maxTurns: 20,
-          verbose,
-        }),
-      );
+        uiInfo(`Phase 1: PLAN [${new Date().toLocaleTimeString()}]`);
+        const planResult = await uiSpinner("Planning...", () =>
+          invokeClaude({
+            prompt: planUserPrompt,
+            systemPrompt: planSystemPrompt,
+            maxTurns: 20,
+            verbose,
+          }),
+        );
 
-      if (planResult.exitCode !== 0) {
-        uiError(`Plan phase failed (exit code ${planResult.exitCode})`);
-        throw new Error(`Plan phase failed: ${planResult.output}`);
+        if (planResult.exitCode !== 0) {
+          uiError(`Plan phase failed (exit code ${planResult.exitCode})`);
+          throw new Error(`Plan phase failed: ${planResult.output}`);
+        }
+
+        if (planResult.output.trim() === "") {
+          uiWarn("Plan phase returned empty output — retrying");
+          throw new Error("Plan phase returned empty output");
+        }
+
+        uiInfo(`Phase 1 done [${new Date().toLocaleTimeString()}] (${planResult.durationMs}ms, $${planResult.costUsd.toFixed(4)}, exit=${planResult.exitCode})`);
+        await writeFile(join(taskDir, "plan.md"), planResult.output, "utf-8");
+        await logCost(costLogDir, task.id, "plan", planResult.costUsd);
+        phaseCost += planResult.costUsd;
+
+        // Check per-session budget after plan phase
+        const planBudgetResult = await applySessionBudgetExceeded(backend, task.id, currentTask, phaseCost, config.budgets.perSession);
+        if (planBudgetResult) {
+          currentTask = planBudgetResult;
+          // phaseCost resets at loop top (let phaseCost = 0); totalCost persisted in backend
+          continue;
+        }
       }
-
-      if (planResult.output.trim() === "") {
-        uiWarn("Plan phase returned empty output — retrying");
-        throw new Error("Plan phase returned empty output");
-      }
-
-      uiInfo(`Phase 1 done [${new Date().toLocaleTimeString()}] (${planResult.durationMs}ms, $${planResult.costUsd.toFixed(4)}, exit=${planResult.exitCode})`);
-      await writeFile(join(taskDir, "plan.md"), planResult.output, "utf-8");
-      await logCost(costLogDir, task.id, "plan", planResult.costUsd);
-      phaseCost += planResult.costUsd;
 
       // Phase 2: EXECUTE
       const executeSystemPrompt = await loadTemplate("execute");
@@ -311,6 +355,15 @@ export async function runCompletionLoop(
         } catch (err: unknown) {
           uiWarn(`Could not auto-commit: ${err instanceof Error ? err.message : String(err)}`);
         }
+      }
+
+      // Check per-session budget after execute phase
+      // Note: hasRemediationPlan was already consumed/reset before this point (at Phase 1), so no explicit reset is needed here.
+      const execBudgetResult = await applySessionBudgetExceeded(backend, task.id, currentTask, phaseCost, config.budgets.perSession);
+      if (execBudgetResult) {
+        currentTask = execBudgetResult;
+        // phaseCost resets at loop top (let phaseCost = 0); totalCost persisted in backend
+        continue;
       }
 
       // Phase 3: REVIEW
@@ -387,6 +440,17 @@ export async function runCompletionLoop(
         break;
       }
 
+      // Write remediation plan for the next attempt's execute phase (skipping plan phase)
+      if (review.remediationPlan.trim().length > 0) {
+        await writeFile(
+          join(taskDir, "plan.md"),
+          review.remediationPlan,
+          "utf-8",
+        );
+        hasRemediationPlan = true;
+        uiInfo("Remediation plan written — next attempt will skip planning phase.");
+      }
+
       // Not done yet — loop
       uiInfo(
         `Confidence ${review.confidence}% < ${config.confidence.target}%. Looping for another attempt.`,
@@ -411,6 +475,7 @@ export async function runCompletionLoop(
         break;
       }
       // Transient error — will loop back and check attempt/budget limits
+      hasRemediationPlan = false;
       uiInfo("Transient error — will retry on next attempt");
     }
   }

@@ -65,6 +65,17 @@ The loop continues until:
 
 Context bridges between fresh `claude -p` calls via files in `.hootl/tasks/<id>/`: `plan.md`, `progress.md`, `test_results.md`, `blockers.md`.
 
+### Remediation Plan Flow (confidence < target)
+
+When the review phase scores confidence below the target, it does two additional things **in the same session** (while context is fresh):
+
+1. **Updates documentation** -- Captures architectural decisions, patterns, and learnings in project docs (CLAUDE.md, README, inline comments)
+2. **Writes a remediation plan** -- A concrete, actionable plan returned in the `remediationPlan` JSON field, written directly to `plan.md`
+
+On the next attempt, the **plan phase is skipped** and the execute phase runs directly from the review's remediation plan. This avoids information loss at session boundaries -- the reviewer already knows exactly what's needed and prescribes it directly, rather than relying on a fresh planner to re-derive it.
+
+The `hasRemediationPlan` flag in the loop controls plan-skipping. It resets to `false` after use and on transient errors to prevent stale plans from persisting.
+
 ### Config Hierarchy
 
 Three layers, merged with deep-merge (later wins):
@@ -167,7 +178,7 @@ Test coverage:
 - **invoke.test.ts** -- Arg building, cost parsing (`total_cost_usd` / `cost_usd`), text extraction from JSON
 - **invoke-robustness.test.ts** -- Timeout handling, `is_error` detection, edge cases
 - **local-backend.test.ts** -- Task CRUD, filtering, atomic writes
-- **loop.test.ts** -- Review JSON parsing (inline, code-block, nested), prompt building
+- **loop.test.ts** -- Review JSON parsing (inline, code-block, nested, remediationPlan), prompt building
 - **git.test.ts** -- Slugify edge cases, branch name construction
 
 ## Dependencies
