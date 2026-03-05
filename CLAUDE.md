@@ -56,6 +56,7 @@ src/
     discuss.test.ts    buildDiscussArgs, system prompt construction
     prioritize.test.ts userPriority sort, dependency enforcement, schema backward compat
     sync.test.ts       Review task sync integration tests (real git repo + LocalTaskBackend)
+    branch-block.test.ts  Branch-switch failure blocks task (dirty worktree integration test)
 templates/
   preflight.md         System prompt for preflight validation phase (Phase 0)
   plan.md              System prompt for planning phase
@@ -91,6 +92,10 @@ The loop continues until:
 - Permanent error --> task stays `in_progress` for later resume
 
 Context bridges between fresh `claude -p` calls via files in `.hootl/tasks/<id>/`: `understanding.md`, `plan.md`, `progress.md`, `test_results.md`, `blockers.md`, `last_confidence.txt`.
+
+### Branch-Switch Safety
+
+Before the loop begins, `runCompletionLoop` creates or switches to the task branch. If the branch switch fails (e.g., uncommitted changes would be overwritten), the task moves to `blocked` with a descriptive message and the loop returns immediately — no phases run on the wrong branch. The blocker message distinguishes dirty-worktree errors ("Commit or stash your changes") from other git failures. The user can resolve the issue and re-run.
 
 ### Rollback Safety (confidence regression)
 
@@ -213,7 +218,7 @@ proposed --> ready --> in_progress --> review --> done
                           |              |
                           |              +--> done (auto-sync: branch merged/deleted externally)
                           |
-                          +--> blocked (budget, max attempts, or review blockers)
+                          +--> blocked (budget, max attempts, branch-switch failure, or review blockers)
                           |       |
                           +-------+ (human resolves via `hootl clarify`)
 ```
@@ -371,6 +376,7 @@ Test coverage:
 - **plan-summary.test.ts** -- Summary generation (single/multiple/many tasks, truncation), priority counting (mixed, default-to-medium), empty array, priority ordering
 - **hooks.test.ts** -- Trigger filtering (condition evaluation, minConfidence), prompt resolution (inline vs file path, fallback), result parsing (JSON extraction, brace-matching, graceful degradation), system prompt construction, runHook integration (pass/fail, cost, context forwarding), runHooks orchestration (blocking short-circuit, advisory continues, cost logging, trigger filtering)
 - **prioritize.test.ts** -- userPriority schema backward compat, sort order (userPriority before auto), dependency enforcement (findRunnableTask)
+- **branch-block.test.ts** -- Integration test: dirty worktree blocks task on branch switch (real git repo), clean worktree proceeds past branch creation
 
 ## Dependencies
 

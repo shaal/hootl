@@ -556,7 +556,14 @@ export async function runCompletionLoop(
       taskBranch = await createTaskBranch(task.id, task.title, config.git.branchPrefix);
       currentTask = await backend.updateTask(task.id, { branch: taskBranch });
     } catch (err: unknown) {
-      uiWarn(`Could not create task branch: ${err instanceof Error ? err.message : String(err)}`);
+      const msg = err instanceof Error ? err.message : String(err);
+      uiWarn(`Could not create task branch: ${msg}`);
+      const isDirtyWorktree = msg.includes("local changes") || msg.includes("Please commit your changes or stash");
+      const blocker = isDirtyWorktree
+        ? "Cannot switch to task branch: uncommitted changes would be overwritten. Commit or stash your changes, then re-run."
+        : `Cannot switch to task branch: ${msg}`;
+      await moveToBlocked(backend, task, [blocker], null, baseBranch, 0, config, hookDeps);
+      return;
     }
   }
 
