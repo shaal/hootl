@@ -138,6 +138,26 @@ describe("buildPreflightPrompt", () => {
     }
   });
 
+  it("includes task type", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hootl-preflight-"));
+    try {
+      const prompt = await buildPreflightPrompt(makeTask(), dir);
+      assert.ok(prompt.includes("**Type:** feature"));
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+
+  it("includes explicit task type when set to bug", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hootl-preflight-"));
+    try {
+      const prompt = await buildPreflightPrompt(makeTask({ type: "bug" }), dir);
+      assert.ok(prompt.includes("**Type:** bug"));
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+
   it("ends with validation instruction", async () => {
     const dir = await mkdtemp(join(tmpdir(), "hootl-preflight-"));
     try {

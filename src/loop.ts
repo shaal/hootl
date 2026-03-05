@@ -83,6 +83,7 @@ export async function buildPreflightPrompt(
 
   parts.push("");
   parts.push(`**Priority:** ${task.priority}`);
+  parts.push(`**Type:** ${task.type}`);
 
   const blockers = await readFileOrEmpty(join(taskDir, "blockers.md"));
   if (blockers.trim().length > 0) {

@@ -631,6 +631,68 @@ describe("parsePreflightResult subtask priority", () => {
   });
 });
 
+describe("parsePreflightResult subtask type", () => {
+  it("parses subtasks with valid type", () => {
+    const input = JSON.stringify({
+      verdict: "too_broad",
+      understanding: "Task covers multiple areas",
+      subtasks: [
+        { title: "Sub A", description: "Do A", type: "bug" },
+        { title: "Sub B", description: "Do B", type: "chore" },
+      ],
+    });
+    const result = parsePreflightResult(input);
+    assert.equal(result.subtasks.length, 2);
+    assert.equal(result.subtasks[0]?.type, "bug");
+    assert.equal(result.subtasks[1]?.type, "chore");
+  });
+
+  it("omits type when not provided in subtask", () => {
+    const input = JSON.stringify({
+      verdict: "too_broad",
+      understanding: "Too broad",
+      subtasks: [
+        { title: "Sub A", description: "Do A" },
+      ],
+    });
+    const result = parsePreflightResult(input);
+    assert.equal(result.subtasks.length, 1);
+    assert.equal(result.subtasks[0]?.type, undefined);
+  });
+
+  it("omits type when invalid value is provided", () => {
+    const input = JSON.stringify({
+      verdict: "too_broad",
+      understanding: "Too broad",
+      subtasks: [
+        { title: "Sub A", description: "Do A", type: "invalid" },
+        { title: "Sub B", description: "Do B", type: 42 },
+      ],
+    });
+    const result = parsePreflightResult(input);
+    assert.equal(result.subtasks.length, 2);
+    assert.equal(result.subtasks[0]?.type, undefined);
+    assert.equal(result.subtasks[1]?.type, undefined);
+  });
+
+  it("handles mix of subtasks with and without type", () => {
+    const input = JSON.stringify({
+      verdict: "too_broad",
+      understanding: "Mixed",
+      subtasks: [
+        { title: "Sub A", description: "Do A", type: "bug" },
+        { title: "Sub B", description: "Do B" },
+        { title: "Sub C", description: "Do C", type: "improvement" },
+      ],
+    });
+    const result = parsePreflightResult(input);
+    assert.equal(result.subtasks.length, 3);
+    assert.equal(result.subtasks[0]?.type, "bug");
+    assert.equal(result.subtasks[1]?.type, undefined);
+    assert.equal(result.subtasks[2]?.type, "improvement");
+  });
+});
+
 describe("handleTooBroad subtask auto-creation", () => {
   const makeTooBroadTask = (overrides: Partial<Task> = {}): Task => ({
     id: "task-001",
