@@ -6,3 +6,4 @@ dist/
 .hootl/tasks/
 .hootl/logs/
 .hootl/status.md
+.hootl/planning-patterns.md
