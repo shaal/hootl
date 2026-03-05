@@ -12,6 +12,7 @@ import { writeStatusSummary } from "./status.js";
 import { invokeClaude } from "./invoke.js";
 import {
   uiChoose,
+  uiChooseMultiple,
   uiInput,
   uiInfo,
   uiError,
@@ -23,6 +24,7 @@ import { gatherProjectContext, formatContextForPrompt } from "./context.js";
 import { autoInit } from "./init.js";
 import { checkGlobalBudget } from "./budget.js";
 import { discussCommand } from "./discuss.js";
+import { findRunnableTask } from "./selection.js";
 
 function getBackend(config: Config): TaskBackend {
   const tasksDir = join(process.cwd(), ".hootl", "tasks");
@@ -52,6 +54,7 @@ program
       const choice = await uiChoose("What would you like to do?", [
         "Plan tasks",
         "Run next task",
+        "Prioritize tasks",
         "View status",
         "Resolve blockers",
         "Discuss with Claude",
@@ -64,6 +67,9 @@ program
           break;
         case "Run next task":
           await runCommand();
+          break;
+        case "Prioritize tasks":
+          await prioritizeCommand();
           break;
         case "View status":
           await statusCommand();
@@ -274,11 +280,20 @@ async function runCommand(taskId?: string): Promise<void> {
   } else {
     const readyTasks = await backend.listTasks({ state: "ready" });
     if (readyTasks.length > 0) {
-      targetTask = readyTasks[0];
-    } else {
+      const { task, skipped } = await findRunnableTask(readyTasks, backend);
+      for (const s of skipped) {
+        uiWarn(`Skipping ${s.id} (${s.reason})`);
+      }
+      targetTask = task;
+    }
+    if (targetTask === undefined) {
       const inProgressTasks = await backend.listTasks({ state: "in_progress" });
       if (inProgressTasks.length > 0) {
-        targetTask = inProgressTasks[0];
+        const { task, skipped } = await findRunnableTask(inProgressTasks, backend);
+        for (const s of skipped) {
+          uiWarn(`Skipping ${s.id} (${s.reason})`);
+        }
+        targetTask = task;
         if (targetTask) uiInfo(`Resuming in-progress task: ${targetTask.id}`);
       }
     }
@@ -363,8 +378,9 @@ async function statusCommand(): Promise<void> {
     uiInfo(header);
 
     for (const task of tasks) {
+      const upTag = task.userPriority !== null ? ` [#${task.userPriority}]` : "";
       const line =
-        `  ${task.id}: ${task.title} ` +
+        `  ${task.id}: ${task.title} [${task.priority}]${upTag} ` +
         `[confidence: ${task.confidence}, attempts: ${task.attempts}]`;
       lines.push(line);
       uiInfo(line);
@@ -387,6 +403,102 @@ program
   .action(async () => {
     try {
       await statusCommand();
+    } catch (err: unknown) {
+      uiError(err instanceof Error ? err.message : String(err));
+      process.exitCode = 1;
+    }
+  });
+
+async function prioritizeCommand(taskIds?: string[], clear?: boolean): Promise<void> {
+  await autoInit();
+  const config = await loadConfig();
+  const backend = getBackend(config);
+
+  if (clear) {
+    const allTasks = await backend.listTasks();
+    let cleared = 0;
+    for (const task of allTasks) {
+      if (task.userPriority !== null) {
+        await backend.updateTask(task.id, { userPriority: null });
+        cleared++;
+      }
+    }
+    uiSuccess(`Cleared userPriority from ${cleared} task(s).`);
+    return;
+  }
+
+  if (taskIds !== undefined && taskIds.length > 0) {
+    for (let i = 0; i < taskIds.length; i++) {
+      const id = taskIds[i]!;
+      await backend.updateTask(id, { userPriority: i + 1 });
+      uiInfo(`${id} → userPriority #${i + 1}`);
+    }
+    uiSuccess(`Set userPriority on ${taskIds.length} task(s).`);
+    return;
+  }
+
+  // Interactive mode
+  const readyTasks = await backend.listTasks({ state: "ready" });
+  const inProgressTasks = await backend.listTasks({ state: "in_progress" });
+  const candidates = [...inProgressTasks, ...readyTasks];
+
+  if (candidates.length === 0) {
+    uiWarn("No ready or in-progress tasks to prioritize.");
+    return;
+  }
+
+  // Build display labels with dependency info
+  const labels: string[] = [];
+  for (const task of candidates) {
+    let label = `${task.id} [${task.priority}] ${task.title}`;
+    if (task.dependencies.length > 0) {
+      const depDetails: string[] = [];
+      for (const depId of task.dependencies) {
+        try {
+          const depTask = await backend.getTask(depId);
+          depDetails.push(`${depId} (${depTask.state})`);
+        } catch {
+          depDetails.push(`${depId} (not found)`);
+        }
+      }
+      label += ` — depends on: ${depDetails.join(", ")}`;
+    }
+    if (task.userPriority !== null) {
+      label += ` [current: #${task.userPriority}]`;
+    }
+    labels.push(label);
+  }
+
+  const selected = await uiChooseMultiple(
+    "Select tasks in priority order (first selected = highest priority):",
+    labels,
+  );
+
+  if (selected.length === 0) {
+    uiInfo("No tasks selected.");
+    return;
+  }
+
+  for (let i = 0; i < selected.length; i++) {
+    const label = selected[i]!;
+    // Extract task ID from the label (first token)
+    const id = label.split(" ")[0]!;
+    await backend.updateTask(id, { userPriority: i + 1 });
+    uiInfo(`${id} → userPriority #${i + 1}`);
+  }
+  uiSuccess(`Set userPriority on ${selected.length} task(s).`);
+}
+
+program
+  .command("prioritize [taskIds...]")
+  .description("Set user priority override on tasks")
+  .option("--clear", "Remove all user priority overrides")
+  .action(async (taskIds: string[], options: { clear?: boolean }) => {
+    try {
+      await prioritizeCommand(
+        taskIds.length > 0 ? taskIds : undefined,
+        options.clear,
+      );
     } catch (err: unknown) {
       uiError(err instanceof Error ? err.message : String(err));
       process.exitCode = 1;

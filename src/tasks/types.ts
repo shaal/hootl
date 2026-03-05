@@ -20,6 +20,7 @@ export const TaskSchema = z.object({
   totalCost: z.number().min(0),
   branch: z.string().nullable(),
   worktree: z.string().nullable(),
+  userPriority: z.number().nullable().default(null),
   blockers: z.array(z.string()),
   createdAt: z.string(),
   updatedAt: z.string(),

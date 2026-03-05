@@ -35,7 +35,8 @@ export async function writeStatusSummary(
 
     lines.push(`## ${state.toUpperCase()} (${stateTasks.length})`);
     for (const task of stateTasks) {
-      let detail = `- [${task.id}] ${task.title}`;
+      const upTag = task.userPriority !== null ? ` [#${task.userPriority}]` : "";
+      let detail = `- [${task.id}]${upTag} ${task.title}`;
       if (task.state === "in_progress" || task.state === "review") {
         detail += ` — ${task.confidence}% confidence, attempt ${task.attempts}`;
       }

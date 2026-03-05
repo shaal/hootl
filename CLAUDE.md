@@ -19,7 +19,8 @@ npm run test:build  # Build then run tests
 
 ```
 src/
-  index.ts            CLI entry point (commander). Commands: init, plan, run, status, clarify, discuss
+  index.ts            CLI entry point (commander). Commands: init, plan, run, status, clarify, discuss, prioritize
+  selection.ts        Dependency-aware task selection (findRunnableTask)
   discuss.ts          Interactive Claude session launcher (stdio: 'inherit' for full TTY control)
   config.ts           Zod-validated config. 3-layer merge: ~/.hootl/config.json < .hootl/config.json < env vars
   context.ts          Project context gathering for plan command (spec, structure, tasks, git log)
@@ -42,6 +43,7 @@ src/
     loop.test.ts       Review result parsing, prompt building
     git.test.ts        Slugify, branch naming
     discuss.test.ts    buildDiscussArgs, system prompt construction
+    prioritize.test.ts userPriority sort, dependency enforcement, schema backward compat
 templates/
   plan.md              System prompt for planning phase
   execute.md           System prompt for execution phase
@@ -121,6 +123,15 @@ proposed --> ready --> in_progress --> review --> done
                           +-------+ (human resolves via `hootl clarify`)
 ```
 
+### Task Selection & Priority
+
+Tasks have two priority fields: `priority` (planner-assigned: critical/high/medium/low) and `userPriority` (user override: number or null). Sort order for `listTasks()`:
+1. `userPriority` non-null first, ascending (1 before 2)
+2. `priority` (critical→low)
+3. `createdAt`
+
+When `hootl run` selects the next task, it enforces dependencies: a task is skipped if any of its `dependencies` are not in `done` or `review` state. The logic lives in `findRunnableTask()` in `src/selection.ts`.
+
 ### CLI Commands
 
 ```
@@ -135,6 +146,9 @@ hootl run [id]                 Run a task (or next ready task) through the compl
 hootl status                   View tasks grouped by state
 hootl clarify                  Resolve blockers on blocked tasks
 hootl discuss [taskId]         Launch interactive Claude session, optionally with task context
+hootl prioritize               Interactive: select and order tasks via gum multi-select
+hootl prioritize t1 t2 t3      Set userPriority by argument order (t1=#1, t2=#2, t3=#3)
+hootl prioritize --clear       Remove all userPriority overrides
 ```
 
 ### Plan Command Context Gathering
@@ -215,6 +229,7 @@ Test coverage:
 - **loop.test.ts** -- Review JSON parsing (inline, code-block, nested, remediationPlan), prompt building, confidence regression detection, global budget integration
 - **git.test.ts** -- Slugify edge cases, branch name construction, getHeadSha, resetToSha rollback
 - **discuss.test.ts** -- buildDiscussArgs, system prompt construction, section ordering
+- **prioritize.test.ts** -- userPriority schema backward compat, sort order (userPriority before auto), dependency enforcement (findRunnableTask)
 
 ## Dependencies
 

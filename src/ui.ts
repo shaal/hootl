@@ -61,6 +61,43 @@ export async function uiChoose(
   return choices[0] ?? "";
 }
 
+export async function uiChooseMultiple(
+  title: string,
+  choices: string[],
+): Promise<string[]> {
+  if (choices.length === 0) {
+    return [];
+  }
+
+  if (await hasGum()) {
+    const result = await execa(
+      "gum",
+      ["choose", "--no-limit", "--ordered", "--header", title, ...choices],
+      {
+        stdin: "inherit",
+        stderr: "inherit",
+      },
+    );
+    const selected = result.stdout.trim();
+    if (selected === "") return [];
+    return selected.split("\n");
+  }
+
+  // Fallback: numbered list, user enters comma-separated numbers in order
+  process.stderr.write(`${title}\n`);
+  for (let i = 0; i < choices.length; i++) {
+    process.stderr.write(`  ${i + 1}) ${choices[i]}\n`);
+  }
+
+  const answer = await readLine("Enter numbers in priority order (comma-separated): ");
+  const indices = answer
+    .split(",")
+    .map((s) => parseInt(s.trim(), 10) - 1)
+    .filter((i) => i >= 0 && i < choices.length);
+
+  return indices.map((i) => choices[i]!);
+}
+
 export async function uiConfirm(question: string): Promise<boolean> {
   if (await hasGum()) {
     try {

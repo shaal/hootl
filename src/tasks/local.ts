@@ -84,6 +84,16 @@ export class LocalTaskBackend implements TaskBackend {
     });
 
     filtered.sort((a, b) => {
+      // userPriority non-null first, ascending
+      const aHasUp = a.userPriority !== null;
+      const bHasUp = b.userPriority !== null;
+      if (aHasUp && !bHasUp) return -1;
+      if (!aHasUp && bHasUp) return 1;
+      if (aHasUp && bHasUp) {
+        const upDiff = (a.userPriority as number) - (b.userPriority as number);
+        if (upDiff !== 0) return upDiff;
+      }
+      // Then by priority (critical→low), then createdAt
       const priDiff = PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority];
       if (priDiff !== 0) return priDiff;
       return a.createdAt.localeCompare(b.createdAt);
@@ -127,6 +137,7 @@ export class LocalTaskBackend implements TaskBackend {
       totalCost: 0,
       branch: null,
       worktree: null,
+      userPriority: null,
       blockers: [],
       createdAt: now,
       updatedAt: now,
