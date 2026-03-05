@@ -108,14 +108,17 @@ npm run test:build    # Build + test
 npm run lint          # Type-check
 ```
 
-## Using hootl to Develop hootl
+## Developing hootl with hootl
 
-hootl is designed to build itself. See `docs/spec.md` for the full specification and `docs/confidence-improvement-plan.md` for how we bootstrapped from 65% to 95% confidence in 4 sessions.
+hootl is designed to build itself. The full workflow — planning features, running tasks, reviewing branches, unblocking — is documented in **[docs/self-build-guide.md](docs/self-build-guide.md)**.
 
 ```bash
 cd ~/code/utilities/hootl
-hootl plan                    # Let Claude suggest next features from the spec
-hootl run                     # Work on the top-priority task
-hootl status                  # Check progress
-hootl clarify                 # Unblock stuck tasks
+hootl plan          # Claude suggests next features from the spec
+hootl run           # Work on the top-priority task (runs unattended)
+hootl status        # Check progress
+hootl clarify       # Unblock stuck tasks
+# Review branch, merge, repeat
 ```
+
+See also: [docs/spec.md](docs/spec.md) for the full specification.
