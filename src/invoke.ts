@@ -2,6 +2,7 @@ import { execa } from "execa";
 import { appendFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
+import { StreamFormatter, dim } from "./format.js";
 
 export interface InvokeOptions {
   prompt: string;
@@ -146,6 +147,7 @@ async function invokeClaudeVerbose(
 
   let resultLine = "";
   let lastAssistantText = "";
+  const formatter = new StreamFormatter();
 
   if (child.stdout) {
     const rl = createInterface({ input: child.stdout });
@@ -165,24 +167,28 @@ async function invokeClaudeVerbose(
                 const b = block as Record<string, unknown>;
                 if (b["type"] === "text" && typeof b["text"] === "string") {
                   const newText = b["text"] as string;
-                  // Print only the new part (incremental)
+                  // Print only the new part (incremental), with markdown formatting
                   if (newText.length > lastAssistantText.length && newText.startsWith(lastAssistantText)) {
-                    process.stderr.write(newText.slice(lastAssistantText.length));
+                    const formatted = formatter.write(newText.slice(lastAssistantText.length));
+                    if (formatted) process.stderr.write(formatted);
                   } else if (newText !== lastAssistantText) {
-                    process.stderr.write(newText);
+                    const formatted = formatter.write(newText);
+                    if (formatted) process.stderr.write(formatted);
                   }
                   lastAssistantText = newText;
                 }
                 if (b["type"] === "tool_use") {
+                  const flushed = formatter.flush();
+                  if (flushed) process.stderr.write(flushed);
                   const toolName = typeof b["name"] === "string" ? b["name"] : "tool";
-                  process.stderr.write(`\n  [${toolName}] `);
+                  process.stderr.write(`\n  ${dim(`[${toolName}]`)} `);
                   lastAssistantText = "";
                 }
               }
             }
           }
         } else if (type === "tool_result") {
-          process.stderr.write("done\n");
+          process.stderr.write(dim("done") + "\n");
           lastAssistantText = "";
         } else if (type === "result") {
           resultLine = line;
@@ -197,6 +203,9 @@ async function invokeClaudeVerbose(
   const exitCode = result.exitCode ?? 1;
   const durationMs = Date.now() - startMs;
 
+  // Flush any remaining buffered text
+  const remaining = formatter.flush();
+  if (remaining) process.stderr.write(remaining);
   if (lastAssistantText.length > 0) {
     process.stderr.write("\n");
   }
