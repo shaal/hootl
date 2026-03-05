@@ -19,6 +19,7 @@ function makeTask(overrides: Partial<Task> = {}): Task {
     title: "Test task",
     description: "A test task",
     priority: "medium",
+    type: "feature",
     state: "done",
     dependencies: [],
     backend: "local",

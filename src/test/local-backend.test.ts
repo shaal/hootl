@@ -85,6 +85,30 @@ describe("LocalTaskBackend.createTask", () => {
     assert.equal(task.priority, "medium");
   });
 
+  it("defaults type to feature when omitted", async () => {
+    const task = await backend.createTask({
+      title: "Type defaults test",
+      description: "Check type default",
+    });
+
+    assert.equal(task.type, "feature");
+  });
+
+  it("persists explicit type value", async () => {
+    const task = await backend.createTask({
+      title: "Bug task",
+      description: "A bug report",
+      type: "bug",
+    });
+
+    assert.equal(task.type, "bug");
+
+    // Verify it was persisted to disk
+    const raw = await readFile(join(tempDir, task.id, "task.json"), "utf-8");
+    const parsed = JSON.parse(raw);
+    assert.equal(parsed.type, "bug");
+  });
+
   it("creates empty ancillary files", async () => {
     await backend.createTask({
       title: "Files test",

@@ -4,7 +4,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { invokeClaude, logCost } from "./invoke.js";
 import { type Config, type OnConfidenceMode, getProjectDir, resolveOnConfidenceMode } from "./config.js";
-import { type Task, type TaskBackend, type TaskPriority, TaskPriority as TaskPriorityEnum } from "./tasks/types.js";
+import { type Task, type TaskBackend, type TaskPriority, type TaskType, TaskPriority as TaskPriorityEnum, TaskType as TaskTypeEnum } from "./tasks/types.js";
 import { uiInfo, uiWarn, uiError, uiSuccess, uiSpinner } from "./ui.js";
 import { isGitRepo, createTaskBranch, commitTaskChanges, switchBranch, getBaseBranch, getHeadSha, resetToSha, mergeBranch, deleteBranch, pushBranch, createDraftPR } from "./git.js";
 import { checkGlobalBudget } from "./budget.js";
@@ -166,7 +166,7 @@ export async function buildReviewPrompt(
 export interface PreflightResult {
   verdict: "proceed" | "too_broad" | "unclear" | "cannot_reproduce";
   understanding: string;
-  subtasks: Array<{ title: string; description: string; priority?: TaskPriority }>;
+  subtasks: Array<{ title: string; description: string; priority?: TaskPriority; type?: TaskType }>;
   reproductionResult: string;
 }
 
@@ -280,7 +280,7 @@ export function parsePreflightResult(output: string): PreflightResult {
       const understanding =
         typeof record["understanding"] === "string" ? record["understanding"] : "";
 
-      const subtasks: Array<{ title: string; description: string; priority?: TaskPriority }> = [];
+      const subtasks: PreflightResult["subtasks"] = [];
       if (Array.isArray(record["subtasks"])) {
         for (const item of record["subtasks"] as unknown[]) {
           if (
@@ -291,10 +291,13 @@ export function parsePreflightResult(output: string): PreflightResult {
           ) {
             const rawPriority = (item as Record<string, unknown>)["priority"];
             const parsedPriority = TaskPriorityEnum.safeParse(rawPriority);
+            const rawType = (item as Record<string, unknown>)["type"];
+            const parsedType = TaskTypeEnum.safeParse(rawType);
             subtasks.push({
               title: (item as Record<string, unknown>)["title"] as string,
               description: (item as Record<string, unknown>)["description"] as string,
               ...(parsedPriority.success ? { priority: parsedPriority.data } : {}),
+              ...(parsedType.success ? { type: parsedType.data } : {}),
             });
           }
         }
@@ -405,6 +408,7 @@ export async function handleTooBroad(
       title: sub.title,
       description: sub.description,
       priority: sub.priority ?? currentTask.priority,
+      type: sub.type ?? currentTask.type,
       dependencies: [],
     });
     // createTask defaults to 'proposed'; move to 'ready' so subtasks are immediately runnable

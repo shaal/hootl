@@ -128,6 +128,7 @@ export class LocalTaskBackend implements TaskBackend {
       title: input.title,
       description: input.description,
       priority: input.priority ?? "medium",
+      type: input.type ?? "feature",
       state: "ready",
       dependencies: input.dependencies ?? [],
       backend: "local",

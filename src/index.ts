@@ -233,7 +233,7 @@ async function planCommand(cliMode?: { fromSpec?: boolean; goal?: string; analyz
     return;
   }
 
-  let tasks: Array<{ title: string; description: string; priority?: string; dependsOn?: number[] }>;
+  let tasks: Array<{ title: string; description: string; priority?: string; type?: string; dependsOn?: number[] }>;
   try {
     // Try to extract JSON array from the response (may be wrapped in markdown)
     const jsonMatch = result.output.match(/\[[\s\S]*\]/);
@@ -244,7 +244,7 @@ async function planCommand(cliMode?: { fromSpec?: boolean; goal?: string; analyz
     if (!Array.isArray(parsed)) {
       throw new Error("Response is not an array");
     }
-    tasks = parsed as Array<{ title: string; description: string; priority?: string; dependsOn?: number[] }>;
+    tasks = parsed as Array<{ title: string; description: string; priority?: string; type?: string; dependsOn?: number[] }>;
   } catch {
     uiError("Could not parse task suggestions from Claude response.");
     uiInfo("Raw response:\n" + result.output);
@@ -320,7 +320,7 @@ async function planCommand(cliMode?: { fromSpec?: boolean; goal?: string; analyz
           if (!Array.isArray(parsed)) {
             throw new Error("Revision response is not an array");
           }
-          tasks = parsed as Array<{ title: string; description: string; priority?: string; dependsOn?: number[] }>;
+          tasks = parsed as Array<{ title: string; description: string; priority?: string; type?: string; dependsOn?: number[] }>;
         } catch {
           uiError("Could not parse revised tasks from Claude response.");
           uiWarn("Keeping the original plan.");
@@ -360,6 +360,7 @@ async function planCommand(cliMode?: { fromSpec?: boolean; goal?: string; analyz
   const depMap = inferDependencies(tasks);
 
   const validPriorities = new Set(["critical", "high", "medium", "low"]);
+  const validTypes = new Set(["bug", "feature", "improvement", "chore"]);
   const priorityCounts = new Map<string, number>();
   const indexToId = new Map<number, string>();
 
@@ -370,11 +371,16 @@ async function planCommand(cliMode?: { fromSpec?: boolean; goal?: string; analyz
       typeof task.priority === "string" && validPriorities.has(task.priority)
         ? (task.priority as "critical" | "high" | "medium" | "low")
         : undefined;
+    const type =
+      typeof task.type === "string" && validTypes.has(task.type)
+        ? (task.type as "bug" | "feature" | "improvement" | "chore")
+        : undefined;
 
     const created = await backend.createTask({
       title: task.title,
       description: task.description,
       priority,
+      type,
     });
 
     indexToId.set(i, created.id);

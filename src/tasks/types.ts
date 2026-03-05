@@ -6,11 +6,15 @@ export type TaskState = z.infer<typeof TaskState>;
 export const TaskPriority = z.enum(["critical", "high", "medium", "low"]);
 export type TaskPriority = z.infer<typeof TaskPriority>;
 
+export const TaskType = z.enum(["bug", "feature", "improvement", "chore"]);
+export type TaskType = z.infer<typeof TaskType>;
+
 export const TaskSchema = z.object({
   id: z.string(),
   title: z.string(),
   description: z.string(),
   priority: TaskPriority,
+  type: TaskType.default("feature"),
   state: TaskState,
   dependencies: z.array(z.string()),
   backend: z.string(),
@@ -31,6 +35,7 @@ export interface CreateTaskInput {
   title: string;
   description: string;
   priority?: TaskPriority;
+  type?: TaskType;
   dependencies?: string[];
 }
 
