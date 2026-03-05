@@ -19,6 +19,7 @@ import {
   uiSuccess,
   uiSpinner,
 } from "./ui.js";
+import { gatherProjectContext, formatContextForPrompt } from "./context.js";
 
 function getBackend(config: Config): TaskBackend {
   const tasksDir = join(process.cwd(), ".hootl", "tasks");
@@ -125,41 +126,62 @@ async function planCommand(): Promise<void> {
   const config = await loadConfig();
   const backend = getBackend(config);
 
+  const ctx = await uiSpinner("Gathering project context...", () =>
+    gatherProjectContext(backend),
+  );
+  const formattedContext = formatContextForPrompt(ctx);
+
   const mode = await uiChoose("Planning mode:", [
-    "Analyze codebase",
+    "From spec (auto-detect gaps)",
     "Break down a goal",
+    "Analyze codebase",
     "Suggest what's next",
   ]);
 
   let prompt: string;
 
   switch (mode) {
+    case "From spec (auto-detect gaps)":
+      prompt =
+        `You are a task planner for a software project. You have access to the project specification, current codebase structure, and existing tasks.\n\n` +
+        `Your job: Compare the spec against what's already built and create tasks for the GAPS — features, commands, or behaviors described in the spec that are not yet implemented.\n\n` +
+        `Rules:\n` +
+        `- Do NOT create tasks for things that already exist and work\n` +
+        `- Each task should be independently implementable\n` +
+        `- Include enough detail in the description for an AI to implement it without further guidance\n` +
+        `- Order tasks from highest to lowest priority (most foundational first)\n` +
+        `- If a task depends on another, note it in the description\n\n` +
+        `Return ONLY a JSON array of objects with "title", "description", and "priority" fields.\n` +
+        `Priority must be one of: "critical", "high", "medium", "low".\n\n` +
+        `<context>\n${formattedContext}\n</context>`;
+      break;
     case "Break down a goal": {
       const goal = await uiInput("Describe the goal:");
       prompt =
         `You are a task planner. Break down the following goal into concrete, ` +
-        `actionable coding tasks. For each task provide a title and description. ` +
-        `Return ONLY a JSON array of objects with "title" and "description" fields.\n\n` +
-        `Goal: ${goal}`;
+        `actionable coding tasks. For each task provide a title, description, and priority. ` +
+        `Return ONLY a JSON array of objects with "title", "description", and "priority" fields.\n` +
+        `Priority must be one of: "critical", "high", "medium", "low".\n\n` +
+        `Goal: ${goal}\n\n` +
+        `<context>\n${formattedContext}\n</context>`;
       break;
     }
     case "Analyze codebase":
       prompt =
         `You are a task planner. Analyze the current codebase and suggest tasks ` +
         `for improvements, refactors, or missing features. ` +
-        `Return ONLY a JSON array of objects with "title" and "description" fields.`;
+        `Return ONLY a JSON array of objects with "title", "description", and "priority" fields.\n` +
+        `Priority must be one of: "critical", "high", "medium", "low".\n\n` +
+        `<context>\n${formattedContext}\n</context>`;
       break;
-    case "Suggest what's next": {
-      const existingTasks = await backend.listTasks();
-      const taskSummary = existingTasks
-        .map((t) => `- [${t.state}] ${t.title}`)
-        .join("\n");
+    case "Suggest what's next":
       prompt =
-        `You are a task planner. Given the current tasks:\n${taskSummary}\n\n` +
-        `Suggest what should be worked on next. ` +
-        `Return ONLY a JSON array of objects with "title" and "description" fields.`;
+        `You are a task planner. Given the project context below, ` +
+        `suggest what should be worked on next. ` +
+        `Return ONLY a JSON array of objects with "title", "description", and "priority" fields.\n` +
+        `Priority must be one of: "critical", "high", "medium", "low".\n\n` +
+        `<context>\n${formattedContext}\n</context>`;
       break;
-    }
     default:
       return;
   }
@@ -174,7 +196,7 @@ async function planCommand(): Promise<void> {
     return;
   }
 
-  let tasks: Array<{ title: string; description: string }>;
+  let tasks: Array<{ title: string; description: string; priority?: string }>;
   try {
     // Try to extract JSON array from the response (may be wrapped in markdown)
     const jsonMatch = result.output.match(/\[[\s\S]*\]/);
@@ -185,22 +207,46 @@ async function planCommand(): Promise<void> {
     if (!Array.isArray(parsed)) {
       throw new Error("Response is not an array");
     }
-    tasks = parsed as Array<{ title: string; description: string }>;
+    tasks = parsed as Array<{ title: string; description: string; priority?: string }>;
   } catch {
     uiError("Could not parse task suggestions from Claude response.");
     uiInfo("Raw response:\n" + result.output);
     return;
   }
 
+  const validPriorities = new Set(["critical", "high", "medium", "low"]);
+  const priorityCounts = new Map<string, number>();
+
   for (const task of tasks) {
+    const priority =
+      typeof task.priority === "string" && validPriorities.has(task.priority)
+        ? (task.priority as "critical" | "high" | "medium" | "low")
+        : undefined;
+
     const created = await backend.createTask({
       title: task.title,
       description: task.description,
+      priority,
     });
-    uiInfo(`Created task ${created.id}: ${created.title}`);
+
+    const label = priority ?? "medium";
+    priorityCounts.set(label, (priorityCounts.get(label) ?? 0) + 1);
+
+    uiInfo(`Created task ${created.id}: ${created.title} [${label}]`);
   }
 
   uiSuccess(`Created ${tasks.length} task(s).`);
+
+  const summaryParts: string[] = [];
+  for (const level of ["critical", "high", "medium", "low"]) {
+    const count = priorityCounts.get(level);
+    if (count !== undefined && count > 0) {
+      summaryParts.push(`${level}: ${count}`);
+    }
+  }
+  if (summaryParts.length > 0) {
+    uiInfo(`Priority breakdown: ${summaryParts.join(", ")}`);
+  }
 }
 
 program
