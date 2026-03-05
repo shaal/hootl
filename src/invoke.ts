@@ -105,12 +105,14 @@ export async function invokeClaude(
     exitCode = result.exitCode ?? 1;
   } catch (error: unknown) {
     const durationMs = Date.now() - startMs;
-    const message =
-      error instanceof Error ? error.message : String(error);
+    const isTimeout = typeof error === "object" && error !== null && "timedOut" in error && (error as Record<string, unknown>)["timedOut"] === true;
+    const message = isTimeout
+      ? `claude -p timed out after ${Math.round(durationMs / 1000)}s`
+      : error instanceof Error ? error.message : String(error);
     return {
       output: message,
       costUsd: 0,
-      exitCode: 1,
+      exitCode: isTimeout ? 124 : 1, // 124 is standard timeout exit code
       durationMs,
     };
   }
@@ -119,10 +121,22 @@ export async function invokeClaude(
   const costUsd = parseCostFromOutput(stdout);
   const output = extractTextOutput(stdout, "json");
 
+  // Check if claude reported an error in the JSON response
+  let isError = false;
+  try {
+    const parsed: unknown = JSON.parse(stdout);
+    if (typeof parsed === "object" && parsed !== null) {
+      const record = parsed as Record<string, unknown>;
+      isError = record["is_error"] === true;
+    }
+  } catch {
+    // ignore parse errors
+  }
+
   return {
     output,
     costUsd,
-    exitCode,
+    exitCode: isError ? 1 : exitCode,
     durationMs,
   };
 }

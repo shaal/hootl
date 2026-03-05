@@ -5,6 +5,7 @@ import { invokeClaude, logCost } from "./invoke.js";
 import { type Config, getProjectDir } from "./config.js";
 import { type Task, type TaskBackend } from "./tasks/types.js";
 import { uiInfo, uiWarn, uiError, uiSuccess, uiSpinner } from "./ui.js";
+import { isGitRepo, createTaskBranch, commitTaskChanges, switchBranch, getBaseBranch } from "./git.js";
 
 async function readFileOrEmpty(path: string): Promise<string> {
   try {
@@ -190,6 +191,19 @@ export async function runCompletionLoop(
   // Mark task as in_progress
   let currentTask = await backend.updateTask(task.id, { state: "in_progress" });
 
+  // Create a task branch if in a git repo
+  let taskBranch: string | null = null;
+  let baseBranch: string | null = null;
+  if (await isGitRepo()) {
+    try {
+      baseBranch = await getBaseBranch();
+      taskBranch = await createTaskBranch(task.id, task.title, config.git.branchPrefix);
+      currentTask = await backend.updateTask(task.id, { branch: taskBranch });
+    } catch (err: unknown) {
+      uiWarn(`Could not create task branch: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   while (true) {
     // Check budget
     if (currentTask.totalCost >= config.budgets.perTask) {
@@ -244,6 +258,11 @@ export async function runCompletionLoop(
         throw new Error(`Plan phase failed: ${planResult.output}`);
       }
 
+      if (planResult.output.trim() === "") {
+        uiWarn("Plan phase returned empty output — retrying");
+        throw new Error("Plan phase returned empty output");
+      }
+
       uiInfo(`Phase 1 done [${new Date().toLocaleTimeString()}] (${planResult.durationMs}ms, $${planResult.costUsd.toFixed(4)}, exit=${planResult.exitCode})`);
       await writeFile(join(taskDir, "plan.md"), planResult.output, "utf-8");
       await logCost(costLogDir, task.id, "plan", planResult.costUsd);
@@ -267,6 +286,11 @@ export async function runCompletionLoop(
         throw new Error(`Execute phase failed: ${executeResult.output}`);
       }
 
+      if (executeResult.output.trim() === "") {
+        uiWarn("Execute phase returned empty output — retrying");
+        throw new Error("Execute phase returned empty output");
+      }
+
       // Append to progress.md
       const progressSeparator = `\n\n---\n\n## Attempt ${attempt}\n\n`;
       await appendFile(
@@ -276,6 +300,15 @@ export async function runCompletionLoop(
       );
       await logCost(costLogDir, task.id, "execute", executeResult.costUsd);
       phaseCost += executeResult.costUsd;
+
+      // Auto-commit after execute phase
+      if (taskBranch !== null) {
+        try {
+          await commitTaskChanges(task.id, `attempt-${attempt}`, `[${task.id}] Execute attempt ${attempt}`);
+        } catch (err: unknown) {
+          uiWarn(`Could not auto-commit: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
 
       // Phase 3: REVIEW
       const reviewSystemPrompt = await loadTemplate("review");
@@ -293,6 +326,11 @@ export async function runCompletionLoop(
       if (reviewResult.exitCode !== 0) {
         uiError(`Review phase failed (exit code ${reviewResult.exitCode})`);
         throw new Error(`Review phase failed: ${reviewResult.output}`);
+      }
+
+      if (reviewResult.output.trim() === "") {
+        uiWarn("Review phase returned empty output — retrying");
+        throw new Error("Review phase returned empty output");
       }
 
       await writeFile(
@@ -361,8 +399,24 @@ export async function runCompletionLoop(
         });
       }
 
-      // Keep task in_progress so it can resume
-      break;
+      // Transient errors (empty output, timeouts) → continue looping
+      // Only break on permanent errors or if we're out of attempts
+      const isTransient = message.includes("empty output") || message.includes("timed out");
+      if (!isTransient) {
+        // Permanent error — keep task in_progress so it can resume later
+        break;
+      }
+      // Transient error — will loop back and check attempt/budget limits
+      uiInfo("Transient error — will retry on next attempt");
+    }
+  }
+
+  // Switch back to base branch
+  if (baseBranch !== null && taskBranch !== null) {
+    try {
+      await switchBranch(baseBranch);
+    } catch (err: unknown) {
+      uiWarn(`Could not switch back to ${baseBranch}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 }
