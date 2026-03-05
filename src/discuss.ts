@@ -1,10 +1,9 @@
 import { execa } from "execa";
-import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { loadConfig } from "./config.js";
 import { LocalTaskBackend } from "./tasks/local.js";
 import { getClaudeEnv } from "./invoke.js";
+import { readFileOrEmpty } from "./loop.js";
 import { uiInfo, uiWarn } from "./ui.js";
 
 export interface DiscussTaskContext {
@@ -44,19 +43,10 @@ export function buildDiscussArgs(taskContext?: DiscussTaskContext): string[] {
   return args;
 }
 
-async function readFileOrEmpty(filePath: string): Promise<string> {
-  try {
-    return await readFile(filePath, "utf-8");
-  } catch {
-    return "";
-  }
-}
-
 export async function discussCommand(taskId?: string): Promise<void> {
   let taskContext: DiscussTaskContext | undefined;
 
   if (taskId !== undefined) {
-    const config = await loadConfig();
     const tasksDir = join(process.cwd(), ".hootl", "tasks");
     const backend = new LocalTaskBackend(tasksDir);
 
@@ -76,9 +66,9 @@ export async function discussCommand(taskId?: string): Promise<void> {
     taskContext = {
       title: task.title,
       description: task.description,
-      plan: plan || undefined,
-      progress: progress || undefined,
-      blockers: blockers || undefined,
+      plan,
+      progress,
+      blockers,
     };
 
     uiInfo(`Launching Claude session with context from task ${taskId}: ${task.title}`);

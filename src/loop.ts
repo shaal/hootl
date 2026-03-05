@@ -8,7 +8,7 @@ import { uiInfo, uiWarn, uiError, uiSuccess, uiSpinner } from "./ui.js";
 import { isGitRepo, createTaskBranch, commitTaskChanges, switchBranch, getBaseBranch, getHeadSha, resetToSha } from "./git.js";
 import { checkGlobalBudget } from "./budget.js";
 
-async function readFileOrEmpty(path: string): Promise<string> {
+export async function readFileOrEmpty(path: string): Promise<string> {
   try {
     return await readFile(path, "utf-8");
   } catch (err: unknown) {
