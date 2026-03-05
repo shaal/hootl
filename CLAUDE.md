@@ -44,6 +44,7 @@ src/
     context.test.ts    Context formatting, section inclusion/omission, ordering
     invoke.test.ts     Arg building, cost parsing, output extraction
     plan-memory.test.ts  Memory entry generation, append/rotation, pattern loading, metrics computation
+    preflight.test.ts    Preflight template existence and content assertions
     plan-review.test.ts  Critique prompt building, task parsing, fallback paths
     plan-summary.test.ts Plan summary generation, priority counting, truncation
     invoke-robustness.test.ts  Edge cases for invoke (timeouts, errors, is_error)
@@ -53,6 +54,7 @@ src/
     discuss.test.ts    buildDiscussArgs, system prompt construction
     prioritize.test.ts userPriority sort, dependency enforcement, schema backward compat
 templates/
+  preflight.md         System prompt for preflight validation phase (Phase 0)
   plan.md              System prompt for planning phase
   execute.md           System prompt for execution phase
   review.md            System prompt for review phase
@@ -304,6 +306,7 @@ Test coverage:
 - **dependencies.test.ts** -- Dependency inference (explicit indices, heuristic fallback, cycle detection, out-of-range filtering), keyword extraction, index-to-ID resolution
 - **guided.test.ts** -- Clarification prompt building, question JSON parsing (valid, malformed, capped), constraints formatting, edge cases
 - **plan-memory.test.ts** -- Memory entry generation (success/blocked variants, blocker categorization, truncation), append/rotation (50-entry cap, FIFO), pattern loading (recent count, empty file), metrics computation (averages, completion rate, blocker reasons), prompt formatting
+- **preflight.test.ts** -- Template existence, role declaration, verdict values, JSON output fields, no-implementation constraints, bug reproduction instructions, scope assessment
 - **plan-review.test.ts** -- Critique prompt building (goal inclusion, task JSON, indices, dependsOn), task parsing (valid, markdown-wrapped, missing fields, non-integer deps), fallback on invalid input
 - **plan-summary.test.ts** -- Summary generation (single/multiple/many tasks, truncation), priority counting (mixed, default-to-medium), empty array, priority ordering
 - **prioritize.test.ts** -- userPriority schema backward compat, sort order (userPriority before auto), dependency enforcement (findRunnableTask)
