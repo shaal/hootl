@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { parseReviewResult, isSessionBudgetExceeded, applySessionBudgetExceeded, buildPlanPrompt, isConfidenceRegression, handleConfidenceMet, parsePreflightResult, handleTooBroad } from "../loop.js";
+import { parseReviewResult, isSessionBudgetExceeded, applySessionBudgetExceeded, buildPlanPrompt, isConfidenceRegression, handleConfidenceMet, parsePreflightResult, handleTooBroad, fireHooks, moveToBlocked } from "../loop.js";
 import { checkGlobalBudget } from "../budget.js";
 import { ConfigSchema } from "../config.js";
 import type { TaskBackend, CreateTaskInput } from "../tasks/types.js";
@@ -1261,3 +1261,216 @@ describe("handleConfidenceMet hook integration", () => {
   });
 });
 
+describe("fireHooks", () => {
+  const makeTask = (overrides: Partial<Task> = {}): Task => ({
+    id: "task-fh",
+    title: "Fire hooks task",
+    description: "Testing fireHooks helper",
+    priority: "medium",
+    type: "feature",
+    state: "in_progress",
+    dependencies: [],
+    backend: "local",
+    backendRef: null,
+    confidence: 80,
+    attempts: 1,
+    totalCost: 0,
+    branch: "hootl/task-fh",
+    worktree: null,
+    userPriority: null,
+    blockers: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    ...overrides,
+  });
+
+  it("calls runHooks with correct trigger and HookContext", async () => {
+    const task = makeTask({ confidence: 80 });
+    const config = ConfigSchema.parse({
+      hooks: [
+        { trigger: "on_execute_start", prompt: "pre-execute check", blocking: false },
+      ],
+    });
+    let capturedSystemPrompt = "";
+    let invoked = false;
+    const hookDeps: HookDeps = {
+      invoke: async (opts) => {
+        invoked = true;
+        capturedSystemPrompt = opts.systemPrompt ?? "";
+        return {
+          output: '{"pass": true, "issues": [], "remediationActions": []}',
+          costUsd: 0.01,
+          exitCode: 0,
+          durationMs: 10,
+        } as InvokeResult;
+      },
+      log: async () => {},
+      warn: () => {},
+    };
+    await fireHooks("on_execute_start", task, "hootl/task-fh", "main", 80, config, hookDeps);
+    assert.equal(invoked, true);
+    assert.ok(capturedSystemPrompt.includes("Fire hooks task"), "system prompt should contain task title");
+    assert.ok(capturedSystemPrompt.includes("80%"), "system prompt should contain confidence");
+  });
+
+  it("calls runHooks for on_review_complete with review confidence", async () => {
+    const task = makeTask({ confidence: 92 });
+    const config = ConfigSchema.parse({
+      hooks: [
+        { trigger: "on_review_complete", prompt: "post-review", blocking: false },
+      ],
+    });
+    let capturedSystemPrompt = "";
+    const hookDeps: HookDeps = {
+      invoke: async (opts) => {
+        capturedSystemPrompt = opts.systemPrompt ?? "";
+        return {
+          output: '{"pass": true, "issues": [], "remediationActions": []}',
+          costUsd: 0.01,
+          exitCode: 0,
+          durationMs: 10,
+        } as InvokeResult;
+      },
+      log: async () => {},
+      warn: () => {},
+    };
+    await fireHooks("on_review_complete", task, "hootl/task-fh", "main", 92, config, hookDeps);
+    assert.ok(capturedSystemPrompt.includes("92%"), "system prompt should contain the review confidence");
+  });
+
+  it("is a no-op when config.hooks is empty", async () => {
+    const config = ConfigSchema.parse({ hooks: [] });
+    let invoked = false;
+    const hookDeps: HookDeps = {
+      invoke: async () => { invoked = true; return { output: '{"pass": true}', costUsd: 0, exitCode: 0, durationMs: 0 } as InvokeResult; },
+      log: async () => {},
+      warn: () => {},
+    };
+    await fireHooks("on_execute_start", makeTask(), "hootl/task-fh", "main", 0, config, hookDeps);
+    assert.equal(invoked, false, "invoke should not be called when hooks array is empty");
+  });
+
+  it("catches and swallows errors without throwing", async () => {
+    const config = ConfigSchema.parse({
+      hooks: [
+        { trigger: "on_blocked", prompt: "on block check", blocking: false },
+      ],
+    });
+    const hookDeps: HookDeps = {
+      invoke: async () => { throw new Error("simulated hook failure"); },
+      log: async () => {},
+      warn: () => {},
+    };
+    // Should not throw
+    await fireHooks("on_blocked", makeTask(), "hootl/task-fh", "main", 50, config, hookDeps);
+  });
+});
+
+describe("moveToBlocked", () => {
+  const makeTask = (overrides: Partial<Task> = {}): Task => ({
+    id: "task-mb",
+    title: "Move to blocked task",
+    description: "Testing moveToBlocked helper",
+    priority: "medium",
+    type: "feature",
+    state: "in_progress",
+    dependencies: [],
+    backend: "local",
+    backendRef: null,
+    confidence: 50,
+    attempts: 3,
+    totalCost: 0.50,
+    branch: "hootl/task-mb",
+    worktree: null,
+    userPriority: null,
+    blockers: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    ...overrides,
+  });
+
+  function makeMockBackend(): { backend: TaskBackend; updates: Array<{ id: string; updates: Partial<Task> }> } {
+    const updates: Array<{ id: string; updates: Partial<Task> }> = [];
+    const backend = {
+      updateTask: async (id: string, upd: Partial<Task>) => {
+        updates.push({ id, updates: upd });
+        return { ...makeTask(), ...upd } as Task;
+      },
+      createTask: async () => makeTask(),
+      getTask: async () => makeTask(),
+      listTasks: async () => [],
+      deleteTask: async () => {},
+    } as TaskBackend;
+    return { backend, updates };
+  }
+
+  it("fires on_blocked hook then updates task state to blocked", async () => {
+    const { backend, updates } = makeMockBackend();
+    const config = ConfigSchema.parse({
+      hooks: [
+        { trigger: "on_blocked", prompt: "blocked check", blocking: false },
+      ],
+    });
+    const callOrder: string[] = [];
+    const hookDeps: HookDeps = {
+      invoke: async () => {
+        callOrder.push("hook_invoked");
+        return {
+          output: '{"pass": true, "issues": [], "remediationActions": []}',
+          costUsd: 0.01,
+          exitCode: 0,
+          durationMs: 10,
+        } as InvokeResult;
+      },
+      log: async () => { callOrder.push("hook_logged"); },
+      warn: () => {},
+    };
+    // Wrap updateTask to track call order
+    const origUpdate = backend.updateTask.bind(backend);
+    backend.updateTask = async (id: string, upd: Partial<Task>) => {
+      callOrder.push("backend_update");
+      return origUpdate(id, upd);
+    };
+
+    const blockers = ["Budget exhausted"];
+    await moveToBlocked(backend, makeTask(), blockers, "hootl/task-mb", "main", 50, config, hookDeps);
+
+    assert.ok(callOrder.indexOf("hook_invoked") < callOrder.indexOf("backend_update"),
+      "hook should fire before backend state update");
+    assert.equal(updates.length, 1);
+    assert.equal(updates[0]?.updates.state, "blocked");
+  });
+
+  it("works when hook throws (error swallowed by fireHooks)", async () => {
+    const { backend, updates } = makeMockBackend();
+    const config = ConfigSchema.parse({
+      hooks: [
+        { trigger: "on_blocked", prompt: "check", blocking: true },
+      ],
+    });
+    const hookDeps: HookDeps = {
+      invoke: async () => { throw new Error("hook crash"); },
+      log: async () => {},
+      warn: () => {},
+    };
+    const blockers = ["Max attempts exhausted"];
+    const result = await moveToBlocked(backend, makeTask(), blockers, "hootl/task-mb", "main", 50, config, hookDeps);
+    assert.equal(result.state, "blocked");
+    assert.equal(updates.length, 1);
+    assert.equal(updates[0]?.updates.state, "blocked");
+  });
+
+  it("passes blockers array to backend.updateTask", async () => {
+    const { backend, updates } = makeMockBackend();
+    const config = ConfigSchema.parse({ hooks: [] });
+    const hookDeps: HookDeps = {
+      invoke: async () => ({ output: '{"pass": true}', costUsd: 0, exitCode: 0, durationMs: 0 } as InvokeResult),
+      log: async () => {},
+      warn: () => {},
+    };
+    const blockers = ["Confidence regression: 60% < 80%", "Tests failing"];
+    await moveToBlocked(backend, makeTask(), blockers, "hootl/task-mb", "main", 60, config, hookDeps);
+    assert.equal(updates.length, 1);
+    assert.deepEqual(updates[0]?.updates.blockers, blockers);
+  });
+});

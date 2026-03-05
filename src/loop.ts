@@ -488,7 +488,7 @@ async function recordMemory(task: Task, projectDir: string): Promise<void> {
 }
 
 /** Helper to build HookContext and run hooks at a trigger point. Fire-and-forget: errors are caught. */
-async function fireHooks(
+export async function fireHooks(
   trigger: "on_execute_start" | "on_review_complete" | "on_blocked",
   task: Task,
   taskBranch: string | null,
@@ -517,7 +517,7 @@ async function fireHooks(
 }
 
 /** Helper to run on_blocked hook, then update task to blocked state. */
-async function moveToBlocked(
+export async function moveToBlocked(
   backend: TaskBackend,
   task: Task,
   blockers: string[],
