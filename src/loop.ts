@@ -230,7 +230,7 @@ export async function runCompletionLoop(
       const planSystemPrompt = await loadTemplate("plan");
       const planUserPrompt = await buildPlanPrompt(currentTask, taskDir);
 
-      uiInfo("Phase 1: PLAN");
+      uiInfo(`Phase 1: PLAN [${new Date().toLocaleTimeString()}]`);
       const planResult = await uiSpinner("Planning...", () =>
         invokeClaude({
           prompt: planUserPrompt,
@@ -245,6 +245,7 @@ export async function runCompletionLoop(
         throw new Error(`Plan phase failed: ${planResult.output}`);
       }
 
+      uiInfo(`Phase 1 done [${new Date().toLocaleTimeString()}] (${planResult.durationMs}ms, $${planResult.costUsd.toFixed(4)}, exit=${planResult.exitCode})`);
       await writeFile(join(taskDir, "plan.md"), planResult.output, "utf-8");
       await logCost(costLogDir, task.id, "plan", planResult.costUsd);
       phaseCost += planResult.costUsd;
@@ -253,13 +254,13 @@ export async function runCompletionLoop(
       const executeSystemPrompt = await loadTemplate("execute");
       const executeUserPrompt = await buildExecutePrompt(currentTask, taskDir);
 
-      uiInfo("Phase 2: EXECUTE");
+      uiInfo(`Phase 2: EXECUTE [${new Date().toLocaleTimeString()}]`);
       const executeResult = await uiSpinner("Executing...", () =>
         invokeClaude({
           prompt: executeUserPrompt,
           systemPrompt: executeSystemPrompt,
           outputFormat: "text",
-          permissionMode: config.permissionMode,
+          permissionMode: config.permissionMode === "default" ? "bypassPermissions" : config.permissionMode,
         }),
       );
 
@@ -282,7 +283,7 @@ export async function runCompletionLoop(
       const reviewSystemPrompt = await loadTemplate("review");
       const reviewUserPrompt = await buildReviewPrompt(currentTask, taskDir);
 
-      uiInfo("Phase 3: REVIEW");
+      uiInfo(`Phase 3: REVIEW [${new Date().toLocaleTimeString()}]`);
       const reviewResult = await uiSpinner("Reviewing...", () =>
         invokeClaude({
           prompt: reviewUserPrompt,

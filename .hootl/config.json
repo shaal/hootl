@@ -1,0 +1,29 @@
+{
+  "taskBackend": "local",
+  "budgets": {
+    "perSession": 0.5,
+    "perTask": 5,
+    "global": 50,
+    "maxAttemptsPerTask": 10
+  },
+  "confidence": {
+    "target": 95,
+    "requireTests": true
+  },
+  "git": {
+    "useWorktrees": false,
+    "autoPR": true,
+    "branchPrefix": "hootl/"
+  },
+  "auto": {
+    "defaultLevel": "proactive",
+    "maxParallel": 1
+  },
+  "notifications": {
+    "terminal": true,
+    "osNotify": false,
+    "summaryFile": true,
+    "webhook": null
+  },
+  "permissionMode": "default"
+}

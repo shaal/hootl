@@ -21,14 +21,15 @@ export interface InvokeResult {
 function buildArgs(options: InvokeOptions): string[] {
   const args: string[] = ["-p", options.prompt, "--no-session-persistence"];
 
-  const format = options.outputFormat ?? "text";
-  args.push("--output-format", format);
+  // Always use JSON output format to capture cost data
+  // The actual text output is extracted from the "result" field
+  args.push("--output-format", "json");
 
-  const permissionMode = options.permissionMode ?? "default";
-  args.push("--permission-mode", permissionMode);
+  // In -p mode, we must skip permissions to avoid hanging on interactive prompts
+  args.push("--dangerously-skip-permissions");
 
   if (options.systemPrompt !== undefined) {
-    args.push("-s", options.systemPrompt);
+    args.push("--system-prompt", options.systemPrompt);
   }
 
   if (options.maxTurns !== undefined) {
@@ -45,17 +46,14 @@ function buildArgs(options: InvokeOptions): string[] {
 function parseCostFromOutput(raw: string): number {
   try {
     const parsed: unknown = JSON.parse(raw);
-    if (
-      typeof parsed === "object" &&
-      parsed !== null &&
-      "cost_usd" in parsed
-    ) {
+    if (typeof parsed === "object" && parsed !== null) {
       const record = parsed as Record<string, unknown>;
-      const cost = Number(record["cost_usd"]);
+      // claude -p outputs total_cost_usd in --output-format json
+      const cost = Number(record["total_cost_usd"] ?? record["cost_usd"] ?? 0);
       return Number.isFinite(cost) ? cost : 0;
     }
   } catch {
-    // Not valid JSON or missing cost_usd — fall through
+    // Not valid JSON or missing cost fields — fall through
   }
   return 0;
 }
@@ -87,16 +85,21 @@ export async function invokeClaude(
   options: InvokeOptions,
 ): Promise<InvokeResult> {
   const args = buildArgs(options);
-  const format = options.outputFormat ?? "text";
   const startMs = Date.now();
 
   let stdout = "";
   let exitCode = 0;
 
   try {
+    // Unset CLAUDECODE to allow running claude -p from within Claude Code sessions
+    const env = { ...process.env };
+    delete env["CLAUDECODE"];
+
     const result = await execa("claude", args, {
       reject: false,
-      timeout: 0,
+      timeout: 300_000, // 5 minute timeout per call
+      env,
+      stdin: "ignore",
     });
     stdout = result.stdout;
     exitCode = result.exitCode ?? 1;
@@ -114,7 +117,7 @@ export async function invokeClaude(
 
   const durationMs = Date.now() - startMs;
   const costUsd = parseCostFromOutput(stdout);
-  const output = extractTextOutput(stdout, format);
+  const output = extractTextOutput(stdout, "json");
 
   return {
     output,

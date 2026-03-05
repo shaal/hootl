@@ -98,19 +98,8 @@ export async function uiSpinner<T>(
   fn: () => Promise<T>,
 ): Promise<T> {
   if (await hasGum()) {
-    const resultPromise = fn();
-
-    // Start the spinner as a background process
-    const spinner = execa("gum", ["spin", "--title", title, "--", "sleep", "86400"], {
-      reject: false,
-    });
-
-    try {
-      const result = await resultPromise;
-      return result;
-    } finally {
-      spinner.kill();
-    }
+    process.stderr.write(`  ${title}\n`);
+    return fn();
   }
 
   process.stderr.write(`${title}...\n`);
