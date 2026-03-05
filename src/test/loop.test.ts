@@ -8,6 +8,8 @@ import { checkGlobalBudget } from "../budget.js";
 import { ConfigSchema } from "../config.js";
 import type { TaskBackend, CreateTaskInput } from "../tasks/types.js";
 import type { Task } from "../tasks/types.js";
+import type { HookDeps } from "../hooks.js";
+import type { InvokeResult } from "../invoke.js";
 
 describe("parseReviewResult", () => {
   it("extracts fields from clean JSON", () => {
@@ -562,6 +564,115 @@ describe("handleConfidenceMet", () => {
       assert.equal(result.state, "review");
       assert.equal(result.mergedSuccessfully, false);
       assert.equal(mockState.lastUpdate?.updates.state, "review");
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+
+  it("blocking hook failure prevents merge and moves task to review", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hootl-hcm-"));
+    try {
+      const { backend, state: mockState } = makeMockBackend();
+      const config = ConfigSchema.parse({
+        git: { onConfidence: "none" },
+        hooks: [
+          { trigger: "on_confidence_met", skill: "simplify", blocking: true },
+        ],
+      });
+      const hookDeps: HookDeps = {
+        invoke: async () => ({
+          output: '{"pass": false, "issues": ["duplicated logic"], "remediationActions": ["extract helper"]}',
+          costUsd: 0.03,
+          exitCode: 0,
+          durationMs: 100,
+        } as InvokeResult),
+        log: async () => {},
+        warn: () => {},
+      };
+      const result = await handleConfidenceMet(
+        makeTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
+      );
+      assert.equal(result.state, "review");
+      assert.equal(result.mergedSuccessfully, false);
+      assert.equal(mockState.lastUpdate?.updates.state, "review");
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+
+  it("passing hook allows normal confidence-met behavior", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hootl-hcm-"));
+    try {
+      const { backend, state: mockState } = makeMockBackend();
+      const config = ConfigSchema.parse({
+        git: { onConfidence: "none" },
+        hooks: [
+          { trigger: "on_confidence_met", skill: "simplify", blocking: true },
+        ],
+      });
+      const hookDeps: HookDeps = {
+        invoke: async () => ({
+          output: '{"pass": true, "issues": [], "remediationActions": []}',
+          costUsd: 0.01,
+          exitCode: 0,
+          durationMs: 50,
+        } as InvokeResult),
+        log: async () => {},
+        warn: () => {},
+      };
+      const result = await handleConfidenceMet(
+        makeTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
+      );
+      // Hook passed, so normal 'none' mode behavior: task goes to review
+      assert.equal(result.state, "review");
+      assert.equal(result.mergedSuccessfully, false);
+      assert.equal(mockState.lastUpdate?.updates.state, "review");
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+
+  it("hook error is caught gracefully and proceeds normally", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hootl-hcm-"));
+    try {
+      const { backend } = makeMockBackend();
+      const config = ConfigSchema.parse({
+        git: { onConfidence: "none" },
+        hooks: [
+          { trigger: "on_confidence_met", skill: "simplify", blocking: true },
+        ],
+      });
+      const hookDeps: HookDeps = {
+        invoke: async () => { throw new Error("invoke crashed"); },
+        log: async () => {},
+        warn: () => {},
+      };
+      const result = await handleConfidenceMet(
+        makeTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
+      );
+      // Hook threw but was caught — proceeds to normal behavior
+      assert.equal(result.state, "review");
+      assert.equal(result.mergedSuccessfully, false);
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+
+  it("skips hooks when config has no hooks configured", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hootl-hcm-"));
+    try {
+      const { backend } = makeMockBackend();
+      const config = ConfigSchema.parse({ git: { onConfidence: "none" }, hooks: [] });
+      let hookInvoked = false;
+      const hookDeps: HookDeps = {
+        invoke: async () => { hookInvoked = true; return { output: '{"pass": true}', costUsd: 0, exitCode: 0, durationMs: 0 } as InvokeResult; },
+        log: async () => {},
+        warn: () => {},
+      };
+      await handleConfidenceMet(
+        makeTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
+      );
+      assert.equal(hookInvoked, false, "hooks should not be invoked when config.hooks is empty");
     } finally {
       await rm(dir, { recursive: true });
     }

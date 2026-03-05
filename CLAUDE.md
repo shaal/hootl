@@ -158,6 +158,30 @@ Three layers, merged with deep-merge (later wins):
 
 Key defaults: perSession=$0.50, perTask=$5.00, global=$50.00, maxAttempts=10, confidenceTarget=95%. `git.onConfidence` defaults to null (inferred from `auto.defaultLevel`). Env var: `HOOTL_GIT_ON_CONFIDENCE`.
 
+### Hooks & Skills
+
+Hooks run at trigger points in the completion loop. Skills are named prompt templates in the skill registry (`src/hooks.ts`). Configure hooks in `.hootl/config.json`:
+
+```json
+{
+  "hooks": [
+    {
+      "trigger": "on_confidence_met",
+      "skill": "simplify",
+      "blocking": true
+    }
+  ]
+}
+```
+
+Available triggers: `on_confidence_met`, `on_review_complete`, `on_blocked`, `on_execute_start`.
+
+Built-in skills: `simplify` (runs `git diff <baseBranch>..HEAD`, reviews changed code for reuse/quality/efficiency, fixes issues found).
+
+Optional fields: `conditions.minConfidence` (number), `prompt` (inline string or file path, used if no `skill`).
+
+When `blocking: true`, a hook failure prevents the confidence-met action (merge/PR) and moves the task to `review` instead. Advisory hooks (`blocking: false`) log warnings but don't block.
+
 ### Task State Machine
 
 ```

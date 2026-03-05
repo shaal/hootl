@@ -34,6 +34,7 @@ export type SkillDefinition = (ctx: HookContext) => InvokeOptions;
 const skillRegistry = new Map<string, SkillDefinition>([
   ["simplify", (ctx) => ({
     prompt: [
+      `First, run \`git diff ${ctx.baseBranch}..HEAD\` to see all changes on this branch.`,
       "Review the changed code for reuse, quality, and efficiency.",
       "Look for duplicated logic that could be extracted, overly complex implementations",
       "that could be simplified, and inefficient patterns that could be optimized.",
@@ -45,6 +46,9 @@ const skillRegistry = new Map<string, SkillDefinition>([
       `Description: ${ctx.task.description}`,
       `Branch: ${ctx.branchName ?? "none"}`,
       `Base branch: ${ctx.baseBranch}`,
+      "",
+      `Start by examining the diff between the task branch and ${ctx.baseBranch}.`,
+      `Use the git diff output to identify specific files and hunks that need improvement.`,
       "",
       "Respond with a JSON object containing:",
       '  - "pass": boolean (true if code quality is acceptable)',

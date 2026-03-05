@@ -10,6 +10,8 @@ import { isGitRepo, createTaskBranch, commitTaskChanges, switchBranch, getBaseBr
 import { checkGlobalBudget } from "./budget.js";
 import { generateMemoryEntry, appendMemoryEntry } from "./plan-memory.js";
 import { inferDependencies, resolveIndicesToIds } from "./dependencies.js";
+import { runHooks } from "./hooks.js";
+import type { HookContext, HookDeps } from "./hooks.js";
 
 export async function readFileOrEmpty(path: string): Promise<string> {
   try {
@@ -355,7 +357,31 @@ export async function handleConfidenceMet(
   baseBranch: string | null,
   taskDir: string,
   cliFlags: CliFlags,
+  hookDeps?: HookDeps,
 ): Promise<{ state: "done" | "review"; mergedSuccessfully: boolean }> {
+  // Run on_confidence_met hooks before proceeding with merge/PR/none
+  if (config.hooks.length > 0) {
+    try {
+      const hookContext: HookContext = {
+        task,
+        branchName: taskBranch,
+        baseBranch: baseBranch ?? "main",
+        confidence: task.confidence,
+        config,
+      };
+      const hookResult = hookDeps
+        ? await runHooks("on_confidence_met", hookContext, config, hookDeps)
+        : await runHooks("on_confidence_met", hookContext, config);
+      if (!hookResult.allPassed) {
+        uiWarn("Blocking hook failed — moving task to review instead of merge/PR.");
+        await backend.updateTask(task.id, { state: "review" });
+        return { state: "review", mergedSuccessfully: false };
+      }
+    } catch (err: unknown) {
+      uiWarn(`Hook execution error: ${err instanceof Error ? err.message : String(err)} — proceeding anyway`);
+    }
+  }
+
   const mode: OnConfidenceMode = resolveOnConfidenceMode(config, cliFlags.merge, cliFlags.noMerge);
 
   if (mode === "merge" && taskBranch !== null && baseBranch !== null) {

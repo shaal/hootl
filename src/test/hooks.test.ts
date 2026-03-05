@@ -693,8 +693,11 @@ describe("resolveSkill", () => {
     const opts = skill!(ctx);
     assert.ok(opts.prompt.includes("reuse"));
     assert.ok(opts.prompt.includes("quality"));
+    assert.ok(opts.prompt.includes("git diff main..HEAD"), "prompt should instruct Claude to run git diff");
     assert.ok(opts.systemPrompt?.includes("Refactor auth"));
     assert.ok(opts.systemPrompt?.includes("hootl/t3-refactor"));
+    assert.ok(opts.systemPrompt?.includes("examining the diff"), "system prompt should reference diff workflow");
+    assert.ok(opts.systemPrompt?.includes("main"), "system prompt should reference the base branch");
     assert.equal(opts.maxTurns, 5);
   });
 });
