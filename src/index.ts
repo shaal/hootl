@@ -121,7 +121,7 @@ program
     }
   });
 
-async function planCommand(): Promise<void> {
+async function planCommand(cliMode?: { fromSpec?: boolean; goal?: string; analyze?: boolean; next?: boolean }): Promise<void> {
   ensureInitialized();
   const config = await loadConfig();
   const backend = getBackend(config);
@@ -131,12 +131,24 @@ async function planCommand(): Promise<void> {
   );
   const formattedContext = formatContextForPrompt(ctx);
 
-  const mode = await uiChoose("Planning mode:", [
-    "From spec (auto-detect gaps)",
-    "Break down a goal",
-    "Analyze codebase",
-    "Suggest what's next",
-  ]);
+  let mode: string | undefined;
+
+  if (cliMode?.fromSpec) {
+    mode = "From spec (auto-detect gaps)";
+  } else if (cliMode?.goal !== undefined) {
+    mode = "Break down a goal";
+  } else if (cliMode?.analyze) {
+    mode = "Analyze codebase";
+  } else if (cliMode?.next) {
+    mode = "Suggest what's next";
+  } else {
+    mode = await uiChoose("Planning mode:", [
+      "From spec (auto-detect gaps)",
+      "Break down a goal",
+      "Analyze codebase",
+      "Suggest what's next",
+    ]);
+  }
 
   let prompt: string;
 
@@ -156,7 +168,7 @@ async function planCommand(): Promise<void> {
         `<context>\n${formattedContext}\n</context>`;
       break;
     case "Break down a goal": {
-      const goal = await uiInput("Describe the goal:");
+      const goal = cliMode?.goal ?? await uiInput("Describe the goal:");
       prompt =
         `You are a task planner. Break down the following goal into concrete, ` +
         `actionable coding tasks. For each task provide a title, description, and priority. ` +
@@ -252,9 +264,13 @@ async function planCommand(): Promise<void> {
 program
   .command("plan")
   .description("Plan tasks using Claude")
-  .action(async () => {
+  .option("--from-spec", "Auto-detect gaps from project spec")
+  .option("--goal <goal>", "Break down a specific goal into tasks")
+  .option("--analyze", "Analyze codebase for improvements")
+  .option("--next", "Suggest what to work on next")
+  .action(async (options: { fromSpec?: boolean; goal?: string; analyze?: boolean; next?: boolean }) => {
     try {
-      await planCommand();
+      await planCommand(options);
     } catch (err: unknown) {
       uiError(err instanceof Error ? err.message : String(err));
       process.exitCode = 1;

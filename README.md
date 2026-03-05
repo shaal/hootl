@@ -18,10 +18,12 @@ cd ~/your-project
 hootl init
 
 # Create tasks and run them
-hootl plan          # Claude analyzes codebase and creates tasks
-hootl run           # Pick up the next ready task and work on it
-hootl status        # See all tasks and their states
-hootl clarify       # Resolve blocked tasks that need human input
+hootl plan                     # Interactive planning mode
+hootl plan --from-spec         # Auto-detect gaps from docs/spec.md
+hootl plan --goal "add auth"   # Break down a specific goal
+hootl run                      # Pick up the next ready task and work on it
+hootl status                   # See all tasks and their states
+hootl clarify                  # Resolve blocked tasks that need human input
 ```
 
 ## How It Works
@@ -69,6 +71,7 @@ Each task runs on its own branch (`hootl/<task-id>-<slug>`). Changes are auto-co
 src/
   index.ts          CLI entry point (commander)
   config.ts         3-tier config: ~/.hootl/ → .hootl/ → env vars
+  context.ts        Project context gathering for plan command
   loop.ts           Core 3-phase completion loop
   invoke.ts         claude -p wrapper with cost tracking
   ui.ts             gum TUI with stdin fallback
@@ -103,7 +106,7 @@ Key defaults: $5/task budget, 10 max attempts, 95% confidence target.
 ## Testing
 
 ```bash
-npm test              # Run 117 unit tests
+npm test              # Run 123 unit tests
 npm run test:build    # Build + test
 npm run lint          # Type-check
 ```
@@ -114,10 +117,10 @@ hootl is designed to build itself. The full workflow — planning features, runn
 
 ```bash
 cd ~/code/utilities/hootl
-hootl plan          # Claude suggests next features from the spec
-hootl run           # Work on the top-priority task (runs unattended)
-hootl status        # Check progress
-hootl clarify       # Unblock stuck tasks
+hootl plan --from-spec   # Claude reads spec, finds gaps, creates prioritized tasks
+hootl run               # Work on the top-priority task (runs unattended)
+hootl status             # Check progress
+hootl clarify            # Unblock stuck tasks
 # Review branch, merge, repeat
 ```
 

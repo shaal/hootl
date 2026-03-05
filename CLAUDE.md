@@ -21,6 +21,7 @@ npm run test:build  # Build then run tests
 src/
   index.ts            CLI entry point (commander). Commands: init, plan, run, status, clarify
   config.ts           Zod-validated config. 3-layer merge: ~/.hootl/config.json < .hootl/config.json < env vars
+  context.ts          Project context gathering for plan command (spec, structure, tasks, git log)
   loop.ts             Core 3-phase completion loop (plan -> execute -> review). Budget/attempt tracking
   invoke.ts           Wrapper around `claude -p` via execa. Parses cost from JSON output
   git.ts              Git operations: task branches, auto-commit, branch switching
@@ -31,6 +32,7 @@ src/
     local.ts           Local filesystem task backend (.hootl/tasks/ directory)
   test/
     config.test.ts     Config loading, merging, env overrides
+    context.test.ts    Context formatting, section inclusion/omission, ordering
     invoke.test.ts     Arg building, cost parsing, output extraction
     invoke-robustness.test.ts  Edge cases for invoke (timeouts, errors, is_error)
     local-backend.test.ts      CRUD operations on local task backend
@@ -85,13 +87,28 @@ proposed --> ready --> in_progress --> review --> done
 ### CLI Commands
 
 ```
-hootl              Interactive TUI menu (gum-powered)
-hootl init         Initialize .hootl/ directory
-hootl plan         Plan tasks (analyze codebase, break down goal, suggest next)
-hootl run [id]     Run a task (or next ready task) through the completion loop
-hootl status       View tasks grouped by state
-hootl clarify      Resolve blockers on blocked tasks
+hootl                          Interactive TUI menu (gum-powered)
+hootl init                     Initialize .hootl/ directory
+hootl plan                     Plan tasks (interactive mode selector)
+hootl plan --from-spec         Auto-detect spec gaps and create tasks
+hootl plan --goal "..."        Break down a specific goal into tasks
+hootl plan --analyze           Analyze codebase for improvements
+hootl plan --next              Suggest what to work on next
+hootl run [id]                 Run a task (or next ready task) through the completion loop
+hootl status                   View tasks grouped by state
+hootl clarify                  Resolve blockers on blocked tasks
 ```
+
+### Plan Command Context Gathering
+
+The plan command gathers project context via `src/context.ts` before calling Claude:
+
+- **File references** (not content) for `docs/spec.md`, `README.md`, `CLAUDE.md` -- Claude reads these itself via tools
+- **Source file listing** -- `find src -type f -name "*.ts"` for project structure
+- **Existing tasks** -- formatted summary from the task backend
+- **Recent git log** -- last 20 commits (one-line format)
+
+This keeps prompts small (~2K chars) while giving Claude full access to explore the codebase. The "From spec" mode compares the spec against existing code to generate gap-filling tasks with priorities.
 
 ## Key Conventions
 
@@ -146,6 +163,7 @@ npm run test         # run tests (requires prior build)
 
 Test coverage:
 - **config.test.ts** -- Config loading, 3-layer merging, env variable overrides, coercion
+- **context.test.ts** -- Context formatting, section inclusion/omission based on null/empty fields, ordering
 - **invoke.test.ts** -- Arg building, cost parsing (`total_cost_usd` / `cost_usd`), text extraction from JSON
 - **invoke-robustness.test.ts** -- Timeout handling, `is_error` detection, edge cases
 - **local-backend.test.ts** -- Task CRUD, filtering, atomic writes

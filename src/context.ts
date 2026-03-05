@@ -1,26 +1,14 @@
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { existsSync } from "node:fs";
 import { execa } from "execa";
 import type { TaskBackend } from "./tasks/types.js";
 
 export interface ProjectContext {
-  spec: string | null;
-  readme: string | null;
-  claudeMd: string | null;
+  specPath: string | null;
+  readmePath: string | null;
+  claudeMdPath: string | null;
   structure: string;
   existingTasks: string;
   recentGitLog: string;
-}
-
-async function readOptionalFile(path: string): Promise<string | null> {
-  try {
-    return await readFile(path, "utf-8");
-  } catch (err: unknown) {
-    if (err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "ENOENT") {
-      return null;
-    }
-    return null;
-  }
 }
 
 async function getSourceStructure(): Promise<string> {
@@ -51,13 +39,16 @@ async function getRecentGitLog(): Promise<string> {
   }
 }
 
-export async function gatherProjectContext(backend: TaskBackend): Promise<ProjectContext> {
-  const cwd = process.cwd();
+function checkFilePath(relativePath: string): string | null {
+  return existsSync(relativePath) ? relativePath : null;
+}
 
-  const [spec, readme, claudeMd, structure, recentGitLog, tasks] = await Promise.all([
-    readOptionalFile(join(cwd, "docs", "spec.md")),
-    readOptionalFile(join(cwd, "README.md")),
-    readOptionalFile(join(cwd, "CLAUDE.md")),
+export async function gatherProjectContext(backend: TaskBackend): Promise<ProjectContext> {
+  const specPath = checkFilePath("docs/spec.md");
+  const readmePath = checkFilePath("README.md");
+  const claudeMdPath = checkFilePath("CLAUDE.md");
+
+  const [structure, recentGitLog, tasks] = await Promise.all([
     getSourceStructure(),
     getRecentGitLog(),
     backend.listTasks(),
@@ -68,25 +59,25 @@ export async function gatherProjectContext(backend: TaskBackend): Promise<Projec
       ? tasks.map((t) => `- [${t.state}] ${t.id}: ${t.title}`).join("\n")
       : "";
 
-  return { spec, readme, claudeMd, structure, existingTasks, recentGitLog };
+  return { specPath, readmePath, claudeMdPath, structure, existingTasks, recentGitLog };
 }
 
 export function formatContextForPrompt(ctx: ProjectContext): string {
   const sections: string[] = [];
 
-  if (ctx.spec !== null) {
+  if (ctx.specPath !== null) {
     sections.push("## Project Specification");
-    sections.push(ctx.spec);
+    sections.push(`Read the project spec at: ${ctx.specPath}`);
   }
 
-  if (ctx.readme !== null) {
+  if (ctx.readmePath !== null) {
     sections.push("## README");
-    sections.push(ctx.readme);
+    sections.push(`Read the project README at: ${ctx.readmePath}`);
   }
 
-  if (ctx.claudeMd !== null) {
+  if (ctx.claudeMdPath !== null) {
     sections.push("## CLAUDE.md");
-    sections.push(ctx.claudeMd);
+    sections.push(`Read the project conventions at: ${ctx.claudeMdPath}`);
   }
 
   if (ctx.structure.length > 0) {

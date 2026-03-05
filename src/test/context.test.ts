@@ -5,9 +5,9 @@ import type { ProjectContext } from "../context.js";
 
 function makeFullContext(): ProjectContext {
   return {
-    spec: "Build a CLI tool for task automation.",
-    readme: "# My Project\nA cool project.",
-    claudeMd: "Use strict mode. No any.",
+    specPath: "docs/spec.md",
+    readmePath: "README.md",
+    claudeMdPath: "CLAUDE.md",
     structure: "src/\n  index.ts\n  config.ts",
     existingTasks: "- task-001: Add feature X (done)\n- task-002: Fix bug Y (ready)",
     recentGitLog: "abc1234 Add feature X\ndef5678 Initial commit",
@@ -20,11 +20,10 @@ describe("formatContextForPrompt", () => {
     const output = formatContextForPrompt(ctx);
 
     assert.ok(output.includes("Project Specification"), "should include spec section");
-    assert.ok(output.includes("Build a CLI tool for task automation."), "should include spec content");
+    assert.ok(output.includes("docs/spec.md"), "should include spec path reference");
     assert.ok(output.includes("README"), "should include readme section");
-    assert.ok(output.includes("A cool project."), "should include readme content");
+    assert.ok(output.includes("README.md"), "should include readme path reference");
     assert.ok(output.includes("CLAUDE.md"), "should include claudeMd section");
-    assert.ok(output.includes("Use strict mode. No any."), "should include claudeMd content");
     assert.ok(output.includes("Project Structure"), "should include structure section");
     assert.ok(output.includes("src/"), "should include structure content");
     assert.ok(output.includes("Existing Tasks"), "should include tasks section");
@@ -35,7 +34,7 @@ describe("formatContextForPrompt", () => {
 
   it("omits Project Specification section when spec is null", () => {
     const ctx = makeFullContext();
-    ctx.spec = null;
+    ctx.specPath = null;
     const output = formatContextForPrompt(ctx);
 
     assert.ok(!output.includes("Project Specification"), "should not include spec section");
@@ -65,9 +64,9 @@ describe("formatContextForPrompt", () => {
 
   it("produces minimal output when all optional fields are null/empty", () => {
     const ctx: ProjectContext = {
-      spec: null,
-      readme: null,
-      claudeMd: null,
+      specPath: null,
+      readmePath: null,
+      claudeMdPath: null,
       structure: "src/\n  index.ts",
       existingTasks: "",
       recentGitLog: "",
