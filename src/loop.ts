@@ -193,6 +193,20 @@ export function isSessionBudgetExceeded(phaseCost: number, perSession: number): 
   return phaseCost >= perSession;
 }
 
+async function applySessionBudgetExceeded(
+  backend: TaskBackend,
+  taskId: string,
+  currentTask: Task,
+  phaseCost: number,
+  perSession: number,
+): Promise<Task | null> {
+  if (!isSessionBudgetExceeded(phaseCost, perSession)) return null;
+  uiWarn(
+    `Session budget exceeded ($${phaseCost.toFixed(4)} >= $${perSession.toFixed(2)}). Ending attempt early.`,
+  );
+  return backend.updateTask(taskId, { totalCost: currentTask.totalCost + phaseCost });
+}
+
 export async function runCompletionLoop(
   task: Task,
   backend: TaskBackend,
@@ -292,13 +306,10 @@ export async function runCompletionLoop(
         phaseCost += planResult.costUsd;
 
         // Check per-session budget after plan phase
-        if (isSessionBudgetExceeded(phaseCost, config.budgets.perSession)) {
-          uiWarn(
-            `Session budget exceeded ($${phaseCost.toFixed(4)} >= $${config.budgets.perSession.toFixed(2)}). Ending attempt early.`,
-          );
-          currentTask = await backend.updateTask(task.id, {
-            totalCost: currentTask.totalCost + phaseCost,
-          });
+        const planBudgetResult = await applySessionBudgetExceeded(backend, task.id, currentTask, phaseCost, config.budgets.perSession);
+        if (planBudgetResult) {
+          currentTask = planBudgetResult;
+          // phaseCost resets at loop top (let phaseCost = 0); totalCost persisted in backend
           continue;
         }
       }
@@ -347,13 +358,10 @@ export async function runCompletionLoop(
       }
 
       // Check per-session budget after execute phase
-      if (isSessionBudgetExceeded(phaseCost, config.budgets.perSession)) {
-        uiWarn(
-          `Session budget exceeded ($${phaseCost.toFixed(4)} >= $${config.budgets.perSession.toFixed(2)}). Ending attempt early.`,
-        );
-        currentTask = await backend.updateTask(task.id, {
-          totalCost: currentTask.totalCost + phaseCost,
-        });
+      const execBudgetResult = await applySessionBudgetExceeded(backend, task.id, currentTask, phaseCost, config.budgets.perSession);
+      if (execBudgetResult) {
+        currentTask = execBudgetResult;
+        // phaseCost resets at loop top (let phaseCost = 0); totalCost persisted in backend
         continue;
       }
 
