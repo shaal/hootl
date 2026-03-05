@@ -5,7 +5,7 @@ import { invokeClaude, logCost } from "./invoke.js";
 import { type Config, getProjectDir } from "./config.js";
 import { type Task, type TaskBackend } from "./tasks/types.js";
 import { uiInfo, uiWarn, uiError, uiSuccess, uiSpinner } from "./ui.js";
-import { isGitRepo, createTaskBranch, commitTaskChanges, switchBranch, getBaseBranch } from "./git.js";
+import { isGitRepo, createTaskBranch, commitTaskChanges, switchBranch, getBaseBranch, getHeadSha, resetToSha } from "./git.js";
 
 async function readFileOrEmpty(path: string): Promise<string> {
   try {
@@ -189,6 +189,11 @@ export function parseReviewResult(output: string): ReviewResult {
   return defaultResult;
 }
 
+export function isConfidenceRegression(current: number, previous: number | null): boolean {
+  if (previous === null) return false;
+  return current < previous;
+}
+
 export function isSessionBudgetExceeded(phaseCost: number, perSession: number): boolean {
   return phaseCost >= perSession;
 }
@@ -235,6 +240,21 @@ export async function runCompletionLoop(
   }
 
   let hasRemediationPlan = false;
+
+  // Load previous confidence from persistence file (supports cross-run rollback detection)
+  let previousConfidence: number | null = null;
+  const lastConfidencePath = join(taskDir, "last_confidence.txt");
+  try {
+    const stored = await readFileOrEmpty(lastConfidencePath);
+    if (stored.trim().length > 0) {
+      const parsed = Number(stored.trim());
+      if (!Number.isNaN(parsed)) {
+        previousConfidence = parsed;
+      }
+    }
+  } catch {
+    // Ignore — first run or corrupted file
+  }
 
   while (true) {
     // Check budget
@@ -311,6 +331,16 @@ export async function runCompletionLoop(
           currentTask = planBudgetResult;
           // phaseCost resets at loop top (let phaseCost = 0); totalCost persisted in backend
           continue;
+        }
+      }
+
+      // Record HEAD SHA before execute for rollback safety
+      let preExecuteSha: string | null = null;
+      if (taskBranch !== null) {
+        try {
+          preExecuteSha = await getHeadSha();
+        } catch (err: unknown) {
+          uiWarn(`Could not record pre-execute SHA: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
 
@@ -413,6 +443,30 @@ export async function runCompletionLoop(
       if (review.summary) {
         uiInfo(`Review: ${review.summary}`);
       }
+
+      // Rollback safety: detect confidence regression
+      if (isConfidenceRegression(review.confidence, previousConfidence) && preExecuteSha !== null) {
+        uiWarn(`Confidence regressed: ${review.confidence}% < ${previousConfidence}% (previous). Rolling back.`);
+        try {
+          await resetToSha(preExecuteSha);
+          uiInfo(`Rolled back to ${preExecuteSha.slice(0, 8)}`);
+        } catch (rollbackErr: unknown) {
+          uiError(`Rollback failed: ${rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)}`);
+        }
+        // Log failure in progress.md
+        const rollbackMsg = `\n\n---\n\n## Attempt ${attempt} — ROLLED BACK\n\nConfidence regressed from ${previousConfidence}% to ${review.confidence}%. Changes reverted to ${preExecuteSha.slice(0, 8)}.\n`;
+        await appendFile(join(taskDir, "progress.md"), rollbackMsg, "utf-8");
+        // Move to blocked
+        await backend.updateTask(task.id, {
+          state: "blocked",
+          blockers: [...currentTask.blockers, `Confidence regression: ${review.confidence}% < ${previousConfidence}% (previous attempt). Execute phase rolled back.`],
+        });
+        break;
+      }
+
+      // Persist confidence for cross-run rollback detection
+      previousConfidence = review.confidence;
+      await writeFile(lastConfidencePath, String(review.confidence), "utf-8");
 
       // Check if we've reached the target
       if (review.confidence >= config.confidence.target) {

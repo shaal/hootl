@@ -63,6 +63,15 @@ export async function commitTaskChanges(taskId: string, phase: string, message?:
   return true;
 }
 
+export async function getHeadSha(): Promise<string> {
+  const result = await execa("git", ["rev-parse", "HEAD"]);
+  return result.stdout.trim();
+}
+
+export async function resetToSha(sha: string): Promise<void> {
+  await execa("git", ["reset", "--hard", sha]);
+}
+
 export async function switchBranch(branchName: string): Promise<void> {
   await execa("git", ["checkout", branchName]);
 }

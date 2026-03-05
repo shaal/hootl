@@ -11,6 +11,8 @@ import {
   createTaskBranch,
   commitTaskChanges,
   getBaseBranch,
+  getHeadSha,
+  resetToSha,
 } from "../git.js";
 
 // ---------------------------------------------------------------------------
@@ -197,6 +199,53 @@ describe("git integration", () => {
         process.chdir(tmpDir);
         const base = await getBaseBranch();
         assert.equal(base, "main");
+      } finally {
+        process.chdir(originalCwd);
+      }
+    });
+  });
+
+  describe("getHeadSha", () => {
+    it("returns a 40-character hex SHA", async () => {
+      const originalCwd = process.cwd();
+      try {
+        process.chdir(tmpDir);
+        const sha = await getHeadSha();
+        assert.equal(sha.length, 40);
+        assert.match(sha, /^[0-9a-f]{40}$/);
+      } finally {
+        process.chdir(originalCwd);
+      }
+    });
+  });
+
+  describe("resetToSha", () => {
+    it("resets the working tree to a previous commit", async () => {
+      const originalCwd = process.cwd();
+      try {
+        process.chdir(tmpDir);
+
+        // Record the current SHA (after initial commits from earlier tests)
+        const sha1 = await getHeadSha();
+
+        // Create a new file and commit
+        await writeFile(join(tmpDir, "rollback-test.txt"), "should be removed");
+        await execa("git", ["add", "-A"], { cwd: tmpDir });
+        await execa("git", ["commit", "-m", "commit to rollback"], { cwd: tmpDir });
+
+        const sha2 = await getHeadSha();
+        assert.notEqual(sha1, sha2);
+
+        // Reset to the first SHA
+        await resetToSha(sha1);
+
+        // Verify HEAD matches the first SHA
+        const currentSha = await getHeadSha();
+        assert.equal(currentSha, sha1);
+
+        // Verify the file created in the second commit is gone
+        const { existsSync } = await import("node:fs");
+        assert.equal(existsSync(join(tmpDir, "rollback-test.txt")), false);
       } finally {
         process.chdir(originalCwd);
       }
