@@ -1,7 +1,7 @@
 {
   "taskBackend": "local",
   "budgets": {
-    "perSession": 0.5,
+    "perSession": 1.5,
     "perTask": 5,
     "global": 50,
     "maxAttemptsPerTask": 10
