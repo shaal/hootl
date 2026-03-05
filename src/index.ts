@@ -438,6 +438,16 @@ program
     }
   });
 
+async function selectFromState(state: TaskState, backend: TaskBackend): Promise<Task | undefined> {
+  const tasks = await backend.listTasks({ state });
+  if (tasks.length === 0) return undefined;
+  const { task, skipped } = await findRunnableTask(tasks, backend);
+  for (const s of skipped) {
+    uiWarn(`Skipping ${s.id} (${s.reason})`);
+  }
+  return task;
+}
+
 async function runCommand(taskId?: string, cliFlags?: { merge?: boolean; noMerge?: boolean }): Promise<void> {
   await autoInit();
   const config = await loadConfig();
@@ -451,24 +461,11 @@ async function runCommand(taskId?: string, cliFlags?: { merge?: boolean; noMerge
   if (taskId !== undefined) {
     targetTask = await backend.getTask(taskId);
   } else {
-    const readyTasks = await backend.listTasks({ state: "ready" });
-    if (readyTasks.length > 0) {
-      const { task, skipped } = await findRunnableTask(readyTasks, backend);
-      for (const s of skipped) {
-        uiWarn(`Skipping ${s.id} (${s.reason})`);
-      }
-      targetTask = task;
-    }
+    // Prioritize in-progress tasks: finish started work before picking up new work
+    targetTask = await selectFromState("in_progress", backend);
+    if (targetTask) uiInfo(`Resuming in-progress task: ${targetTask.id}`);
     if (targetTask === undefined) {
-      const inProgressTasks = await backend.listTasks({ state: "in_progress" });
-      if (inProgressTasks.length > 0) {
-        const { task, skipped } = await findRunnableTask(inProgressTasks, backend);
-        for (const s of skipped) {
-          uiWarn(`Skipping ${s.id} (${s.reason})`);
-        }
-        targetTask = task;
-        if (targetTask) uiInfo(`Resuming in-progress task: ${targetTask.id}`);
-      }
+      targetTask = await selectFromState("ready", backend);
     }
   }
 
