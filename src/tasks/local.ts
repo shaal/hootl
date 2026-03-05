@@ -42,9 +42,11 @@ export async function getNextTaskId(baseDir: string): Promise<string> {
 
 export class LocalTaskBackend implements TaskBackend {
   private baseDir: string;
+  private onUpdate?: (tasks: Task[]) => Promise<void>;
 
-  constructor(baseDir: string) {
+  constructor(baseDir: string, onUpdate?: (tasks: Task[]) => Promise<void>) {
     this.baseDir = baseDir;
+    this.onUpdate = onUpdate;
   }
 
   async listTasks(filter?: TaskFilter): Promise<Task[]> {
@@ -154,6 +156,11 @@ export class LocalTaskBackend implements TaskBackend {
     const validated = TaskSchema.parse(merged);
     const taskPath = join(this.baseDir, id, "task.json");
     await atomicWriteJson(taskPath, validated);
+
+    if (this.onUpdate && existing.state !== validated.state) {
+      const allTasks = await this.listTasks();
+      await this.onUpdate(allTasks).catch(() => {}); // Don't fail on status write errors
+    }
 
     return validated;
   }

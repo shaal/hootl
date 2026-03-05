@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { loadConfig, ConfigSchema, type Config } from "./config.js";
 import { LocalTaskBackend } from "./tasks/local.js";
 import type { TaskBackend, Task, TaskState } from "./tasks/types.js";
+import { writeStatusSummary } from "./status.js";
 import { invokeClaude } from "./invoke.js";
 import {
   uiChoose,
@@ -21,6 +22,12 @@ import {
 
 function getBackend(config: Config): TaskBackend {
   const tasksDir = join(process.cwd(), ".hootl", "tasks");
+  const hootlDir = join(process.cwd(), ".hootl");
+  if (config.notifications.summaryFile) {
+    return new LocalTaskBackend(tasksDir, async (tasks) => {
+      await writeStatusSummary(hootlDir, tasks);
+    });
+  }
   return new LocalTaskBackend(tasksDir);
 }
 
