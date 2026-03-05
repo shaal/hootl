@@ -22,6 +22,7 @@ src/
   index.ts            CLI entry point (commander). Commands: init, plan, run, status, clarify
   config.ts           Zod-validated config. 3-layer merge: ~/.hootl/config.json < .hootl/config.json < env vars
   context.ts          Project context gathering for plan command (spec, structure, tasks, git log)
+  budget.ts           Global daily budget enforcement (reads cost.csv, checks against budgets.global)
   loop.ts             Core 3-phase completion loop (plan -> execute -> review). Budget/attempt tracking
   invoke.ts           Wrapper around `claude -p` via execa. Parses cost from JSON output
   git.ts              Git operations: task branches, auto-commit, branch switching
@@ -31,6 +32,7 @@ src/
     types.ts           Zod schemas for Task, TaskState, TaskBackend interface
     local.ts           Local filesystem task backend (.hootl/tasks/ directory)
   test/
+    budget.test.ts     Global budget: CSV parsing, date filtering, threshold checks
     config.test.ts     Config loading, merging, env overrides
     context.test.ts    Context formatting, section inclusion/omission, ordering
     invoke.test.ts     Arg building, cost parsing, output extraction
@@ -88,6 +90,15 @@ When the review phase scores confidence below the target, it does two additional
 On the next attempt, the **plan phase is skipped** and the execute phase runs directly from the review's remediation plan. This avoids information loss at session boundaries -- the reviewer already knows exactly what's needed and prescribes it directly, rather than relying on a fresh planner to re-derive it.
 
 The `hasRemediationPlan` flag in the loop controls plan-skipping. It resets to `false` after use and on transient errors to prevent stale plans from persisting.
+
+### Global Daily Budget Enforcement
+
+The global daily budget ($50.00 default) prevents runaway spend across all tasks. It is checked at two points:
+
+1. **Pre-run gate** (`src/index.ts` → `runCommand()`) -- Before selecting a task, reads `.hootl/logs/cost.csv`, sums today's entries, and refuses to start if `>= budgets.global`. Prints an error and returns.
+2. **Mid-loop gate** (`src/loop.ts` → `runCompletionLoop()`) -- At the top of each while-loop iteration (alongside the per-task budget check), re-reads the CSV. If the global budget is hit during execution, the current task moves to `blocked` with the blocker `"Global daily budget exhausted"`.
+
+Cost data comes from `logCost()` in `src/invoke.ts`, which appends to `cost.csv` after each phase. Both writer (`toISOString()`) and reader (`toISOString().slice(0,10)`) use UTC for consistent daily boundaries. The budget logic lives in `src/budget.ts` with three functions: `getTodaysCost()`, `isGlobalBudgetExceeded()`, and `checkGlobalBudget()`.
 
 ### Config Hierarchy
 
@@ -191,7 +202,7 @@ Test coverage:
 - **invoke.test.ts** -- Arg building, cost parsing (`total_cost_usd` / `cost_usd`), text extraction from JSON
 - **invoke-robustness.test.ts** -- Timeout handling, `is_error` detection, edge cases
 - **local-backend.test.ts** -- Task CRUD, filtering, atomic writes
-- **loop.test.ts** -- Review JSON parsing (inline, code-block, nested, remediationPlan), prompt building, confidence regression detection
+- **loop.test.ts** -- Review JSON parsing (inline, code-block, nested, remediationPlan), prompt building, confidence regression detection, global budget integration
 - **git.test.ts** -- Slugify edge cases, branch name construction, getHeadSha, resetToSha rollback
 
 ## Dependencies

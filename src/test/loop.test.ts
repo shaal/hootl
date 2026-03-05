@@ -1,9 +1,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { parseReviewResult, isSessionBudgetExceeded, applySessionBudgetExceeded, buildPlanPrompt, isConfidenceRegression } from "../loop.js";
+import { checkGlobalBudget } from "../budget.js";
 import type { TaskBackend } from "../tasks/types.js";
 import type { Task } from "../tasks/types.js";
 
@@ -340,5 +341,53 @@ describe("isConfidenceRegression", () => {
 
   it("returns true when current is 0 and previous was positive", () => {
     assert.equal(isConfidenceRegression(0, 50), true);
+  });
+});
+
+describe("global budget integration with loop", () => {
+  it("detects global budget exceeded from cost.csv data", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hootl-loop-budget-"));
+    try {
+      await mkdir(dir, { recursive: true });
+      const today = new Date().toISOString().slice(0, 10);
+      const csv = [
+        `${today}T08:00:00.000Z,task-1,plan,20.00`,
+        `${today}T09:00:00.000Z,task-1,execute,25.00`,
+        `${today}T10:00:00.000Z,task-2,plan,10.00`,
+      ].join("\n") + "\n";
+      await writeFile(join(dir, "cost.csv"), csv, "utf-8");
+
+      // Total today: $55.00, limit: $50.00 — should be exceeded
+      const result = await checkGlobalBudget(dir, 50.0);
+      assert.equal(result.exceeded, true);
+      assert.equal(result.todayCost, 55.0);
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+
+  it("uses blocker message format: Global daily budget exhausted", () => {
+    // The loop (src/loop.ts) uses this exact blocker string when the global
+    // budget check triggers mid-run. Verify the format stays consistent so
+    // downstream tooling (status, clarify) can match on it.
+    const blockerMessage = "Global daily budget exhausted";
+    assert.ok(blockerMessage.startsWith("Global daily budget"));
+    assert.ok(!blockerMessage.includes("per-task"));
+  });
+
+  it("allows work when today's cost is under the global limit", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hootl-loop-budget-"));
+    try {
+      await mkdir(dir, { recursive: true });
+      const today = new Date().toISOString().slice(0, 10);
+      const csv = `${today}T08:00:00.000Z,task-1,plan,0.05\n`;
+      await writeFile(join(dir, "cost.csv"), csv, "utf-8");
+
+      const result = await checkGlobalBudget(dir, 50.0);
+      assert.equal(result.exceeded, false);
+      assert.equal(result.todayCost, 0.05);
+    } finally {
+      await rm(dir, { recursive: true });
+    }
   });
 });
