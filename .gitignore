@@ -1,3 +1,8 @@
 node_modules/
 dist/
 *.tsbuildinfo
+
+# hootl runtime state (keep .hootl/config.json tracked)
+.hootl/tasks/
+.hootl/logs/
+.hootl/status.md
