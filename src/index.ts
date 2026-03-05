@@ -42,10 +42,15 @@ function ensureInitialized(): void {
 
 const program = new Command();
 
+function isVerbose(): boolean {
+  return program.opts()["verbose"] === true;
+}
+
 program
   .name("hootl")
   .version("0.1.0")
   .description("hootl — a task orchestrator powered by Claude")
+  .option("-v, --verbose", "Show Claude's output in real-time")
   .action(async () => {
     try {
       const choice = await uiChoose("What would you like to do?", [
@@ -159,8 +164,9 @@ async function planCommand(): Promise<void> {
       return;
   }
 
+  const verbose = isVerbose();
   const result = await uiSpinner("Thinking...", () =>
-    invokeClaude({ prompt, outputFormat: "text" }),
+    invokeClaude({ prompt, verbose }),
   );
 
   if (result.exitCode !== 0) {
@@ -239,7 +245,7 @@ async function runCommand(taskId?: string): Promise<void> {
   uiInfo(`Running task ${targetTask.id}: ${targetTask.title}`);
 
   const { runCompletionLoop } = await import("./loop.js");
-  await runCompletionLoop(targetTask, backend, config);
+  await runCompletionLoop(targetTask, backend, config, isVerbose());
 }
 
 program
