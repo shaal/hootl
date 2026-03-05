@@ -193,7 +193,7 @@ export function isSessionBudgetExceeded(phaseCost: number, perSession: number): 
   return phaseCost >= perSession;
 }
 
-async function applySessionBudgetExceeded(
+export async function applySessionBudgetExceeded(
   backend: TaskBackend,
   taskId: string,
   currentTask: Task,
@@ -358,6 +358,7 @@ export async function runCompletionLoop(
       }
 
       // Check per-session budget after execute phase
+      // Note: hasRemediationPlan was already consumed/reset before this point (at Phase 1), so no explicit reset is needed here.
       const execBudgetResult = await applySessionBudgetExceeded(backend, task.id, currentTask, phaseCost, config.budgets.perSession);
       if (execBudgetResult) {
         currentTask = execBudgetResult;

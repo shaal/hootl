@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { parseReviewResult, isSessionBudgetExceeded, buildPlanPrompt } from "../loop.js";
+import { parseReviewResult, isSessionBudgetExceeded, applySessionBudgetExceeded, buildPlanPrompt } from "../loop.js";
+import type { TaskBackend } from "../tasks/types.js";
 import type { Task } from "../tasks/types.js";
 
 describe("parseReviewResult", () => {
@@ -246,5 +247,68 @@ describe("isSessionBudgetExceeded", () => {
 
   it("returns false when cost is 0", () => {
     assert.equal(isSessionBudgetExceeded(0, 0.50), false);
+  });
+});
+
+describe("applySessionBudgetExceeded", () => {
+  const makeTask = (overrides: Partial<Task> = {}): Task => ({
+    id: "task-001",
+    title: "Test task",
+    description: "A test task",
+    priority: "medium",
+    state: "in_progress",
+    dependencies: [],
+    backend: "local",
+    backendRef: null,
+    confidence: 0,
+    attempts: 1,
+    totalCost: 0.10,
+    branch: null,
+    worktree: null,
+    blockers: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    ...overrides,
+  });
+
+  it("returns null when budget is not exceeded", async () => {
+    const mockBackend: Pick<TaskBackend, "updateTask"> = {
+      updateTask: async () => { throw new Error("should not be called"); },
+    };
+    const task = makeTask({ totalCost: 0.10 });
+    const result = await applySessionBudgetExceeded(
+      mockBackend as TaskBackend, "task-001", task, 0.30, 0.50,
+    );
+    assert.equal(result, null);
+  });
+
+  it("returns updated task when budget is exceeded", async () => {
+    const task = makeTask({ totalCost: 0.10 });
+    let capturedUpdates: Partial<Task> | undefined;
+    const mockBackend: Pick<TaskBackend, "updateTask"> = {
+      updateTask: async (_id: string, updates: Partial<Task>) => {
+        capturedUpdates = updates;
+        return { ...task, ...updates } as Task;
+      },
+    };
+    const result = await applySessionBudgetExceeded(
+      mockBackend as TaskBackend, "task-001", task, 0.55, 0.50,
+    );
+    assert.notEqual(result, null);
+    assert.equal(capturedUpdates?.totalCost, 0.65); // 0.10 + 0.55
+  });
+
+  it("returns updated task when cost exactly equals budget", async () => {
+    const task = makeTask({ totalCost: 0.00 });
+    const mockBackend: Pick<TaskBackend, "updateTask"> = {
+      updateTask: async (_id: string, updates: Partial<Task>) => {
+        return { ...task, ...updates } as Task;
+      },
+    };
+    const result = await applySessionBudgetExceeded(
+      mockBackend as TaskBackend, "task-001", task, 0.50, 0.50,
+    );
+    assert.notEqual(result, null);
+    assert.equal(result?.totalCost, 0.50);
   });
 });
