@@ -9,6 +9,7 @@ import { uiInfo, uiWarn, uiError, uiSuccess, uiSpinner } from "./ui.js";
 import { isGitRepo, createTaskBranch, commitTaskChanges, switchBranch, getBaseBranch, getHeadSha, resetToSha, mergeBranch, deleteBranch, pushBranch, createDraftPR } from "./git.js";
 import { checkGlobalBudget } from "./budget.js";
 import { generateMemoryEntry, appendMemoryEntry } from "./plan-memory.js";
+import { inferDependencies, resolveIndicesToIds } from "./dependencies.js";
 
 export async function readFileOrEmpty(path: string): Promise<string> {
   try {
@@ -417,6 +418,18 @@ export async function handleTooBroad(
     await backend.updateTask(created.id, { state: "ready" });
     createdIds.push(created.id);
   }
+
+  // Infer inter-subtask dependencies via heuristic keyword matching
+  const depMap = inferDependencies(preflight.subtasks);
+  const indexToId = new Map(createdIds.map((id, i) => [i, id]));
+  const resolvedDeps = resolveIndicesToIds(depMap, indexToId);
+  for (const [idx, depIds] of resolvedDeps) {
+    const subtaskId = indexToId.get(idx);
+    if (subtaskId !== undefined) {
+      await backend.updateTask(subtaskId, { dependencies: depIds });
+    }
+  }
+
   const idList = createdIds.join(", ");
   const note = `Decomposed into subtasks: ${idList}`;
   const updatedTask = await backend.updateTask(currentTask.id, {

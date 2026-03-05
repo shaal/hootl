@@ -932,5 +932,29 @@ describe("handleTooBroad subtask auto-creation", () => {
     assert.deepEqual(parentUpdate.updates.dependencies, ["existing-dep", "sub-001", "sub-002"]);
     await rm(taskDir, { recursive: true, force: true });
   });
+
+  it("infers inter-subtask dependencies via keyword matching", async () => {
+    const { backend, updates } = makeSubtaskMockBackend();
+    const task = makeTooBroadTask();
+    const taskDir = await makeTempTaskDir();
+    const preflight = {
+      verdict: "too_broad" as const,
+      understanding: "Broad",
+      subtasks: [
+        { title: "Core hook engine", description: "Create the hook execution engine" },
+        { title: "Skill support", description: "Add skill invocation to the hook engine" },
+        { title: "Wire hooks into loop", description: "Integrate hook engine and skill support into the loop" },
+      ],
+      reproductionResult: "",
+    };
+
+    await handleTooBroad(backend, task, preflight, taskDir);
+
+    // "Skill support" references "hook" from "Core hook engine" -> sub-002 depends on sub-001
+    // "Wire hooks into loop" references "hook" and "skill" -> sub-003 depends on sub-001 and sub-002
+    const depUpdates = updates.filter(u => u.updates.dependencies !== undefined && u.id.startsWith("sub-"));
+    assert.ok(depUpdates.length > 0, "should have wired at least one inter-subtask dependency");
+    await rm(taskDir, { recursive: true, force: true });
+  });
 });
 
