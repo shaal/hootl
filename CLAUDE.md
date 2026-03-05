@@ -31,6 +31,7 @@ src/
   git.ts              Git operations: task branches, auto-commit, branch switching
   guided.ts           Interactive goal clarification (generates questions via Claude, collects answers via gum)
   ui.ts               Terminal UI helpers using `gum` with stdin fallback
+  plan-memory.ts      Planning memory: records lessons from task outcomes, injects into plan prompts
   plan-review.ts      Plan critique pass (self-review before task creation)
   plan-summary.ts     TL;DR plan summary with Accept/Revise/Cancel confirmation
   status.ts           Status summary writer (grouped by state)
@@ -42,6 +43,7 @@ src/
     config.test.ts     Config loading, merging, env overrides
     context.test.ts    Context formatting, section inclusion/omission, ordering
     invoke.test.ts     Arg building, cost parsing, output extraction
+    plan-memory.test.ts  Memory entry generation, append/rotation, pattern loading, metrics computation
     plan-review.test.ts  Critique prompt building, task parsing, fallback paths
     plan-summary.test.ts Plan summary generation, priority counting, truncation
     invoke-robustness.test.ts  Edge cases for invoke (timeouts, errors, is_error)
@@ -106,6 +108,16 @@ When a task reaches the confidence target, `handleConfidenceMet()` in `src/loop.
 **Default is null** (infer from auto level). Since `auto.defaultLevel` defaults to `proactive`, the effective default is `merge` — meaning tasks that reach confidence will auto-merge unless overridden.
 
 All git operations (`mergeBranch`, `deleteBranch`, `pushBranch`, `createDraftPR`) are wrapped in try/catch. On failure, they warn and fall back to `none` behavior (task moves to `review`). The `resolveOnConfidenceMode()` helper in `src/config.ts` is a pure function that encapsulates the priority logic.
+
+### Planning Memory
+
+The system learns from its own history via `src/plan-memory.ts`. After a task reaches a terminal state (done or blocked), a short memory entry is appended to `.hootl/planning-patterns.md` summarizing what worked or went wrong. Before planning, the last ~20 entries plus aggregate metrics are injected into the plan prompt as "Lessons from Previous Tasks".
+
+- **Entry generation** (`generateMemoryEntry`) — Pure analysis of task state, attempt count, and blocker messages. No Claude call. Pattern-matches on common blocker types (budget, confidence regression, max attempts) to produce actionable insights.
+- **Rotation** — File capped at 50 entries (FIFO). Oldest entries age out naturally via `appendMemoryEntry`.
+- **Metrics** (`computeMetrics`) — Parses entries to compute: average attempts per task, completion rate, top 3 blocker reasons.
+- **Prompt injection** (`formatPlanningMemoryContext`) — Called in `planCommand()` after context gathering. Appends metrics summary + recent patterns to the context block, affecting all 4 planning modes equally.
+- **Failure safety** — All memory operations are wrapped in try/catch. Memory recording never crashes the completion loop or blocks planning.
 
 ### Remediation Plan Flow (confidence < target)
 
@@ -291,6 +303,7 @@ Test coverage:
 - **discuss.test.ts** -- buildDiscussArgs, system prompt construction, section ordering
 - **dependencies.test.ts** -- Dependency inference (explicit indices, heuristic fallback, cycle detection, out-of-range filtering), keyword extraction, index-to-ID resolution
 - **guided.test.ts** -- Clarification prompt building, question JSON parsing (valid, malformed, capped), constraints formatting, edge cases
+- **plan-memory.test.ts** -- Memory entry generation (success/blocked variants, blocker categorization, truncation), append/rotation (50-entry cap, FIFO), pattern loading (recent count, empty file), metrics computation (averages, completion rate, blocker reasons), prompt formatting
 - **plan-review.test.ts** -- Critique prompt building (goal inclusion, task JSON, indices, dependsOn), task parsing (valid, markdown-wrapped, missing fields, non-integer deps), fallback on invalid input
 - **plan-summary.test.ts** -- Summary generation (single/multiple/many tasks, truncation), priority counting (mixed, default-to-medium), empty array, priority ordering
 - **prioritize.test.ts** -- userPriority schema backward compat, sort order (userPriority before auto), dependency enforcement (findRunnableTask)

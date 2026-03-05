@@ -33,6 +33,7 @@ import {
 } from "./guided.js";
 import { critiquePlan } from "./plan-review.js";
 import { generatePlanSummary, confirmPlan } from "./plan-summary.js";
+import { formatPlanningMemoryContext } from "./plan-memory.js";
 
 function getBackend(config: Config): TaskBackend {
   const tasksDir = join(process.cwd(), ".hootl", "tasks");
@@ -128,7 +129,17 @@ async function planCommand(cliMode?: { fromSpec?: boolean; goal?: string; analyz
   const ctx = await uiSpinner("Gathering project context...", () =>
     gatherProjectContext(backend),
   );
-  const formattedContext = formatContextForPrompt(ctx);
+  let formattedContext = formatContextForPrompt(ctx);
+
+  // Inject planning memory (lessons from previous tasks) into context
+  try {
+    const memoryContext = await formatPlanningMemoryContext(join(process.cwd(), ".hootl"));
+    if (memoryContext !== "") {
+      formattedContext += "\n\n" + memoryContext;
+    }
+  } catch {
+    // Planning memory is best-effort — never block planning
+  }
 
   let mode: string | undefined;
 

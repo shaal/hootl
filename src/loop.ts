@@ -7,6 +7,7 @@ import { type Task, type TaskBackend } from "./tasks/types.js";
 import { uiInfo, uiWarn, uiError, uiSuccess, uiSpinner } from "./ui.js";
 import { isGitRepo, createTaskBranch, commitTaskChanges, switchBranch, getBaseBranch, getHeadSha, resetToSha, mergeBranch, deleteBranch, pushBranch, createDraftPR } from "./git.js";
 import { checkGlobalBudget } from "./budget.js";
+import { generateMemoryEntry, appendMemoryEntry } from "./plan-memory.js";
 
 export async function readFileOrEmpty(path: string): Promise<string> {
   try {
@@ -270,6 +271,15 @@ export async function handleConfidenceMet(
   return { state: "review", mergedSuccessfully: false };
 }
 
+async function recordMemory(task: Task, projectDir: string): Promise<void> {
+  try {
+    const entry = generateMemoryEntry(task);
+    await appendMemoryEntry(projectDir, entry);
+  } catch {
+    // Memory recording should never crash the loop
+  }
+}
+
 export async function runCompletionLoop(
   task: Task,
   backend: TaskBackend,
@@ -321,10 +331,11 @@ export async function runCompletionLoop(
       uiWarn(
         `Task ${task.id} exceeded per-task budget ($${currentTask.totalCost.toFixed(2)} >= $${config.budgets.perTask.toFixed(2)}). Moving to blocked.`,
       );
-      await backend.updateTask(task.id, {
+      const updatedBudgetTask = await backend.updateTask(task.id, {
         state: "blocked",
         blockers: [...currentTask.blockers, "Per-task budget exhausted"],
       });
+      await recordMemory(updatedBudgetTask, getProjectDir());
       break;
     }
 
@@ -334,10 +345,11 @@ export async function runCompletionLoop(
       uiWarn(
         `Global daily budget exhausted ($${globalBudgetCheck.todayCost.toFixed(2)} >= $${config.budgets.global.toFixed(2)}). Moving task to blocked.`,
       );
-      await backend.updateTask(task.id, {
+      const updatedGlobalTask = await backend.updateTask(task.id, {
         state: "blocked",
         blockers: [...currentTask.blockers, "Global daily budget exhausted"],
       });
+      await recordMemory(updatedGlobalTask, getProjectDir());
       break;
     }
 
@@ -346,10 +358,11 @@ export async function runCompletionLoop(
       uiWarn(
         `Task ${task.id} reached max attempts (${currentTask.attempts}/${config.budgets.maxAttemptsPerTask}). Moving to blocked.`,
       );
-      await backend.updateTask(task.id, {
+      const updatedAttemptsTask = await backend.updateTask(task.id, {
         state: "blocked",
         blockers: [...currentTask.blockers, "Max attempts exhausted"],
       });
+      await recordMemory(updatedAttemptsTask, getProjectDir());
       break;
     }
 
@@ -529,10 +542,11 @@ export async function runCompletionLoop(
         const rollbackMsg = `\n\n---\n\n## Attempt ${attempt} — ROLLED BACK\n\nConfidence regressed from ${previousConfidence}% to ${review.confidence}%. Changes reverted to ${preExecuteSha.slice(0, 8)}.\n`;
         await appendFile(join(taskDir, "progress.md"), rollbackMsg, "utf-8");
         // Move to blocked
-        await backend.updateTask(task.id, {
+        const updatedRegressionTask = await backend.updateTask(task.id, {
           state: "blocked",
           blockers: [...currentTask.blockers, `Confidence regression: ${review.confidence}% < ${previousConfidence}% (previous attempt). Execute phase rolled back.`],
         });
+        await recordMemory(updatedRegressionTask, getProjectDir());
         break;
       }
 
@@ -548,6 +562,9 @@ export async function runCompletionLoop(
         const result = await handleConfidenceMet(
           currentTask, config, backend, taskBranch, baseBranch, taskDir, cliFlags,
         );
+        // Record success in planning memory
+        const doneTask = await backend.getTask(task.id);
+        await recordMemory(doneTask, getProjectDir());
         if (result.mergedSuccessfully) {
           // Merge already checked out base branch — skip end-of-loop switchBranch
           taskBranch = null;
@@ -562,13 +579,14 @@ export async function runCompletionLoop(
           review.blockers.join("\n"),
           "utf-8",
         );
-        await backend.updateTask(task.id, {
+        const updatedBlockedTask = await backend.updateTask(task.id, {
           state: "blocked",
           blockers: review.blockers,
         });
         uiWarn(
           `Task ${task.id} blocked: ${review.blockers.join("; ")}`,
         );
+        await recordMemory(updatedBlockedTask, getProjectDir());
         break;
       }
 
