@@ -20,6 +20,7 @@ npm run test:build  # Build then run tests
 ```
 src/
   index.ts            CLI entry point (commander). Commands: init, plan, run, status, clarify, discuss, prioritize
+  dependencies.ts     Post-planning dependency inference and index-to-ID resolution
   selection.ts        Dependency-aware task selection (findRunnableTask)
   discuss.ts          Interactive Claude session launcher (stdio: 'inherit' for full TTY control)
   config.ts           Zod-validated config. 3-layer merge: ~/.hootl/config.json < .hootl/config.json < env vars
@@ -181,6 +182,16 @@ The plan command gathers project context via `src/context.ts` before calling Cla
 
 This keeps prompts small (~2K chars) while giving Claude full access to explore the codebase. The "From spec" mode compares the spec against existing code to generate gap-filling tasks with priorities.
 
+### Auto-detected Task Dependencies
+
+When the planner generates a batch of tasks, dependencies are automatically wired up via a two-pass process in `planCommand()`:
+
+1. **Planner prompts** request a `dependsOn` field — an optional array of 0-based indices referencing other tasks in the same batch (e.g., `"dependsOn": [0, 2]`).
+2. **`inferDependencies()`** in `src/dependencies.ts` processes the batch: uses Claude's explicit `dependsOn` when provided, falls back to heuristic keyword matching (scanning descriptions for references to other task titles) when omitted. Circular dependencies are detected and removed via DFS.
+3. **Two-pass creation**: all tasks are created first (collecting `index → id` mapping), then dependencies are wired via `backend.updateTask()` in a second pass using `resolveIndicesToIds()`.
+
+The existing `findRunnableTask()` in `src/selection.ts` enforces these dependencies at runtime — tasks whose dependencies aren't in `done` or `review` state are skipped.
+
 ### Planning Philosophy: Concrete First
 
 The plan system prompt (`templates/plan.md`) enforces two key constraints:
@@ -255,6 +266,7 @@ Test coverage:
 - **loop.test.ts** -- Review JSON parsing (inline, code-block, nested, remediationPlan), prompt building, confidence regression detection, global budget integration
 - **git.test.ts** -- Slugify edge cases, branch name construction, getHeadSha, resetToSha rollback
 - **discuss.test.ts** -- buildDiscussArgs, system prompt construction, section ordering
+- **dependencies.test.ts** -- Dependency inference (explicit indices, heuristic fallback, cycle detection, out-of-range filtering), keyword extraction, index-to-ID resolution
 - **prioritize.test.ts** -- userPriority schema backward compat, sort order (userPriority before auto), dependency enforcement (findRunnableTask)
 
 ## Dependencies

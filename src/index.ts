@@ -25,6 +25,7 @@ import { autoInit } from "./init.js";
 import { checkGlobalBudget } from "./budget.js";
 import { discussCommand } from "./discuss.js";
 import { findRunnableTask } from "./selection.js";
+import { inferDependencies, resolveIndicesToIds } from "./dependencies.js";
 
 function getBackend(config: Config): TaskBackend {
   const tasksDir = join(process.cwd(), ".hootl", "tasks");
@@ -141,6 +142,11 @@ async function planCommand(cliMode?: { fromSpec?: boolean; goal?: string; analyz
     ]);
   }
 
+  const jsonSchemaInstruction =
+    `Return ONLY a JSON array of objects with "title", "description", "priority", and optionally "dependsOn" fields.\n` +
+    `Priority must be one of: "critical", "high", "medium", "low".\n` +
+    `If a task depends on another task in this list being completed first, include a "dependsOn" array with the 0-based indices of those prerequisite tasks (e.g. "dependsOn": [0, 2] means this task depends on the 1st and 3rd tasks). Tasks with no dependencies should omit this field or use an empty array.\n`;
+
   let prompt: string;
 
   switch (mode) {
@@ -152,19 +158,16 @@ async function planCommand(cliMode?: { fromSpec?: boolean; goal?: string; analyz
         `- Do NOT create tasks for things that already exist and work\n` +
         `- Each task should be independently implementable\n` +
         `- Include enough detail in the description for an AI to implement it without further guidance\n` +
-        `- Order tasks from highest to lowest priority (most foundational first)\n` +
-        `- If a task depends on another, note it in the description\n\n` +
-        `Return ONLY a JSON array of objects with "title", "description", and "priority" fields.\n` +
-        `Priority must be one of: "critical", "high", "medium", "low".\n\n` +
+        `- Order tasks from highest to lowest priority (most foundational first)\n\n` +
+        jsonSchemaInstruction + `\n` +
         `<context>\n${formattedContext}\n</context>`;
       break;
     case "Break down a goal": {
       const goal = cliMode?.goal ?? await uiInput("Describe the goal:");
       prompt =
         `You are a task planner. Break down the following goal into concrete, ` +
-        `actionable coding tasks. For each task provide a title, description, and priority. ` +
-        `Return ONLY a JSON array of objects with "title", "description", and "priority" fields.\n` +
-        `Priority must be one of: "critical", "high", "medium", "low".\n\n` +
+        `actionable coding tasks. For each task provide a title, description, priority, and dependencies on other tasks in this batch. ` +
+        jsonSchemaInstruction + `\n` +
         `Goal: ${goal}\n\n` +
         `<context>\n${formattedContext}\n</context>`;
       break;
@@ -173,16 +176,14 @@ async function planCommand(cliMode?: { fromSpec?: boolean; goal?: string; analyz
       prompt =
         `You are a task planner. Analyze the current codebase and suggest tasks ` +
         `for improvements, refactors, or missing features. ` +
-        `Return ONLY a JSON array of objects with "title", "description", and "priority" fields.\n` +
-        `Priority must be one of: "critical", "high", "medium", "low".\n\n` +
+        jsonSchemaInstruction + `\n` +
         `<context>\n${formattedContext}\n</context>`;
       break;
     case "Suggest what's next":
       prompt =
         `You are a task planner. Given the project context below, ` +
         `suggest what should be worked on next. ` +
-        `Return ONLY a JSON array of objects with "title", "description", and "priority" fields.\n` +
-        `Priority must be one of: "critical", "high", "medium", "low".\n\n` +
+        jsonSchemaInstruction + `\n` +
         `<context>\n${formattedContext}\n</context>`;
       break;
     default:
@@ -199,7 +200,7 @@ async function planCommand(cliMode?: { fromSpec?: boolean; goal?: string; analyz
     return;
   }
 
-  let tasks: Array<{ title: string; description: string; priority?: string }>;
+  let tasks: Array<{ title: string; description: string; priority?: string; dependsOn?: number[] }>;
   try {
     // Try to extract JSON array from the response (may be wrapped in markdown)
     const jsonMatch = result.output.match(/\[[\s\S]*\]/);
@@ -210,17 +211,23 @@ async function planCommand(cliMode?: { fromSpec?: boolean; goal?: string; analyz
     if (!Array.isArray(parsed)) {
       throw new Error("Response is not an array");
     }
-    tasks = parsed as Array<{ title: string; description: string; priority?: string }>;
+    tasks = parsed as Array<{ title: string; description: string; priority?: string; dependsOn?: number[] }>;
   } catch {
     uiError("Could not parse task suggestions from Claude response.");
     uiInfo("Raw response:\n" + result.output);
     return;
   }
 
+  // Infer dependencies (uses Claude's dependsOn if provided, heuristic fallback otherwise)
+  const depMap = inferDependencies(tasks);
+
   const validPriorities = new Set(["critical", "high", "medium", "low"]);
   const priorityCounts = new Map<string, number>();
+  const indexToId = new Map<number, string>();
 
-  for (const task of tasks) {
+  // Pass 1: Create all tasks (without dependencies)
+  for (let i = 0; i < tasks.length; i++) {
+    const task = tasks[i]!;
     const priority =
       typeof task.priority === "string" && validPriorities.has(task.priority)
         ? (task.priority as "critical" | "high" | "medium" | "low")
@@ -232,13 +239,27 @@ async function planCommand(cliMode?: { fromSpec?: boolean; goal?: string; analyz
       priority,
     });
 
+    indexToId.set(i, created.id);
+
     const label = priority ?? "medium";
     priorityCounts.set(label, (priorityCounts.get(label) ?? 0) + 1);
 
     uiInfo(`Created task ${created.id}: ${created.title} [${label}]`);
   }
 
-  uiSuccess(`Created ${tasks.length} task(s).`);
+  // Pass 2: Wire up dependencies now that all IDs are known
+  const resolvedDeps = resolveIndicesToIds(depMap, indexToId);
+  let depCount = 0;
+  for (const [taskIdx, depIds] of resolvedDeps) {
+    const taskId = indexToId.get(taskIdx);
+    if (taskId !== undefined) {
+      await backend.updateTask(taskId, { dependencies: depIds });
+      depCount += depIds.length;
+      uiInfo(`  ${taskId} depends on: ${depIds.join(", ")}`);
+    }
+  }
+
+  uiSuccess(`Created ${tasks.length} task(s)${depCount > 0 ? ` with ${depCount} dependency link(s)` : ""}.`);
 
   const summaryParts: string[] = [];
   for (const level of ["critical", "high", "medium", "low"]) {
