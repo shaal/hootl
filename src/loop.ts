@@ -63,6 +63,34 @@ export async function buildPlanPrompt(
   return parts.join("\n");
 }
 
+export async function buildPreflightPrompt(
+  task: Task,
+  taskDir: string,
+): Promise<string> {
+  const parts: string[] = [];
+
+  parts.push(`# Task: ${task.title}`);
+  parts.push("");
+  parts.push(task.description);
+
+  parts.push("");
+  parts.push(`**Priority:** ${task.priority}`);
+
+  const blockers = await readFileOrEmpty(join(taskDir, "blockers.md"));
+  if (blockers.trim().length > 0) {
+    parts.push("");
+    parts.push("## Previous Blockers");
+    parts.push(blockers);
+  }
+
+  parts.push("");
+  parts.push(
+    "Validate this task and produce a JSON preflight assessment following your system prompt instructions.",
+  );
+
+  return parts.join("\n");
+}
+
 export async function buildExecutePrompt(
   task: Task,
   taskDir: string,
@@ -118,6 +146,13 @@ export async function buildReviewPrompt(
   }
 
   return parts.join("\n");
+}
+
+export interface PreflightResult {
+  verdict: "proceed" | "too_broad" | "unclear" | "cannot_reproduce";
+  understanding: string;
+  subtasks: Array<{ title: string; description: string }>;
+  reproductionResult: string;
 }
 
 interface ReviewResult {
@@ -183,6 +218,76 @@ export function parseReviewResult(output: string): ReviewResult {
           : "";
 
       return { confidence, summary, issues, suggestions, blockers, remediationPlan };
+    } catch {
+      continue;
+    }
+  }
+
+  return defaultResult;
+}
+
+const VALID_VERDICTS = new Set(["proceed", "too_broad", "unclear", "cannot_reproduce"]);
+
+export function parsePreflightResult(output: string): PreflightResult {
+  const defaultResult: PreflightResult = {
+    verdict: "unclear",
+    understanding: "",
+    subtasks: [],
+    reproductionResult: "",
+  };
+
+  // Same robust JSON extraction as parseReviewResult:
+  // Try code block first, then brace-matching fallback
+  const codeBlockMatch = /```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/.exec(output);
+  const jsonCandidate = codeBlockMatch ? codeBlockMatch[1] : output;
+
+  const candidates: string[] = [jsonCandidate ?? ""];
+  const braceMatch = /\{[\s\S]*\}/.exec(output);
+  if (braceMatch && braceMatch[0] !== jsonCandidate) {
+    candidates.push(braceMatch[0]);
+  }
+
+  for (const candidate of candidates) {
+    try {
+      const parsed: unknown = JSON.parse(candidate);
+      if (typeof parsed !== "object" || parsed === null) {
+        continue;
+      }
+
+      const record = parsed as Record<string, unknown>;
+
+      const rawVerdict = record["verdict"];
+      const verdict: PreflightResult["verdict"] =
+        typeof rawVerdict === "string" && VALID_VERDICTS.has(rawVerdict)
+          ? (rawVerdict as PreflightResult["verdict"])
+          : "unclear";
+
+      const understanding =
+        typeof record["understanding"] === "string" ? record["understanding"] : "";
+
+      const subtasks: Array<{ title: string; description: string }> = [];
+      if (Array.isArray(record["subtasks"])) {
+        for (const item of record["subtasks"] as unknown[]) {
+          if (
+            typeof item === "object" &&
+            item !== null &&
+            typeof (item as Record<string, unknown>)["title"] === "string" &&
+            typeof (item as Record<string, unknown>)["description"] === "string"
+          ) {
+            subtasks.push({
+              title: (item as Record<string, unknown>)["title"] as string,
+              description: (item as Record<string, unknown>)["description"] as string,
+            });
+          }
+        }
+      }
+
+      const reproductionResult =
+        typeof record["reproductionResult"] === "string"
+          ? record["reproductionResult"]
+          : "";
+
+      return { verdict, understanding, subtasks, reproductionResult };
     } catch {
       continue;
     }
