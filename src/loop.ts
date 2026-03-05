@@ -359,8 +359,14 @@ export async function handleConfidenceMet(
   cliFlags: CliFlags,
   hookDeps?: HookDeps,
 ): Promise<{ state: "done" | "review" | "in_progress"; mergedSuccessfully: boolean }> {
-  // Run on_confidence_met hooks before proceeding with merge/PR/none
-  if (config.hooks.length > 0) {
+  // Run on_confidence_met hooks before proceeding with merge/PR/none.
+  // If no hooks are configured, inject the default simplify hook as a blocking validator.
+  const effectiveHooks = config.hooks.length > 0
+    ? config.hooks
+    : [{ trigger: "on_confidence_met" as const, skill: "simplify", blocking: true }];
+  const hasConfidenceHooks = effectiveHooks.some((h) => h.trigger === "on_confidence_met");
+
+  if (hasConfidenceHooks) {
     try {
       const hookContext: HookContext = {
         task,
@@ -369,9 +375,10 @@ export async function handleConfidenceMet(
         confidence: task.confidence,
         config,
       };
+      const effectiveConfig = { ...config, hooks: effectiveHooks };
       const hookResult = hookDeps
-        ? await runHooks("on_confidence_met", hookContext, config, hookDeps)
-        : await runHooks("on_confidence_met", hookContext, config);
+        ? await runHooks("on_confidence_met", hookContext, effectiveConfig, hookDeps)
+        : await runHooks("on_confidence_met", hookContext, effectiveConfig);
       if (!hookResult.allPassed) {
         uiWarn("Blocking hook failed — keeping task in_progress for another attempt.");
         return { state: "in_progress", mergedSuccessfully: false };

@@ -62,6 +62,7 @@ templates/
   plan.md              System prompt for planning phase
   execute.md           System prompt for execution phase
   review.md            System prompt for review phase
+  validate-simplify.md System prompt template for the simplify skill (default on_confidence_met hook)
 docs/
   spec.md              Full project specification
 .hootl/                Runtime data directory (tasks, logs, status)
@@ -197,7 +198,11 @@ Hooks run at trigger points in the completion loop. Skills are named prompt temp
 
 Available triggers: `on_confidence_met`, `on_review_complete`, `on_blocked`, `on_execute_start`.
 
-Built-in skills: `simplify` (runs `git diff <baseBranch>..HEAD`, reviews changed code for reuse/quality/efficiency, fixes issues found).
+Built-in skills: `simplify` (runs `git diff <baseBranch>..HEAD`, reviews changed code for reuse/quality/efficiency, fixes issues, runs tests). Uses the `templates/validate-simplify.md` template with variable substitution (`{{baseBranch}}`, `{{taskTitle}}`, `{{taskDescription}}`, `{{branchName}}`). Falls back to an inline prompt if the template file cannot be read. Skill definitions may be async (e.g. for file I/O); `runSkillHook` awaits them.
+
+**Default simplify hook**: When no hooks are configured (`config.hooks` is empty), `handleConfidenceMet()` injects a default `{ trigger: "on_confidence_met", skill: "simplify", blocking: true }` hook. This ensures every task that reaches confidence target gets a code quality review before merging. To disable, configure an explicit hook list (even an empty one won't work — use a no-op advisory hook or set a custom `on_confidence_met` hook).
+
+**Hook result JSON schema**: Hooks can output either the old format (`pass`, `remediationActions`) or the new format (`passed`, `confidence`, `fixes_applied`). `parseHookResult` accepts both, with new field names taking precedence when both are present.
 
 Optional fields: `conditions.minConfidence` (number), `prompt` (inline string or file path, used if no `skill`).
 
@@ -206,7 +211,7 @@ When `blocking: true`, a hook failure at `on_confidence_met` keeps the task `in_
 Hook integration in the completion loop (`src/loop.ts`):
 - **`on_execute_start`** — fired before Phase 2 (execute). Fire-and-forget; errors are caught and logged.
 - **`on_review_complete`** — fired after Phase 3 review parsing and confidence update. Fire-and-forget.
-- **`on_confidence_met`** — fired inside `handleConfidenceMet()` before merge/PR/state-transition. Blocking failures return `in_progress` so the task gets another attempt.
+- **`on_confidence_met`** — fired inside `handleConfidenceMet()` before merge/PR/state-transition. When no hooks are configured, the default simplify hook runs here as a blocking validator. Blocking failures return `in_progress` so the task gets another attempt.
 - **`on_blocked`** — fired before each blocked-state transition (budget, max attempts, confidence regression, review blockers). Fire-and-forget via `moveToBlocked()` helper.
 
 All hook calls receive a `HookContext` with task, branch info, confidence, and config. Hook costs are logged by `runHooks` with phase label `hook:<trigger>`.
@@ -374,7 +379,7 @@ Test coverage:
 - **preflight.test.ts** -- Template existence, role declaration, verdict values, JSON output fields, no-implementation constraints, bug reproduction instructions, scope assessment
 - **plan-review.test.ts** -- Critique prompt building (goal inclusion, task JSON, indices, dependsOn), task parsing (valid, markdown-wrapped, missing fields, non-integer deps), fallback on invalid input
 - **plan-summary.test.ts** -- Summary generation (single/multiple/many tasks, truncation), priority counting (mixed, default-to-medium), empty array, priority ordering
-- **hooks.test.ts** -- Trigger filtering (condition evaluation, minConfidence), prompt resolution (inline vs file path, fallback), result parsing (JSON extraction, brace-matching, graceful degradation), system prompt construction, runHook integration (pass/fail, cost, context forwarding), runHooks orchestration (blocking short-circuit, advisory continues, cost logging, trigger filtering)
+- **hooks.test.ts** -- Trigger filtering (condition evaluation, minConfidence), prompt resolution (inline vs file path, fallback), result parsing (JSON extraction, brace-matching, graceful degradation, new field aliases: passed/fixes_applied/confidence), system prompt construction, runHook integration (pass/fail, cost, context forwarding), runHooks orchestration (blocking short-circuit, advisory continues, cost logging, trigger filtering), validate-simplify template (existence, content markers, variable substitution)
 - **prioritize.test.ts** -- userPriority schema backward compat, sort order (userPriority before auto), dependency enforcement (findRunnableTask)
 - **branch-block.test.ts** -- Integration test: dirty worktree blocks task on branch switch (real git repo), clean worktree proceeds past branch creation
 

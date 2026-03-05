@@ -659,21 +659,22 @@ describe("handleConfidenceMet", () => {
     }
   });
 
-  it("skips hooks when config has no hooks configured", async () => {
+  it("runs default simplify hook when config has no hooks configured", async () => {
     const dir = await mkdtemp(join(tmpdir(), "hootl-hcm-"));
     try {
       const { backend } = makeMockBackend();
       const config = ConfigSchema.parse({ git: { onConfidence: "none" }, hooks: [] });
       let hookInvoked = false;
       const hookDeps: HookDeps = {
-        invoke: async () => { hookInvoked = true; return { output: '{"pass": true}', costUsd: 0, exitCode: 0, durationMs: 0 } as InvokeResult; },
+        invoke: async () => { hookInvoked = true; return { output: '{"passed": true, "confidence": 95, "issues": [], "fixes_applied": []}', costUsd: 0.02, exitCode: 0, durationMs: 50 } as InvokeResult; },
         log: async () => {},
         warn: () => {},
       };
-      await handleConfidenceMet(
+      const result = await handleConfidenceMet(
         makeTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
       );
-      assert.equal(hookInvoked, false, "hooks should not be invoked when config.hooks is empty");
+      assert.equal(hookInvoked, true, "default simplify hook should be invoked when config.hooks is empty");
+      assert.equal(result.state, "review"); // onConfidence: "none" → review
     } finally {
       await rm(dir, { recursive: true });
     }

@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { invokeClaude, logCost } from "./invoke.js";
 import type { InvokeOptions } from "./invoke.js";
 import type { Config, Hook, HookTrigger } from "./config.js";
@@ -25,38 +26,79 @@ export interface HookResult {
 /**
  * A skill definition maps a hook context to invoke options.
  * Skills are named prompt templates that encapsulate a specific workflow.
+ * May be async (e.g. to read template files from disk).
  */
-export type SkillDefinition = (ctx: HookContext) => InvokeOptions;
+export type SkillDefinition = (ctx: HookContext) => InvokeOptions | Promise<InvokeOptions>;
+
+/**
+ * Reads a skill template from templates/ directory relative to the package root.
+ * Returns null if the file cannot be read (graceful degradation).
+ */
+async function loadSkillTemplate(name: string): Promise<string | null> {
+  try {
+    const thisFile = fileURLToPath(import.meta.url);
+    const templatesDir = join(dirname(thisFile), "..", "templates");
+    return await readFile(join(templatesDir, `${name}.md`), "utf-8");
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Built-in skill registry. Maps skill names to their prompt workflows.
  */
 const skillRegistry = new Map<string, SkillDefinition>([
-  ["simplify", (ctx) => ({
-    prompt: [
-      `First, run \`git diff ${ctx.baseBranch}..HEAD\` to see all changes on this branch.`,
-      "Review the changed code for reuse, quality, and efficiency.",
-      "Look for duplicated logic that could be extracted, overly complex implementations",
-      "that could be simplified, and inefficient patterns that could be optimized.",
-      "Then fix any issues found.",
-    ].join(" "),
-    systemPrompt: [
-      "You are a code quality reviewer for an autonomous task completion system.",
-      `Task: ${ctx.task.title}`,
-      `Description: ${ctx.task.description}`,
-      `Branch: ${ctx.branchName ?? "none"}`,
-      `Base branch: ${ctx.baseBranch}`,
-      "",
-      `Start by examining the diff between the task branch and ${ctx.baseBranch}.`,
-      `Use the git diff output to identify specific files and hunks that need improvement.`,
-      "",
-      "Respond with a JSON object containing:",
-      '  - "pass": boolean (true if code quality is acceptable)',
-      '  - "issues": string[] (list of quality issues found)',
-      '  - "remediationActions": string[] (concrete fixes to apply)',
-    ].join("\n"),
-    maxTurns: 5,
-  })],
+  ["simplify", async (ctx) => {
+    const template = await loadSkillTemplate("validate-simplify");
+
+    // If template loaded, use it as system prompt with variable substitution
+    if (template !== null) {
+      const systemPrompt = template
+        .replace(/\{\{baseBranch\}\}/g, ctx.baseBranch)
+        .replace(/\{\{taskTitle\}\}/g, ctx.task.title)
+        .replace(/\{\{taskDescription\}\}/g, ctx.task.description)
+        .replace(/\{\{branchName\}\}/g, ctx.branchName ?? "none");
+
+      return {
+        prompt: [
+          `Run \`git diff ${ctx.baseBranch}..HEAD\` to see all changes on this branch.`,
+          "Review the changed code for reuse, quality, and efficiency.",
+          "Fix any issues found, then run the test suite to verify tests still pass.",
+          "Output your result as JSON following the system prompt instructions.",
+        ].join(" "),
+        systemPrompt,
+        maxTurns: 10,
+      };
+    }
+
+    // Fallback: inline prompt if template cannot be read
+    return {
+      prompt: [
+        `First, run \`git diff ${ctx.baseBranch}..HEAD\` to see all changes on this branch.`,
+        "Review the changed code for reuse, quality, and efficiency.",
+        "Look for duplicated logic that could be extracted, overly complex implementations",
+        "that could be simplified, and inefficient patterns that could be optimized.",
+        "Then fix any issues found.",
+      ].join(" "),
+      systemPrompt: [
+        "You are a code quality reviewer for an autonomous task completion system.",
+        `Task: ${ctx.task.title}`,
+        `Description: ${ctx.task.description}`,
+        `Branch: ${ctx.branchName ?? "none"}`,
+        `Base branch: ${ctx.baseBranch}`,
+        "",
+        `Start by examining the diff between the task branch and ${ctx.baseBranch}.`,
+        `Use the git diff output to identify specific files and hunks that need improvement.`,
+        "",
+        "Respond with a JSON object containing:",
+        '  - "passed": boolean (true if code quality is acceptable)',
+        '  - "confidence": number (0-100)',
+        '  - "issues": string[] (list of quality issues found)',
+        '  - "fixes_applied": string[] (concrete fixes applied)',
+      ].join("\n"),
+      maxTurns: 10,
+    };
+  }],
 ]);
 
 /**
@@ -88,7 +130,7 @@ export async function runSkillHook(
     };
   }
 
-  const invokeOptions = skill(context);
+  const invokeOptions = await skill(context);
   const result = await deps.invoke(invokeOptions);
   const parsed = parseHookResult(result.output);
 
@@ -153,14 +195,17 @@ export async function buildHookPrompt(hook: Pick<Hook, "prompt">): Promise<strin
 /**
  * Parses hook output as pass/fail JSON. Extracts JSON from raw output
  * using brace-matching (handles markdown code blocks).
+ * Supports both old field names (pass, remediationActions) and new ones
+ * (passed, fixes_applied, confidence). New names take precedence.
  * Defaults to pass: true if JSON parsing fails (graceful degradation).
  */
 export function parseHookResult(output: string): {
   pass: boolean;
   issues: string[];
   remediationActions: string[];
+  confidence: number | null;
 } {
-  const defaultResult = { pass: true, issues: [] as string[], remediationActions: [] as string[] };
+  const defaultResult = { pass: true, issues: [] as string[], remediationActions: [] as string[], confidence: null as number | null };
 
   if (output.trim() === "") return defaultResult;
 
@@ -188,15 +233,28 @@ export function parseHookResult(output: string): {
     if (typeof parsed !== "object" || parsed === null) return defaultResult;
 
     const record = parsed as Record<string, unknown>;
-    const pass = typeof record["pass"] === "boolean" ? record["pass"] : true;
+
+    // "passed" (new) takes precedence over "pass" (old)
+    const pass = typeof record["passed"] === "boolean"
+      ? record["passed"]
+      : typeof record["pass"] === "boolean"
+        ? record["pass"]
+        : true;
+
     const issues = Array.isArray(record["issues"])
       ? (record["issues"] as unknown[]).filter((x): x is string => typeof x === "string")
       : [];
-    const remediationActions = Array.isArray(record["remediationActions"])
-      ? (record["remediationActions"] as unknown[]).filter((x): x is string => typeof x === "string")
-      : [];
 
-    return { pass, issues, remediationActions };
+    // "fixes_applied" (new) takes precedence over "remediationActions" (old)
+    const remediationActions = Array.isArray(record["fixes_applied"])
+      ? (record["fixes_applied"] as unknown[]).filter((x): x is string => typeof x === "string")
+      : Array.isArray(record["remediationActions"])
+        ? (record["remediationActions"] as unknown[]).filter((x): x is string => typeof x === "string")
+        : [];
+
+    const confidence = typeof record["confidence"] === "number" ? record["confidence"] : null;
+
+    return { pass, issues, remediationActions, confidence };
   } catch {
     return defaultResult;
   }

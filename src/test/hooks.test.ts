@@ -1,7 +1,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdtemp, writeFile, rm, readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import {
   getHooksForTrigger,
@@ -319,6 +321,57 @@ That's my assessment.`;
     const result = parseHookResult(input);
     // Falls back to default since JSON.parse fails
     assert.equal(result.pass, true);
+  });
+
+  it("accepts 'passed' as alias for 'pass'", () => {
+    const input = JSON.stringify({ passed: false, issues: ["found issue"], fixes_applied: ["fixed it"] });
+    const result = parseHookResult(input);
+    assert.equal(result.pass, false);
+    assert.deepEqual(result.issues, ["found issue"]);
+  });
+
+  it("'passed' takes precedence over 'pass' when both present", () => {
+    const input = JSON.stringify({ pass: true, passed: false, issues: [] });
+    const result = parseHookResult(input);
+    assert.equal(result.pass, false);
+  });
+
+  it("accepts 'fixes_applied' as alias for 'remediationActions'", () => {
+    const input = JSON.stringify({ passed: true, issues: [], fixes_applied: ["extracted helper", "removed duplication"] });
+    const result = parseHookResult(input);
+    assert.deepEqual(result.remediationActions, ["extracted helper", "removed duplication"]);
+  });
+
+  it("'fixes_applied' takes precedence over 'remediationActions' when both present", () => {
+    const input = JSON.stringify({ pass: true, issues: [], remediationActions: ["old"], fixes_applied: ["new"] });
+    const result = parseHookResult(input);
+    assert.deepEqual(result.remediationActions, ["new"]);
+  });
+
+  it("parses 'confidence' number field", () => {
+    const input = JSON.stringify({ passed: true, confidence: 92, issues: [], fixes_applied: [] });
+    const result = parseHookResult(input);
+    assert.equal(result.confidence, 92);
+  });
+
+  it("returns null confidence when field is missing", () => {
+    const input = JSON.stringify({ pass: true, issues: [] });
+    const result = parseHookResult(input);
+    assert.equal(result.confidence, null);
+  });
+
+  it("parses full new-format JSON from validate-simplify output", () => {
+    const input = JSON.stringify({
+      passed: true,
+      confidence: 97,
+      issues: ["minor: could extract shared helper"],
+      fixes_applied: ["extracted formatDate helper to utils.ts"],
+    });
+    const result = parseHookResult(input);
+    assert.equal(result.pass, true);
+    assert.equal(result.confidence, 97);
+    assert.deepEqual(result.issues, ["minor: could extract shared helper"]);
+    assert.deepEqual(result.remediationActions, ["extracted formatDate helper to utils.ts"]);
   });
 });
 
@@ -682,7 +735,7 @@ describe("resolveSkill", () => {
     assert.equal(skill, undefined);
   });
 
-  it("simplify skill produces invoke options with expected fields", () => {
+  it("simplify skill produces invoke options with expected fields", async () => {
     const ctx = makeContext({
       task: makeTask({ title: "Refactor auth", description: "Clean up auth module" }),
       branchName: "hootl/t3-refactor",
@@ -690,15 +743,13 @@ describe("resolveSkill", () => {
     });
     const skill = resolveSkill("simplify");
     assert.notEqual(skill, undefined);
-    const opts = skill!(ctx);
-    assert.ok(opts.prompt.includes("reuse"));
+    const opts = await skill!(ctx);
     assert.ok(opts.prompt.includes("quality"));
     assert.ok(opts.prompt.includes("git diff main..HEAD"), "prompt should instruct Claude to run git diff");
     assert.ok(opts.systemPrompt?.includes("Refactor auth"));
     assert.ok(opts.systemPrompt?.includes("hootl/t3-refactor"));
-    assert.ok(opts.systemPrompt?.includes("examining the diff"), "system prompt should reference diff workflow");
     assert.ok(opts.systemPrompt?.includes("main"), "system prompt should reference the base branch");
-    assert.equal(opts.maxTurns, 5);
+    assert.equal(opts.maxTurns, 10);
   });
 });
 
@@ -713,7 +764,7 @@ describe("runSkillHook", () => {
     assert.equal(result.success, true);
     assert.equal(result.costUsd, 0.01);
     assert.equal(deps.invokeCalls.length, 1);
-    assert.ok(deps.invokeCalls[0]?.prompt.includes("reuse"));
+    assert.ok(deps.invokeCalls[0]?.prompt.includes("quality"));
   });
 
   it("returns failure result for an unknown skill", async () => {
@@ -757,7 +808,7 @@ describe("runHook skill-vs-prompt precedence", () => {
     const result = await runHook(hook, ctx, deps);
     assert.equal(result.success, true);
     // Skill's prompt includes "reuse" — verify it was used
-    assert.ok(deps.invokeCalls[0]?.prompt.includes("reuse"));
+    assert.ok(deps.invokeCalls[0]?.prompt.includes("quality"));
   });
 
   it("uses prompt when hook has prompt only", async () => {
@@ -778,7 +829,7 @@ describe("runHook skill-vs-prompt precedence", () => {
     const result = await runHook(hook, ctx, deps);
     assert.equal(result.success, true);
     // Should use skill's prompt, not the hook's prompt field
-    assert.ok(deps.invokeCalls[0]?.prompt.includes("reuse"));
+    assert.ok(deps.invokeCalls[0]?.prompt.includes("quality"));
     assert.ok(!deps.invokeCalls[0]?.prompt.includes("This should be ignored"));
   });
 
@@ -830,5 +881,47 @@ describe("HookSchema with skill field", () => {
         hooks: [{ trigger: "on_confidence_met" }],
       });
     });
+  });
+});
+
+// --- validate-simplify.md template ---
+
+describe("validate-simplify template", () => {
+  const thisFile = fileURLToPath(import.meta.url);
+  const templatesDir = join(dirname(thisFile), "..", "..", "templates");
+  const templatePath = join(templatesDir, "validate-simplify.md");
+
+  it("template file exists", () => {
+    assert.ok(existsSync(templatePath), "templates/validate-simplify.md should exist");
+  });
+
+  it("contains key content markers", async () => {
+    const content = await readFile(templatePath, "utf-8");
+    assert.ok(content.includes("{{baseBranch}}"), "template should have baseBranch placeholder");
+    assert.ok(content.includes("{{taskTitle}}"), "template should have taskTitle placeholder");
+    assert.ok(content.includes("{{taskDescription}}"), "template should have taskDescription placeholder");
+    assert.ok(content.includes("{{branchName}}"), "template should have branchName placeholder");
+    assert.ok(content.includes("git diff"), "template should reference git diff");
+    assert.ok(content.includes('"passed"'), "template should document passed field");
+    assert.ok(content.includes('"confidence"'), "template should document confidence field");
+    assert.ok(content.includes('"fixes_applied"'), "template should document fixes_applied field");
+  });
+
+  it("simplify skill substitutes template variables", async () => {
+    const ctx = makeContext({
+      task: makeTask({ title: "My Task", description: "My description" }),
+      branchName: "hootl/t1-my-task",
+      baseBranch: "develop",
+    });
+    const skill = resolveSkill("simplify");
+    assert.notEqual(skill, undefined);
+    const opts = await skill!(ctx);
+    // System prompt should have substituted variables
+    assert.ok(opts.systemPrompt?.includes("My Task"), "system prompt should contain substituted task title");
+    assert.ok(opts.systemPrompt?.includes("My description"), "system prompt should contain substituted description");
+    assert.ok(opts.systemPrompt?.includes("hootl/t1-my-task"), "system prompt should contain substituted branch name");
+    assert.ok(opts.systemPrompt?.includes("develop"), "system prompt should contain substituted base branch");
+    // Should NOT have raw template variables
+    assert.ok(!opts.systemPrompt?.includes("{{"), "system prompt should not contain unsubstituted template variables");
   });
 });
