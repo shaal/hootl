@@ -25,6 +25,7 @@ import { autoInit } from "./init.js";
 import { checkGlobalBudget } from "./budget.js";
 import { discussCommand } from "./discuss.js";
 import { findRunnableTask } from "./selection.js";
+import { syncReviewTasks } from "./sync.js";
 import { inferDependencies, resolveIndicesToIds } from "./dependencies.js";
 import {
   generateClarifyingQuestions,
@@ -441,6 +442,9 @@ async function runCommand(taskId?: string, cliFlags?: { merge?: boolean; noMerge
   const config = await loadConfig();
   const backend = getBackend(config);
 
+  // Auto-promote review tasks whose branches have been merged or deleted
+  await syncReviewTasks(backend);
+
   let targetTask: Task | undefined;
 
   if (taskId !== undefined) {
@@ -517,6 +521,9 @@ async function statusCommand(): Promise<void> {
   await autoInit();
   const config = await loadConfig();
   const backend = getBackend(config);
+
+  // Auto-promote review tasks whose branches have been merged or deleted
+  await syncReviewTasks(backend);
 
   const allTasks = await backend.listTasks();
 
