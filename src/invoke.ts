@@ -18,7 +18,7 @@ export interface InvokeResult {
   durationMs: number;
 }
 
-function buildArgs(options: InvokeOptions): string[] {
+export function buildArgs(options: InvokeOptions): string[] {
   const args: string[] = ["-p", options.prompt, "--no-session-persistence"];
 
   // Always use JSON output format to capture cost data
@@ -43,7 +43,7 @@ function buildArgs(options: InvokeOptions): string[] {
   return args;
 }
 
-function parseCostFromOutput(raw: string): number {
+export function parseCostFromOutput(raw: string): number {
   try {
     const parsed: unknown = JSON.parse(raw);
     if (typeof parsed === "object" && parsed !== null) {
@@ -58,7 +58,7 @@ function parseCostFromOutput(raw: string): number {
   return 0;
 }
 
-function extractTextOutput(raw: string, format: "text" | "json"): string {
+export function extractTextOutput(raw: string, format: "text" | "json"): string {
   if (format !== "json") {
     return raw;
   }

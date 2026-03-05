@@ -183,7 +183,7 @@ export async function runCompletionLoop(
   config: Config,
 ): Promise<void> {
   const taskDir = join(getProjectDir(), "tasks", task.id);
-  const costLogDir = getProjectDir();
+  const costLogDir = join(getProjectDir(), "logs");
 
   await mkdir(taskDir, { recursive: true });
 
@@ -235,8 +235,7 @@ export async function runCompletionLoop(
         invokeClaude({
           prompt: planUserPrompt,
           systemPrompt: planSystemPrompt,
-          outputFormat: "text",
-          permissionMode: "default",
+          maxTurns: 20,
         }),
       );
 
@@ -259,8 +258,7 @@ export async function runCompletionLoop(
         invokeClaude({
           prompt: executeUserPrompt,
           systemPrompt: executeSystemPrompt,
-          outputFormat: "text",
-          permissionMode: config.permissionMode === "default" ? "bypassPermissions" : config.permissionMode,
+          maxTurns: 50,
         }),
       );
 
@@ -288,8 +286,7 @@ export async function runCompletionLoop(
         invokeClaude({
           prompt: reviewUserPrompt,
           systemPrompt: reviewSystemPrompt,
-          outputFormat: "json",
-          permissionMode: "default",
+          maxTurns: 20,
         }),
       );
 
