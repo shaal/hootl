@@ -1,5 +1,6 @@
 import { execa } from "execa";
 import { createInterface } from "node:readline";
+import { bold, red, yellow, green, blue, dim } from "./format.js";
 
 let gumCached: boolean | undefined;
 
@@ -153,17 +154,28 @@ export async function uiSpinner<T>(
 }
 
 export function uiInfo(message: string): void {
-  console.log(message);
+  // Highlight phase headers and key metrics
+  if (/^Phase \d|^---/.test(message)) {
+    console.log(bold(message));
+  } else if (message.startsWith("Confidence:")) {
+    console.log(blue(message));
+  } else {
+    console.log(message);
+  }
 }
 
 export function uiError(message: string): void {
-  process.stderr.write(`ERROR: ${message}\n`);
+  process.stderr.write(`${red("ERROR:")} ${message}\n`);
 }
 
 export function uiWarn(message: string): void {
-  process.stderr.write(`WARN: ${message}\n`);
+  process.stderr.write(`${yellow("WARN:")} ${message}\n`);
 }
 
 export function uiSuccess(message: string): void {
-  console.log(`OK: ${message}`);
+  console.log(`${green("OK:")} ${message}`);
+}
+
+export function errorMsg(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }

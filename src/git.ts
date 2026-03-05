@@ -1,5 +1,5 @@
 import { execa } from "execa";
-import { uiInfo, uiWarn } from "./ui.js";
+import { uiInfo, uiWarn, errorMsg } from "./ui.js";
 
 export function slugify(text: string): string {
   return text
@@ -93,7 +93,7 @@ export async function mergeBranch(taskBranch: string, baseBranch: string): Promi
     await execa("git", ["merge", taskBranch]);
     return true;
   } catch (err: unknown) {
-    uiWarn(`Merge failed: ${err instanceof Error ? err.message : String(err)}`);
+    uiWarn(`Merge failed: ${errorMsg(err)}`);
     // Abort any in-progress merge and try to get back to a clean state
     try {
       await execa("git", ["merge", "--abort"]);
@@ -113,7 +113,7 @@ export async function deleteBranch(branchName: string): Promise<void> {
   try {
     await execa("git", ["branch", "-d", branchName]);
   } catch (err: unknown) {
-    uiWarn(`Could not delete branch ${branchName}: ${err instanceof Error ? err.message : String(err)}`);
+    uiWarn(`Could not delete branch ${branchName}: ${errorMsg(err)}`);
   }
 }
 
@@ -122,9 +122,46 @@ export async function pushBranch(branchName: string): Promise<boolean> {
     await execa("git", ["push", "-u", "origin", branchName]);
     return true;
   } catch (err: unknown) {
-    uiWarn(`Push failed: ${err instanceof Error ? err.message : String(err)}`);
+    uiWarn(`Push failed: ${errorMsg(err)}`);
     return false;
   }
+}
+
+/**
+ * Given a set of branch names, return those that are either merged into baseBranch
+ * or no longer exist locally. Runs at most 2 git subprocesses regardless of input size.
+ */
+export async function getMergedOrGoneBranches(branchNames: string[], baseBranch: string): Promise<{ merged: Set<string>; gone: Set<string> }> {
+  const merged = new Set<string>();
+  const gone = new Set<string>();
+  if (branchNames.length === 0) return { merged, gone };
+
+  // One call to get all local branches
+  let localBranches: Set<string>;
+  try {
+    const listResult = await execa("git", ["branch", "--format", "%(refname:short)"]);
+    localBranches = new Set(listResult.stdout.split("\n").map((b) => b.trim()).filter((b) => b.length > 0));
+  } catch {
+    return { merged, gone };
+  }
+
+  // One call to get all branches merged into base
+  let mergedBranches: Set<string>;
+  try {
+    const mergedResult = await execa("git", ["branch", "--merged", baseBranch, "--format", "%(refname:short)"]);
+    mergedBranches = new Set(mergedResult.stdout.split("\n").map((b) => b.trim()).filter((b) => b.length > 0));
+  } catch {
+    mergedBranches = new Set();
+  }
+
+  for (const name of branchNames) {
+    if (!localBranches.has(name)) {
+      gone.add(name);
+    } else if (mergedBranches.has(name)) {
+      merged.add(name);
+    }
+  }
+  return { merged, gone };
 }
 
 async function isGhAvailable(): Promise<boolean> {
@@ -146,7 +183,7 @@ export async function createDraftPR(title: string, body: string): Promise<boolea
     uiInfo(`Draft PR created: ${title}`);
     return true;
   } catch (err: unknown) {
-    uiWarn(`PR creation failed: ${err instanceof Error ? err.message : String(err)}`);
+    uiWarn(`PR creation failed: ${errorMsg(err)}`);
     return false;
   }
 }

@@ -1,14 +1,29 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { evaluateConditions, resolvePrompt, parseHookOutput, getSkillRegistry, runHooks } from "../hooks.js";
-import type { HookContext } from "../hooks.js";
+import { mkdtemp, writeFile, rm, readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { tmpdir } from "node:os";
+import {
+  getHooksForTrigger,
+  buildHookPrompt,
+  buildHookSystemPrompt,
+  parseHookResult,
+  runHook,
+  runHooks,
+  resolveSkill,
+  runSkillHook,
+} from "../hooks.js";
+import type { HookContext, HookDeps, HookResult } from "../hooks.js";
 import type { Hook } from "../config.js";
-import { ConfigSchema } from "../config.js";
 import type { Task } from "../tasks/types.js";
+import type { InvokeResult } from "../invoke.js";
+import { ConfigSchema } from "../config.js";
 
 function makeTask(overrides: Partial<Task> = {}): Task {
   return {
-    id: "task-001",
+    id: "t1",
     title: "Test task",
     description: "A test task description",
     priority: "medium",
@@ -24,19 +39,18 @@ function makeTask(overrides: Partial<Task> = {}): Task {
     worktree: null,
     userPriority: null,
     blockers: [],
-    createdAt: "2024-01-01T00:00:00Z",
-    updatedAt: "2024-01-01T00:00:00Z",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
     ...overrides,
   };
 }
 
-function makeCtx(overrides: Partial<HookContext> = {}): HookContext {
+function makeContext(overrides: Partial<HookContext> = {}): HookContext {
   return {
     task: makeTask(),
-    taskDir: "/tmp/test-hooks",
+    branchName: "hootl/t1-test",
     baseBranch: "main",
-    taskBranch: "hootl/task-001-test",
-    confidence: 95,
+    confidence: 80,
     config: ConfigSchema.parse({}),
     ...overrides,
   };
@@ -45,297 +59,869 @@ function makeCtx(overrides: Partial<HookContext> = {}): HookContext {
 function makeHook(overrides: Partial<Hook> = {}): Hook {
   return {
     trigger: "on_confidence_met",
-    prompt: "Review the code for quality issues",
+    prompt: "Check if the code follows best practices",
     blocking: false,
     ...overrides,
   };
 }
 
-// --- evaluateConditions ---
+// --- getHooksForTrigger ---
 
-describe("evaluateConditions", () => {
-  it("passes when no conditions are set", () => {
-    const hook = makeHook({ conditions: undefined });
-    const ctx = makeCtx({ confidence: 50 });
-    assert.equal(evaluateConditions(hook, ctx), true);
+describe("getHooksForTrigger", () => {
+  it("returns hooks matching the trigger", () => {
+    const hooks: Hook[] = [
+      makeHook({ trigger: "on_confidence_met" }),
+      makeHook({ trigger: "on_blocked" }),
+      makeHook({ trigger: "on_confidence_met" }),
+    ];
+    const ctx = makeContext();
+    const result = getHooksForTrigger("on_confidence_met", hooks, ctx);
+    assert.equal(result.length, 2);
   });
 
-  it("passes when empty conditions object", () => {
-    const hook = makeHook({ conditions: {} });
-    const ctx = makeCtx({ confidence: 50 });
-    assert.equal(evaluateConditions(hook, ctx), true);
+  it("filters out hooks with different triggers", () => {
+    const hooks: Hook[] = [
+      makeHook({ trigger: "on_blocked" }),
+      makeHook({ trigger: "on_execute_start" }),
+    ];
+    const ctx = makeContext();
+    const result = getHooksForTrigger("on_confidence_met", hooks, ctx);
+    assert.equal(result.length, 0);
   });
 
-  it("passes when minConfidence is met", () => {
-    const hook = makeHook({ conditions: { minConfidence: 90 } });
-    const ctx = makeCtx({ confidence: 95 });
-    assert.equal(evaluateConditions(hook, ctx), true);
+  it("includes hook when confidence >= minConfidence", () => {
+    const hooks: Hook[] = [
+      makeHook({ trigger: "on_review_complete", conditions: { minConfidence: 70 } }),
+    ];
+    const ctx = makeContext({ confidence: 80 });
+    const result = getHooksForTrigger("on_review_complete", hooks, ctx);
+    assert.equal(result.length, 1);
   });
 
-  it("passes when confidence equals minConfidence exactly", () => {
-    const hook = makeHook({ conditions: { minConfidence: 90 } });
-    const ctx = makeCtx({ confidence: 90 });
-    assert.equal(evaluateConditions(hook, ctx), true);
+  it("includes hook when confidence == minConfidence exactly", () => {
+    const hooks: Hook[] = [
+      makeHook({ trigger: "on_review_complete", conditions: { minConfidence: 80 } }),
+    ];
+    const ctx = makeContext({ confidence: 80 });
+    const result = getHooksForTrigger("on_review_complete", hooks, ctx);
+    assert.equal(result.length, 1);
   });
 
-  it("fails when minConfidence is not met", () => {
-    const hook = makeHook({ conditions: { minConfidence: 90 } });
-    const ctx = makeCtx({ confidence: 85 });
-    assert.equal(evaluateConditions(hook, ctx), false);
+  it("excludes hook when confidence < minConfidence", () => {
+    const hooks: Hook[] = [
+      makeHook({ trigger: "on_review_complete", conditions: { minConfidence: 90 } }),
+    ];
+    const ctx = makeContext({ confidence: 80 });
+    const result = getHooksForTrigger("on_review_complete", hooks, ctx);
+    assert.equal(result.length, 0);
   });
 
-  it("fails when confidence is null and minConfidence is set", () => {
-    const hook = makeHook({ conditions: { minConfidence: 90 } });
-    const ctx = makeCtx({ confidence: null });
-    assert.equal(evaluateConditions(hook, ctx), false);
+  it("returns empty array when no hooks provided", () => {
+    const ctx = makeContext();
+    const result = getHooksForTrigger("on_confidence_met", [], ctx);
+    assert.equal(result.length, 0);
   });
 
-  it("passes when confidence is null and no minConfidence", () => {
-    const hook = makeHook({ conditions: {} });
-    const ctx = makeCtx({ confidence: null });
-    assert.equal(evaluateConditions(hook, ctx), true);
-  });
-});
-
-// --- resolvePrompt ---
-
-describe("resolvePrompt", () => {
-  it("returns inline prompt as-is", async () => {
-    const hook = makeHook({ prompt: "Check the code quality" });
-    const ctx = makeCtx();
-    const result = await resolvePrompt(hook, ctx);
-    assert.equal(result, "Check the code quality");
+  it("includes hooks with no conditions (always pass)", () => {
+    const hooks: Hook[] = [
+      makeHook({ trigger: "on_blocked" }),
+    ];
+    const ctx = makeContext({ confidence: 10 });
+    const result = getHooksForTrigger("on_blocked", hooks, ctx);
+    assert.equal(result.length, 1);
   });
 
-  it("resolves /simplify via skill registry", async () => {
-    const hook = makeHook({ prompt: "/simplify" });
-    const ctx = makeCtx({ baseBranch: "main", taskBranch: "hootl/task-001-test" });
-    const result = await resolvePrompt(hook, ctx);
-    assert.ok(result.includes("diff"));
-    assert.ok(result.includes("main"));
-    assert.ok(result.length > 50);
-  });
-
-  it("throws on unknown skill", async () => {
-    const hook = makeHook({ prompt: "/nonexistent" });
-    const ctx = makeCtx();
-    await assert.rejects(
-      () => resolvePrompt(hook, ctx),
-      (err: Error) => {
-        assert.ok(err.message.includes("Unknown skill"));
-        assert.ok(err.message.includes("/nonexistent"));
-        return true;
-      },
-    );
-  });
-
-  it("loads template file for templates/ prefix", async () => {
-    // templates/simplify.md should exist
-    const hook = makeHook({ prompt: "templates/simplify.md" });
-    const ctx = makeCtx();
-    const result = await resolvePrompt(hook, ctx);
-    assert.ok(result.includes("code quality reviewer"));
-  });
-
-  it("throws when template file does not exist", async () => {
-    const hook = makeHook({ prompt: "templates/nonexistent.md" });
-    const ctx = makeCtx();
-    await assert.rejects(() => resolvePrompt(hook, ctx));
+  it("mixes conditional and unconditional hooks correctly", () => {
+    const hooks: Hook[] = [
+      makeHook({ trigger: "on_review_complete", conditions: { minConfidence: 90 } }),
+      makeHook({ trigger: "on_review_complete" }), // no condition
+      makeHook({ trigger: "on_review_complete", conditions: { minConfidence: 50 } }),
+    ];
+    const ctx = makeContext({ confidence: 75 });
+    const result = getHooksForTrigger("on_review_complete", hooks, ctx);
+    // First excluded (75 < 90), second included (no condition), third included (75 >= 50)
+    assert.equal(result.length, 2);
   });
 });
 
-// --- parseHookOutput ---
+// --- buildHookPrompt ---
 
-describe("parseHookOutput", () => {
-  it("parses valid JSON with pass=true", () => {
-    const input = JSON.stringify({ pass: true, issues: [], fixed: ["cleaned up imports"] });
-    const result = parseHookOutput(input);
-    assert.equal(result.success, true);
+describe("buildHookPrompt", () => {
+  it("returns inline string when prompt has no path indicators", async () => {
+    const hook = makeHook({ prompt: "Check all code for security issues" });
+    const result = await buildHookPrompt(hook);
+    assert.equal(result, "Check all code for security issues");
+  });
+
+  it("returns inline string for plain text without slashes or extensions", async () => {
+    const hook = makeHook({ prompt: "Validate the implementation quality" });
+    const result = await buildHookPrompt(hook);
+    assert.equal(result, "Validate the implementation quality");
+  });
+
+  it("reads file content when prompt ends with .md", async () => {
+    const tmpDir = await mkdtemp(join(tmpdir(), "hooks-test-"));
+    const filePath = join(tmpDir, "check.md");
+    await writeFile(filePath, "# Security Check\nVerify no secrets are exposed.");
+
+    try {
+      const hook = makeHook({ prompt: filePath });
+      const result = await buildHookPrompt(hook);
+      assert.equal(result, "# Security Check\nVerify no secrets are exposed.");
+    } finally {
+      await rm(tmpDir, { recursive: true });
+    }
+  });
+
+  it("reads file content when prompt ends with .txt", async () => {
+    const tmpDir = await mkdtemp(join(tmpdir(), "hooks-test-"));
+    const filePath = join(tmpDir, "check.txt");
+    await writeFile(filePath, "Plain text hook prompt content");
+
+    try {
+      const hook = makeHook({ prompt: filePath });
+      const result = await buildHookPrompt(hook);
+      assert.equal(result, "Plain text hook prompt content");
+    } finally {
+      await rm(tmpDir, { recursive: true });
+    }
+  });
+
+  it("reads file when prompt starts with templates/", async () => {
+    const tmpDir = await mkdtemp(join(tmpdir(), "hooks-test-"));
+    const templatesDir = join(tmpDir, "templates");
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(templatesDir, { recursive: true });
+    const filePath = join(templatesDir, "hook-check");
+    await writeFile(filePath, "Template hook content");
+
+    try {
+      // templates/ prefix triggers file read, but the actual resolution
+      // uses the full path. Here we test with the full path starting with templates/.
+      const hook = makeHook({ prompt: filePath });
+      const result = await buildHookPrompt(hook);
+      assert.equal(result, "Template hook content");
+    } finally {
+      await rm(tmpDir, { recursive: true });
+    }
+  });
+
+  it("falls back to raw string on file read failure", async () => {
+    const hook = makeHook({ prompt: "/nonexistent/path/to/hook.md" });
+    const result = await buildHookPrompt(hook);
+    assert.equal(result, "/nonexistent/path/to/hook.md");
+  });
+
+  it("reads file when prompt starts with ./", async () => {
+    // This tests the detection heuristic; actual read will fail for relative path
+    // in test context, so it falls back to raw string
+    const hook = makeHook({ prompt: "./hooks/validate.md" });
+    const result = await buildHookPrompt(hook);
+    // Falls back to raw string since the relative file doesn't exist
+    assert.equal(result, "./hooks/validate.md");
+  });
+});
+
+// --- parseHookResult ---
+
+describe("parseHookResult", () => {
+  it("parses clean JSON with pass: true", () => {
+    const input = JSON.stringify({ pass: true, issues: [], remediationActions: [] });
+    const result = parseHookResult(input);
+    assert.equal(result.pass, true);
     assert.deepEqual(result.issues, []);
-    assert.deepEqual(result.fixed, ["cleaned up imports"]);
+    assert.deepEqual(result.remediationActions, []);
   });
 
-  it("parses valid JSON with pass=false and issues", () => {
+  it("parses clean JSON with pass: false and issues", () => {
     const input = JSON.stringify({
       pass: false,
-      issues: ["duplicated logic in handler", "missing error handling"],
-      fixed: [],
+      issues: ["missing tests", "no error handling"],
+      remediationActions: ["add unit tests", "wrap in try/catch"],
     });
-    const result = parseHookOutput(input);
-    assert.equal(result.success, false);
-    assert.deepEqual(result.issues, ["duplicated logic in handler", "missing error handling"]);
-    assert.deepEqual(result.fixed, []);
+    const result = parseHookResult(input);
+    assert.equal(result.pass, false);
+    assert.deepEqual(result.issues, ["missing tests", "no error handling"]);
+    assert.deepEqual(result.remediationActions, ["add unit tests", "wrap in try/catch"]);
   });
 
   it("extracts JSON from markdown code block", () => {
-    const input = `Here is my review:\n\n\`\`\`json\n{"pass": true, "issues": [], "fixed": []}\n\`\`\``;
-    const result = parseHookOutput(input);
-    assert.equal(result.success, true);
+    const input = `Here is my analysis:
+
+\`\`\`json
+{
+  "pass": false,
+  "issues": ["security vulnerability found"],
+  "remediationActions": ["sanitize inputs"]
+}
+\`\`\`
+
+That's my assessment.`;
+    const result = parseHookResult(input);
+    assert.equal(result.pass, false);
+    assert.deepEqual(result.issues, ["security vulnerability found"]);
+    assert.deepEqual(result.remediationActions, ["sanitize inputs"]);
   });
 
-  it("treats non-JSON non-empty output as success", () => {
-    const result = parseHookOutput("Everything looks good, no issues found.");
-    assert.equal(result.success, true);
+  it("extracts JSON embedded in surrounding text", () => {
+    const input = `After review: {"pass": true, "issues": [], "remediationActions": []} End of review.`;
+    const result = parseHookResult(input);
+    assert.equal(result.pass, true);
     assert.deepEqual(result.issues, []);
   });
 
-  it("treats empty output as failure", () => {
-    const result = parseHookOutput("");
-    assert.equal(result.success, false);
+  it("defaults to pass: true on unparseable output", () => {
+    const result = parseHookResult("This is just plain text with no JSON");
+    assert.equal(result.pass, true);
+    assert.deepEqual(result.issues, []);
+    assert.deepEqual(result.remediationActions, []);
   });
 
-  it("treats whitespace-only output as failure", () => {
-    const result = parseHookOutput("   \n  ");
-    assert.equal(result.success, false);
+  it("handles empty string gracefully", () => {
+    const result = parseHookResult("");
+    assert.equal(result.pass, true);
+    assert.deepEqual(result.issues, []);
   });
 
-  it("handles JSON with missing fixed field", () => {
+  it("defaults pass to true when field is missing", () => {
+    const input = JSON.stringify({ issues: ["something"], remediationActions: [] });
+    const result = parseHookResult(input);
+    assert.equal(result.pass, true);
+    assert.deepEqual(result.issues, ["something"]);
+  });
+
+  it("handles missing issues and remediationActions gracefully", () => {
+    const input = JSON.stringify({ pass: false });
+    const result = parseHookResult(input);
+    assert.equal(result.pass, false);
+    assert.deepEqual(result.issues, []);
+    assert.deepEqual(result.remediationActions, []);
+  });
+
+  it("filters non-string items from issues array", () => {
+    const input = JSON.stringify({ pass: true, issues: ["valid", 42, null, "also valid"], remediationActions: [] });
+    const result = parseHookResult(input);
+    assert.deepEqual(result.issues, ["valid", "also valid"]);
+  });
+
+  it("handles nested JSON with braces in values", () => {
+    const input = JSON.stringify({
+      pass: false,
+      issues: ["config { foo: bar } is invalid"],
+      remediationActions: ["fix the { config }"],
+    });
+    const result = parseHookResult(input);
+    assert.equal(result.pass, false);
+    assert.equal(result.issues.length, 1);
+    assert.ok(result.issues[0]?.includes("config"));
+  });
+
+  it("handles malformed JSON (unmatched braces)", () => {
+    const input = "{ pass: true, issues: [";
+    const result = parseHookResult(input);
+    // Falls back to default since JSON.parse fails
+    assert.equal(result.pass, true);
+  });
+
+  it("accepts 'passed' as alias for 'pass'", () => {
+    const input = JSON.stringify({ passed: false, issues: ["found issue"], fixes_applied: ["fixed it"] });
+    const result = parseHookResult(input);
+    assert.equal(result.pass, false);
+    assert.deepEqual(result.issues, ["found issue"]);
+  });
+
+  it("'passed' takes precedence over 'pass' when both present", () => {
+    const input = JSON.stringify({ pass: true, passed: false, issues: [] });
+    const result = parseHookResult(input);
+    assert.equal(result.pass, false);
+  });
+
+  it("accepts 'fixes_applied' as alias for 'remediationActions'", () => {
+    const input = JSON.stringify({ passed: true, issues: [], fixes_applied: ["extracted helper", "removed duplication"] });
+    const result = parseHookResult(input);
+    assert.deepEqual(result.remediationActions, ["extracted helper", "removed duplication"]);
+  });
+
+  it("'fixes_applied' takes precedence over 'remediationActions' when both present", () => {
+    const input = JSON.stringify({ pass: true, issues: [], remediationActions: ["old"], fixes_applied: ["new"] });
+    const result = parseHookResult(input);
+    assert.deepEqual(result.remediationActions, ["new"]);
+  });
+
+  it("parses 'confidence' number field", () => {
+    const input = JSON.stringify({ passed: true, confidence: 92, issues: [], fixes_applied: [] });
+    const result = parseHookResult(input);
+    assert.equal(result.confidence, 92);
+  });
+
+  it("returns null confidence when field is missing", () => {
     const input = JSON.stringify({ pass: true, issues: [] });
-    const result = parseHookOutput(input);
+    const result = parseHookResult(input);
+    assert.equal(result.confidence, null);
+  });
+
+  it("parses full new-format JSON from validate-simplify output", () => {
+    const input = JSON.stringify({
+      passed: true,
+      confidence: 97,
+      issues: ["minor: could extract shared helper"],
+      fixes_applied: ["extracted formatDate helper to utils.ts"],
+    });
+    const result = parseHookResult(input);
+    assert.equal(result.pass, true);
+    assert.equal(result.confidence, 97);
+    assert.deepEqual(result.issues, ["minor: could extract shared helper"]);
+    assert.deepEqual(result.remediationActions, ["extracted formatDate helper to utils.ts"]);
+  });
+});
+
+// --- Blocking vs Advisory behavior ---
+
+describe("hook blocking vs advisory behavior", () => {
+  it("getHooksForTrigger returns both blocking and advisory hooks", () => {
+    const hooks: Hook[] = [
+      makeHook({ trigger: "on_confidence_met", blocking: true }),
+      makeHook({ trigger: "on_confidence_met", blocking: false }),
+    ];
+    const ctx = makeContext();
+    const result = getHooksForTrigger("on_confidence_met", hooks, ctx);
+    assert.equal(result.length, 2);
+    assert.equal(result[0]?.blocking, true);
+    assert.equal(result[1]?.blocking, false);
+  });
+
+  it("blocking flag is preserved through filtering", () => {
+    const hooks: Hook[] = [
+      makeHook({ trigger: "on_review_complete", blocking: true, conditions: { minConfidence: 50 } }),
+      makeHook({ trigger: "on_review_complete", blocking: false, conditions: { minConfidence: 50 } }),
+      makeHook({ trigger: "on_review_complete", blocking: true, conditions: { minConfidence: 99 } }),
+    ];
+    const ctx = makeContext({ confidence: 80 });
+    const result = getHooksForTrigger("on_review_complete", hooks, ctx);
+    assert.equal(result.length, 2);
+    assert.equal(result[0]?.blocking, true);
+    assert.equal(result[1]?.blocking, false);
+  });
+});
+
+// --- Cost logging integration ---
+
+describe("hook cost tracking", () => {
+  it("parseHookResult extracts data needed for cost logging", () => {
+    // The costUsd comes from invokeClaude, not from parsing.
+    // This test verifies parseHookResult doesn't interfere with the HookResult
+    // construction in runHook (which sets costUsd from invoke result).
+    const input = JSON.stringify({ pass: true, issues: [], remediationActions: [] });
+    const parsed = parseHookResult(input);
+    assert.equal(parsed.pass, true);
+    // HookResult.costUsd is set separately in runHook from invoke result
+  });
+});
+
+// --- buildHookSystemPrompt ---
+
+describe("buildHookSystemPrompt", () => {
+  it("includes task title and description", () => {
+    const ctx = makeContext({ task: makeTask({ title: "Fix login bug", description: "Users cannot log in" }) });
+    const prompt = buildHookSystemPrompt(ctx);
+    assert.ok(prompt.includes("Fix login bug"));
+    assert.ok(prompt.includes("Users cannot log in"));
+  });
+
+  it("includes confidence percentage", () => {
+    const ctx = makeContext({ confidence: 92 });
+    const prompt = buildHookSystemPrompt(ctx);
+    assert.ok(prompt.includes("Confidence: 92%"));
+  });
+
+  it("includes branch info", () => {
+    const ctx = makeContext({ branchName: "hootl/t5-feature", baseBranch: "develop" });
+    const prompt = buildHookSystemPrompt(ctx);
+    assert.ok(prompt.includes("Branch: hootl/t5-feature"));
+    assert.ok(prompt.includes("Base branch: develop"));
+  });
+
+  it("shows 'none' when branchName is null", () => {
+    const ctx = makeContext({ branchName: null });
+    const prompt = buildHookSystemPrompt(ctx);
+    assert.ok(prompt.includes("Branch: none"));
+  });
+});
+
+// --- runHook (with injected deps) ---
+
+function makeMockDeps(overrides: Partial<HookDeps> = {}): HookDeps & {
+  invokeCalls: Array<{ prompt: string; systemPrompt?: string }>;
+  logCalls: Array<{ taskId: string; phase: string; cost: number }>;
+  warnCalls: string[];
+} {
+  const invokeCalls: Array<{ prompt: string; systemPrompt?: string }> = [];
+  const logCalls: Array<{ taskId: string; phase: string; cost: number }> = [];
+  const warnCalls: string[] = [];
+
+  return {
+    invokeCalls,
+    logCalls,
+    warnCalls,
+    invoke: overrides.invoke ?? (async (opts) => {
+      invokeCalls.push({ prompt: opts.prompt, systemPrompt: opts.systemPrompt });
+      return { output: '{"pass": true, "issues": [], "remediationActions": []}', costUsd: 0.01, exitCode: 0, durationMs: 100 } as InvokeResult;
+    }),
+    log: overrides.log ?? (async (_dir, taskId, phase, cost) => {
+      logCalls.push({ taskId, phase, cost });
+    }),
+    warn: overrides.warn ?? ((msg: string) => {
+      warnCalls.push(msg);
+    }),
+  };
+}
+
+describe("runHook", () => {
+  it("returns success: true when invoke returns pass: true", async () => {
+    const deps = makeMockDeps({
+      invoke: async () => ({
+        output: '{"pass": true, "issues": [], "remediationActions": []}',
+        costUsd: 0.01,
+        exitCode: 0,
+        durationMs: 50,
+      }),
+    });
+    const hook = makeHook({ prompt: "Check code quality" });
+    const ctx = makeContext();
+
+    const result = await runHook(hook, ctx, deps);
     assert.equal(result.success, true);
-    assert.deepEqual(result.fixed, []);
+    assert.equal(result.costUsd, 0.01);
+    assert.deepEqual(result.issues, []);
   });
 
-  it("handles pass=false without explicit false value", () => {
-    const input = JSON.stringify({ pass: "yes", issues: ["problem"] });
-    const result = parseHookOutput(input);
-    // pass !== true, so success is false
+  it("returns success: false with issues when invoke returns pass: false", async () => {
+    const deps = makeMockDeps({
+      invoke: async () => ({
+        output: '{"pass": false, "issues": ["bad code", "no tests"], "remediationActions": ["add tests"]}',
+        costUsd: 0.02,
+        exitCode: 0,
+        durationMs: 200,
+      }),
+    });
+    const hook = makeHook({ prompt: "Validate implementation" });
+    const ctx = makeContext();
+
+    const result = await runHook(hook, ctx, deps);
     assert.equal(result.success, false);
+    assert.equal(result.costUsd, 0.02);
+    assert.deepEqual(result.issues, ["bad code", "no tests"]);
+    assert.deepEqual(result.remediationActions, ["add tests"]);
+  });
+
+  it("passes correct system prompt to invokeClaude", async () => {
+    const deps = makeMockDeps();
+    const hook = makeHook({ prompt: "Check security" });
+    const ctx = makeContext({
+      task: makeTask({ title: "Auth fix", description: "Fix auth bug" }),
+      confidence: 85,
+      branchName: "hootl/t2-auth",
+      baseBranch: "main",
+    });
+
+    await runHook(hook, ctx, deps);
+
+    assert.equal(deps.invokeCalls.length, 1);
+    const call = deps.invokeCalls[0]!;
+    assert.equal(call.prompt, "Check security");
+    assert.ok(call.systemPrompt?.includes("Auth fix"));
+    assert.ok(call.systemPrompt?.includes("Fix auth bug"));
+    assert.ok(call.systemPrompt?.includes("85%"));
+    assert.ok(call.systemPrompt?.includes("hootl/t2-auth"));
+  });
+
+  it("gracefully handles non-JSON invoke output (defaults to pass)", async () => {
+    const deps = makeMockDeps({
+      invoke: async () => ({
+        output: "I could not evaluate this hook properly.",
+        costUsd: 0.005,
+        exitCode: 0,
+        durationMs: 80,
+      }),
+    });
+    const hook = makeHook({ prompt: "Check quality" });
+    const ctx = makeContext();
+
+    const result = await runHook(hook, ctx, deps);
+    assert.equal(result.success, true); // graceful degradation
+    assert.equal(result.costUsd, 0.005);
+  });
+
+  it("preserves raw output from invoke", async () => {
+    const rawOutput = 'Some preamble\n{"pass": true, "issues": []}\nSome epilogue';
+    const deps = makeMockDeps({
+      invoke: async () => ({
+        output: rawOutput,
+        costUsd: 0.01,
+        exitCode: 0,
+        durationMs: 100,
+      }),
+    });
+    const hook = makeHook({ prompt: "Review" });
+    const ctx = makeContext();
+
+    const result = await runHook(hook, ctx, deps);
+    assert.equal(result.output, rawOutput);
   });
 });
 
-// --- Skill Registry ---
-
-describe("skillRegistry", () => {
-  it("has simplify skill registered", () => {
-    const registry = getSkillRegistry();
-    assert.ok(registry.has("simplify"));
-  });
-
-  it("simplify skill produces prompt containing diff", () => {
-    const registry = getSkillRegistry();
-    const builder = registry.get("simplify");
-    assert.ok(builder !== undefined);
-    const ctx = makeCtx({ baseBranch: "main", taskBranch: "hootl/t1-foo" });
-    const prompt = builder(ctx);
-    assert.ok(prompt.includes("diff"));
-    assert.ok(prompt.includes("main"));
-    assert.ok(prompt.includes("hootl/t1-foo"));
-  });
-
-  it("simplify skill uses fallback branch names when null", () => {
-    const registry = getSkillRegistry();
-    const builder = registry.get("simplify");
-    assert.ok(builder !== undefined);
-    const ctx = makeCtx({ baseBranch: null, taskBranch: null });
-    const prompt = builder(ctx);
-    assert.ok(prompt.includes("HEAD"));
-    assert.ok(prompt.includes("main")); // fallback
-  });
-});
-
-// --- runHooks orchestration ---
-// These tests verify the orchestrator logic without calling real Claude.
-// We test with configs that would trigger hooks, but since invokeClaude
-// would fail in test (no Claude binary), we test the filtering and
-// condition evaluation paths that don't reach the actual invocation.
+// --- runHooks (with injected deps) ---
 
 describe("runHooks", () => {
-  it("returns allPassed=true when no hooks match the trigger", async () => {
-    const ctx = makeCtx({
-      config: ConfigSchema.parse({
-        hooks: [
-          { trigger: "on_blocked", prompt: "check something", blocking: true },
-        ],
-      }),
-    });
-    const result = await runHooks("on_confidence_met", ctx);
+  it("returns allPassed: true when no hooks match", async () => {
+    const deps = makeMockDeps();
+    const ctx = makeContext();
+    const config = ConfigSchema.parse({ hooks: [] });
+
+    const result = await runHooks("on_confidence_met", ctx, config, deps);
     assert.equal(result.allPassed, true);
-    assert.deepEqual(result.results, []);
-    assert.equal(result.totalCost, 0);
+    assert.equal(result.results.length, 0);
+    assert.equal(deps.invokeCalls.length, 0);
   });
 
-  it("returns allPassed=true when no hooks configured", async () => {
-    const ctx = makeCtx({
-      config: ConfigSchema.parse({ hooks: [] }),
+  it("short-circuits on blocking hook failure", async () => {
+    let callCount = 0;
+    const deps = makeMockDeps({
+      invoke: async () => {
+        callCount++;
+        return {
+          output: '{"pass": false, "issues": ["critical issue"]}',
+          costUsd: 0.03,
+          exitCode: 0,
+          durationMs: 150,
+        };
+      },
     });
-    const result = await runHooks("on_confidence_met", ctx);
-    assert.equal(result.allPassed, true);
-    assert.deepEqual(result.results, []);
-  });
+    const ctx = makeContext();
+    const config = ConfigSchema.parse({
+      hooks: [
+        { trigger: "on_confidence_met", prompt: "Hook 1", blocking: true },
+        { trigger: "on_confidence_met", prompt: "Hook 2", blocking: true },
+      ],
+    });
 
-  it("skips hooks that fail condition evaluation", async () => {
-    const ctx = makeCtx({
-      confidence: 50,
-      config: ConfigSchema.parse({
-        hooks: [
-          {
-            trigger: "on_confidence_met",
-            prompt: "review code",
-            blocking: true,
-            conditions: { minConfidence: 90 },
-          },
-        ],
-      }),
-    });
-    const result = await runHooks("on_confidence_met", ctx);
-    // Hook was skipped due to conditions, so allPassed stays true
-    assert.equal(result.allPassed, true);
-    assert.deepEqual(result.results, []);
-  });
-
-  it("handles hook that throws by recording failure", async () => {
-    // A hook referencing an unknown skill will throw during resolvePrompt
-    const ctx = makeCtx({
-      config: ConfigSchema.parse({
-        hooks: [
-          {
-            trigger: "on_confidence_met",
-            prompt: "/nonexistent_skill",
-            blocking: false,
-          },
-        ],
-      }),
-    });
-    const result = await runHooks("on_confidence_met", ctx);
-    // Advisory hook that threw — allPassed stays true
-    assert.equal(result.allPassed, true);
-    assert.equal(result.results.length, 1);
-    const hookResult = result.results[0];
-    assert.ok(hookResult !== undefined);
-    assert.equal(hookResult.success, false);
-    assert.ok(hookResult.output.includes("Unknown skill"));
-  });
-
-  it("blocking hook that throws sets allPassed to false", async () => {
-    const ctx = makeCtx({
-      config: ConfigSchema.parse({
-        hooks: [
-          {
-            trigger: "on_confidence_met",
-            prompt: "/nonexistent_skill",
-            blocking: true,
-          },
-        ],
-      }),
-    });
-    const result = await runHooks("on_confidence_met", ctx);
+    const result = await runHooks("on_confidence_met", ctx, config, deps);
     assert.equal(result.allPassed, false);
-    assert.equal(result.results.length, 1);
+    assert.equal(result.results.length, 1); // second hook never ran
+    assert.equal(callCount, 1);
   });
 
-  it("filters hooks by trigger point", async () => {
-    const ctx = makeCtx({
-      config: ConfigSchema.parse({
-        hooks: [
-          { trigger: "on_confidence_met", prompt: "/nonexistent1", blocking: false },
-          { trigger: "on_blocked", prompt: "/nonexistent2", blocking: false },
-          { trigger: "on_confidence_met", prompt: "/nonexistent3", blocking: false },
-        ],
+  it("continues past advisory hook failure", async () => {
+    let callCount = 0;
+    const deps = makeMockDeps({
+      invoke: async () => {
+        callCount++;
+        if (callCount === 1) {
+          return {
+            output: '{"pass": false, "issues": ["minor issue"]}',
+            costUsd: 0.01,
+            exitCode: 0,
+            durationMs: 100,
+          };
+        }
+        return {
+          output: '{"pass": true, "issues": []}',
+          costUsd: 0.02,
+          exitCode: 0,
+          durationMs: 100,
+        };
+      },
+    });
+    const ctx = makeContext();
+    const config = ConfigSchema.parse({
+      hooks: [
+        { trigger: "on_blocked", prompt: "Advisory hook", blocking: false },
+        { trigger: "on_blocked", prompt: "Blocking hook", blocking: true },
+      ],
+    });
+
+    const result = await runHooks("on_blocked", ctx, config, deps);
+    assert.equal(result.allPassed, true); // advisory failure doesn't block
+    assert.equal(result.results.length, 2); // both hooks ran
+    assert.equal(callCount, 2);
+    assert.equal(deps.warnCalls.length, 1);
+    assert.ok(deps.warnCalls[0]?.includes("Advisory hook failed"));
+  });
+
+  it("logs cost for each hook execution", async () => {
+    const deps = makeMockDeps();
+    const ctx = makeContext({ task: makeTask({ id: "task-42" }) });
+    const config = ConfigSchema.parse({
+      hooks: [
+        { trigger: "on_review_complete", prompt: "Hook A", blocking: false },
+        { trigger: "on_review_complete", prompt: "Hook B", blocking: false },
+      ],
+    });
+
+    await runHooks("on_review_complete", ctx, config, deps);
+    assert.equal(deps.logCalls.length, 2);
+    assert.equal(deps.logCalls[0]?.taskId, "task-42");
+    assert.equal(deps.logCalls[0]?.phase, "hook:on_review_complete");
+    assert.equal(deps.logCalls[0]?.cost, 0.01);
+    assert.equal(deps.logCalls[1]?.taskId, "task-42");
+  });
+
+  it("only runs hooks matching the trigger point", async () => {
+    const deps = makeMockDeps();
+    const ctx = makeContext();
+    const config = ConfigSchema.parse({
+      hooks: [
+        { trigger: "on_confidence_met", prompt: "Match", blocking: false },
+        { trigger: "on_blocked", prompt: "No match", blocking: false },
+        { trigger: "on_execute_start", prompt: "No match", blocking: false },
+      ],
+    });
+
+    const result = await runHooks("on_confidence_met", ctx, config, deps);
+    assert.equal(result.results.length, 1);
+    assert.equal(deps.invokeCalls.length, 1);
+  });
+
+  it("returns allPassed: true when all blocking hooks pass", async () => {
+    const deps = makeMockDeps();
+    const ctx = makeContext();
+    const config = ConfigSchema.parse({
+      hooks: [
+        { trigger: "on_execute_start", prompt: "Hook 1", blocking: true },
+        { trigger: "on_execute_start", prompt: "Hook 2", blocking: true },
+      ],
+    });
+
+    const result = await runHooks("on_execute_start", ctx, config, deps);
+    assert.equal(result.allPassed, true);
+    assert.equal(result.results.length, 2);
+    assert.ok(result.results.every((r) => r.success));
+  });
+
+  it("warns but does not short-circuit when advisory hook has no issues text", async () => {
+    const deps = makeMockDeps({
+      invoke: async () => ({
+        output: '{"pass": false, "issues": []}',
+        costUsd: 0.01,
+        exitCode: 0,
+        durationMs: 50,
       }),
     });
-    const result = await runHooks("on_confidence_met", ctx);
-    // Should only run 2 hooks (the on_confidence_met ones), not the on_blocked one
-    assert.equal(result.results.length, 2);
+    const ctx = makeContext();
+    const config = ConfigSchema.parse({
+      hooks: [
+        { trigger: "on_blocked", prompt: "Advisory", blocking: false },
+      ],
+    });
+
+    const result = await runHooks("on_blocked", ctx, config, deps);
+    assert.equal(result.allPassed, true);
+    assert.equal(deps.warnCalls.length, 1);
+    assert.ok(deps.warnCalls[0]?.includes("no details"));
+  });
+});
+
+// --- Skill registry ---
+
+describe("resolveSkill", () => {
+  it("returns a function for the built-in 'simplify' skill", () => {
+    const skill = resolveSkill("simplify");
+    assert.notEqual(skill, undefined);
+    assert.equal(typeof skill, "function");
+  });
+
+  it("returns undefined for an unregistered skill name", () => {
+    const skill = resolveSkill("nonexistent");
+    assert.equal(skill, undefined);
+  });
+
+  it("simplify skill produces invoke options with expected fields", async () => {
+    const ctx = makeContext({
+      task: makeTask({ title: "Refactor auth", description: "Clean up auth module" }),
+      branchName: "hootl/t3-refactor",
+      baseBranch: "main",
+    });
+    const skill = resolveSkill("simplify");
+    assert.notEqual(skill, undefined);
+    const opts = await skill!(ctx);
+    assert.ok(opts.prompt.includes("quality"));
+    assert.ok(opts.prompt.includes("git diff main..HEAD"), "prompt should instruct Claude to run git diff");
+    assert.ok(opts.systemPrompt?.includes("Refactor auth"));
+    assert.ok(opts.systemPrompt?.includes("hootl/t3-refactor"));
+    assert.ok(opts.systemPrompt?.includes("main"), "system prompt should reference the base branch");
+    assert.equal(opts.maxTurns, 10);
+  });
+});
+
+// --- runSkillHook ---
+
+describe("runSkillHook", () => {
+  it("invokes Claude with the skill's prompt for a known skill", async () => {
+    const deps = makeMockDeps();
+    const ctx = makeContext();
+
+    const result = await runSkillHook("simplify", ctx, deps);
+    assert.equal(result.success, true);
+    assert.equal(result.costUsd, 0.01);
+    assert.equal(deps.invokeCalls.length, 1);
+    assert.ok(deps.invokeCalls[0]?.prompt.includes("quality"));
+  });
+
+  it("returns failure result for an unknown skill", async () => {
+    const deps = makeMockDeps();
+    const ctx = makeContext();
+
+    const result = await runSkillHook("nonexistent_skill", ctx, deps);
+    assert.equal(result.success, false);
+    assert.equal(result.costUsd, 0);
+    assert.ok(result.issues[0]?.includes("nonexistent_skill"));
+    assert.equal(deps.invokeCalls.length, 0); // should not invoke Claude
+  });
+
+  it("parses invoke output and returns issues", async () => {
+    const deps = makeMockDeps({
+      invoke: async () => ({
+        output: '{"pass": false, "issues": ["duplicated logic"], "remediationActions": ["extract helper"]}',
+        costUsd: 0.05,
+        exitCode: 0,
+        durationMs: 200,
+      }),
+    });
+    const ctx = makeContext();
+
+    const result = await runSkillHook("simplify", ctx, deps);
+    assert.equal(result.success, false);
+    assert.deepEqual(result.issues, ["duplicated logic"]);
+    assert.deepEqual(result.remediationActions, ["extract helper"]);
+    assert.equal(result.costUsd, 0.05);
+  });
+});
+
+// --- Skill-vs-prompt precedence in runHook ---
+
+describe("runHook skill-vs-prompt precedence", () => {
+  it("uses skill when hook has skill only", async () => {
+    const deps = makeMockDeps();
+    const ctx = makeContext();
+    const hook: Hook = makeHook({ skill: "simplify", prompt: undefined });
+
+    const result = await runHook(hook, ctx, deps);
+    assert.equal(result.success, true);
+    // Skill's prompt includes "reuse" — verify it was used
+    assert.ok(deps.invokeCalls[0]?.prompt.includes("quality"));
+  });
+
+  it("uses prompt when hook has prompt only", async () => {
+    const deps = makeMockDeps();
+    const ctx = makeContext();
+    const hook: Hook = makeHook({ prompt: "Check for bugs" });
+
+    const result = await runHook(hook, ctx, deps);
+    assert.equal(result.success, true);
+    assert.equal(deps.invokeCalls[0]?.prompt, "Check for bugs");
+  });
+
+  it("skill takes precedence when hook has both skill and prompt", async () => {
+    const deps = makeMockDeps();
+    const ctx = makeContext();
+    const hook: Hook = makeHook({ skill: "simplify", prompt: "This should be ignored" });
+
+    const result = await runHook(hook, ctx, deps);
+    assert.equal(result.success, true);
+    // Should use skill's prompt, not the hook's prompt field
+    assert.ok(deps.invokeCalls[0]?.prompt.includes("quality"));
+    assert.ok(!deps.invokeCalls[0]?.prompt.includes("This should be ignored"));
+  });
+
+  it("returns failure when hook has unknown skill and no prompt", async () => {
+    const deps = makeMockDeps();
+    const ctx = makeContext();
+    const hook: Hook = makeHook({ skill: "unknown_skill", prompt: undefined });
+
+    const result = await runHook(hook, ctx, deps);
+    assert.equal(result.success, false);
+    assert.ok(result.issues[0]?.includes("unknown_skill"));
+    assert.equal(deps.invokeCalls.length, 0);
+  });
+});
+
+// --- Hook schema validation with skill field ---
+
+describe("HookSchema with skill field", () => {
+  it("accepts hook with skill only", () => {
+    const config = ConfigSchema.parse({
+      hooks: [{ trigger: "on_confidence_met", skill: "simplify" }],
+    });
+    assert.equal(config.hooks.length, 1);
+    assert.equal(config.hooks[0]?.skill, "simplify");
+    assert.equal(config.hooks[0]?.prompt, undefined);
+  });
+
+  it("accepts hook with prompt only", () => {
+    const config = ConfigSchema.parse({
+      hooks: [{ trigger: "on_blocked", prompt: "Check quality" }],
+    });
+    assert.equal(config.hooks.length, 1);
+    assert.equal(config.hooks[0]?.prompt, "Check quality");
+    assert.equal(config.hooks[0]?.skill, undefined);
+  });
+
+  it("accepts hook with both skill and prompt", () => {
+    const config = ConfigSchema.parse({
+      hooks: [{ trigger: "on_review_complete", skill: "simplify", prompt: "Fallback prompt" }],
+    });
+    assert.equal(config.hooks.length, 1);
+    assert.equal(config.hooks[0]?.skill, "simplify");
+    assert.equal(config.hooks[0]?.prompt, "Fallback prompt");
+  });
+
+  it("rejects hook with neither skill nor prompt", () => {
+    assert.throws(() => {
+      ConfigSchema.parse({
+        hooks: [{ trigger: "on_confidence_met" }],
+      });
+    });
+  });
+});
+
+// --- validate-simplify.md template ---
+
+describe("validate-simplify template", () => {
+  const thisFile = fileURLToPath(import.meta.url);
+  const templatesDir = join(dirname(thisFile), "..", "..", "templates");
+  const templatePath = join(templatesDir, "validate-simplify.md");
+
+  it("template file exists", () => {
+    assert.ok(existsSync(templatePath), "templates/validate-simplify.md should exist");
+  });
+
+  it("contains key content markers", async () => {
+    const content = await readFile(templatePath, "utf-8");
+    assert.ok(content.includes("{{baseBranch}}"), "template should have baseBranch placeholder");
+    assert.ok(content.includes("{{taskTitle}}"), "template should have taskTitle placeholder");
+    assert.ok(content.includes("{{taskDescription}}"), "template should have taskDescription placeholder");
+    assert.ok(content.includes("{{branchName}}"), "template should have branchName placeholder");
+    assert.ok(content.includes("git diff"), "template should reference git diff");
+    assert.ok(content.includes('"passed"'), "template should document passed field");
+    assert.ok(content.includes('"confidence"'), "template should document confidence field");
+    assert.ok(content.includes('"fixes_applied"'), "template should document fixes_applied field");
+  });
+
+  it("simplify skill substitutes template variables", async () => {
+    const ctx = makeContext({
+      task: makeTask({ title: "My Task", description: "My description" }),
+      branchName: "hootl/t1-my-task",
+      baseBranch: "develop",
+    });
+    const skill = resolveSkill("simplify");
+    assert.notEqual(skill, undefined);
+    const opts = await skill!(ctx);
+    // System prompt should have substituted variables
+    assert.ok(opts.systemPrompt?.includes("My Task"), "system prompt should contain substituted task title");
+    assert.ok(opts.systemPrompt?.includes("My description"), "system prompt should contain substituted description");
+    assert.ok(opts.systemPrompt?.includes("hootl/t1-my-task"), "system prompt should contain substituted branch name");
+    assert.ok(opts.systemPrompt?.includes("develop"), "system prompt should contain substituted base branch");
+    // Should NOT have raw template variables
+    assert.ok(!opts.systemPrompt?.includes("{{"), "system prompt should not contain unsubstituted template variables");
   });
 });

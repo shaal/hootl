@@ -1,270 +1,365 @@
-import { join } from "node:path";
 import { readFile } from "node:fs/promises";
+import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { dirname } from "node:path";
 import { invokeClaude, logCost } from "./invoke.js";
-import type { Config, HookTrigger, Hook } from "./config.js";
+import type { InvokeOptions } from "./invoke.js";
+import type { Config, Hook, HookTrigger } from "./config.js";
 import type { Task } from "./tasks/types.js";
-import { uiInfo, uiWarn } from "./ui.js";
+import { uiWarn } from "./ui.js";
 
 export interface HookContext {
   task: Task;
-  taskDir: string;
-  baseBranch: string | null;
-  taskBranch: string | null;
-  confidence: number | null;
+  branchName: string | null;
+  baseBranch: string;
+  confidence: number;
   config: Config;
 }
 
 export interface HookResult {
-  hookPrompt: string;
   success: boolean;
   output: string;
-  costUsd: number;
-  remediation?: string;
-}
-
-export interface HookRunResult {
-  allPassed: boolean;
-  results: HookResult[];
-  totalCost: number;
-}
-
-// --- Skill Registry ---
-// Built-in skills are prompt builders keyed by name. Hooks reference them with "/skillName" syntax.
-
-type SkillBuilder = (ctx: HookContext) => string;
-
-const skillRegistry = new Map<string, SkillBuilder>();
-
-skillRegistry.set("simplify", (ctx: HookContext): string => {
-  const branch = ctx.taskBranch ?? "HEAD";
-  const base = ctx.baseBranch ?? "main";
-  return [
-    `Review all code changes on branch "${branch}" compared to "${base}" using \`git diff ${base}...HEAD\`.`,
-    "",
-    "For each changed file, check for:",
-    "- Code reuse opportunities (duplicated logic that could be extracted)",
-    "- Quality issues (error handling gaps, missing edge cases, unclear naming)",
-    "- Efficiency problems (unnecessary allocations, redundant operations)",
-    "",
-    "Fix any issues you find directly in the code. After fixing, run the project's test suite to verify nothing is broken.",
-    "",
-    "Output a JSON object with your assessment:",
-    '```',
-    '{',
-    '  "pass": true/false,',
-    '  "issues": ["description of each issue found"],',
-    '  "fixed": ["description of each fix applied"]',
-    '}',
-    '```',
-  ].join("\n");
-});
-
-export function getSkillRegistry(): ReadonlyMap<string, SkillBuilder> {
-  return skillRegistry;
-}
-
-// --- Prompt Resolution ---
-
-async function loadTemplateFile(name: string): Promise<string> {
-  const thisFile = fileURLToPath(import.meta.url);
-  const templatesDir = join(dirname(thisFile), "..", "templates");
-  const templatePath = join(templatesDir, name);
-  return readFile(templatePath, "utf-8");
-}
-
-export async function resolvePrompt(hook: Hook, ctx: HookContext): Promise<string> {
-  const prompt = hook.prompt;
-
-  // Skill reference: "/simplify" -> look up in registry
-  if (prompt.startsWith("/")) {
-    const skillName = prompt.slice(1);
-    const builder = skillRegistry.get(skillName);
-    if (builder === undefined) {
-      throw new Error(`Unknown skill: ${prompt}. Available skills: ${[...skillRegistry.keys()].join(", ")}`);
-    }
-    return builder(ctx);
-  }
-
-  // Template file reference: "templates/foo.md" -> load from disk
-  if (prompt.startsWith("templates/")) {
-    const fileName = prompt.slice("templates/".length);
-    return loadTemplateFile(fileName);
-  }
-
-  // Inline prompt: return as-is
-  return prompt;
-}
-
-// --- Condition Evaluation ---
-
-export function evaluateConditions(hook: Hook, ctx: HookContext): boolean {
-  if (hook.conditions === undefined) return true;
-
-  if (hook.conditions.minConfidence !== undefined) {
-    if (ctx.confidence === null) return false;
-    if (ctx.confidence < hook.conditions.minConfidence) return false;
-  }
-
-  return true;
-}
-
-// --- Output Parsing ---
-
-export interface ParsedHookOutput {
-  success: boolean;
   issues: string[];
-  fixed: string[];
+  remediationActions: string[];
+  costUsd: number;
 }
 
-export function parseHookOutput(output: string): ParsedHookOutput {
-  if (output.trim() === "") {
-    return { success: false, issues: [], fixed: [] };
+/**
+ * A skill definition maps a hook context to invoke options.
+ * Skills are named prompt templates that encapsulate a specific workflow.
+ * May be async (e.g. to read template files from disk).
+ */
+export type SkillDefinition = (ctx: HookContext) => InvokeOptions | Promise<InvokeOptions>;
+
+/**
+ * Reads a skill template from templates/ directory relative to the package root.
+ * Returns null if the file cannot be read (graceful degradation).
+ */
+async function loadSkillTemplate(name: string): Promise<string | null> {
+  try {
+    const thisFile = fileURLToPath(import.meta.url);
+    const templatesDir = join(dirname(thisFile), "..", "templates");
+    return await readFile(join(templatesDir, `${name}.md`), "utf-8");
+  } catch {
+    return null;
   }
+}
 
-  // Try to extract JSON from code block or brace-matching
-  const codeBlockMatch = /```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/.exec(output);
-  const candidates: string[] = [];
-  if (codeBlockMatch?.[1]) {
-    candidates.push(codeBlockMatch[1]);
-  }
-  const braceMatch = /\{[\s\S]*\}/.exec(output);
-  if (braceMatch && braceMatch[0] !== codeBlockMatch?.[1]) {
-    candidates.push(braceMatch[0]);
-  }
+/**
+ * Built-in skill registry. Maps skill names to their prompt workflows.
+ */
+const skillRegistry = new Map<string, SkillDefinition>([
+  ["simplify", async (ctx) => {
+    const template = await loadSkillTemplate("validate-simplify");
 
-  for (const candidate of candidates) {
-    try {
-      const parsed: unknown = JSON.parse(candidate);
-      if (typeof parsed !== "object" || parsed === null) continue;
+    // If template loaded, use it as system prompt with variable substitution
+    if (template !== null) {
+      const systemPrompt = template
+        .replace(/\{\{baseBranch\}\}/g, ctx.baseBranch)
+        .replace(/\{\{taskTitle\}\}/g, ctx.task.title)
+        .replace(/\{\{taskDescription\}\}/g, ctx.task.description)
+        .replace(/\{\{branchName\}\}/g, ctx.branchName ?? "none");
 
-      const record = parsed as Record<string, unknown>;
-
-      const pass = record["pass"];
-      const success = pass === true;
-
-      const issues = Array.isArray(record["issues"])
-        ? (record["issues"] as unknown[]).filter((v): v is string => typeof v === "string")
-        : [];
-
-      const fixed = Array.isArray(record["fixed"])
-        ? (record["fixed"] as unknown[]).filter((v): v is string => typeof v === "string")
-        : [];
-
-      return { success, issues, fixed };
-    } catch {
-      continue;
+      return {
+        prompt: [
+          `Run \`git diff ${ctx.baseBranch}..HEAD\` to see all changes on this branch.`,
+          "Review the changed code for reuse, quality, and efficiency.",
+          "Fix any issues found, then run the test suite to verify tests still pass.",
+          "Output your result as JSON following the system prompt instructions.",
+        ].join(" "),
+        systemPrompt,
+        maxTurns: 10,
+      };
     }
-  }
 
-  // Fallback: non-empty, non-error output treated as success
-  return { success: true, issues: [], fixed: [] };
+    // Fallback: inline prompt if template cannot be read
+    return {
+      prompt: [
+        `First, run \`git diff ${ctx.baseBranch}..HEAD\` to see all changes on this branch.`,
+        "Review the changed code for reuse, quality, and efficiency.",
+        "Look for duplicated logic that could be extracted, overly complex implementations",
+        "that could be simplified, and inefficient patterns that could be optimized.",
+        "Then fix any issues found.",
+      ].join(" "),
+      systemPrompt: [
+        "You are a code quality reviewer for an autonomous task completion system.",
+        `Task: ${ctx.task.title}`,
+        `Description: ${ctx.task.description}`,
+        `Branch: ${ctx.branchName ?? "none"}`,
+        `Base branch: ${ctx.baseBranch}`,
+        "",
+        `Start by examining the diff between the task branch and ${ctx.baseBranch}.`,
+        `Use the git diff output to identify specific files and hunks that need improvement.`,
+        "",
+        "Respond with a JSON object containing:",
+        '  - "passed": boolean (true if code quality is acceptable)',
+        '  - "confidence": number (0-100)',
+        '  - "issues": string[] (list of quality issues found)',
+        '  - "fixes_applied": string[] (concrete fixes applied)',
+      ].join("\n"),
+      maxTurns: 10,
+    };
+  }],
+]);
+
+/**
+ * Looks up a skill by name in the registry.
+ * Returns undefined if the skill is not registered.
+ */
+export function resolveSkill(name: string): SkillDefinition | undefined {
+  return skillRegistry.get(name);
 }
 
-// --- Single Hook Execution ---
-
-async function runSingleHook(
-  hook: Hook,
-  ctx: HookContext,
-  logDir: string,
+/**
+ * Runs a skill-based hook: looks up the skill, invokes Claude with the
+ * skill's prompt configuration, and parses the result.
+ * Returns a failure result if the skill is not found.
+ */
+export async function runSkillHook(
+  skillName: string,
+  context: HookContext,
+  deps: HookDeps,
 ): Promise<HookResult> {
-  const prompt = await resolvePrompt(hook, ctx);
-
-  // Load system prompt for skill-based hooks
-  let systemPrompt: string | undefined;
-  if (hook.prompt.startsWith("/")) {
-    const skillName = hook.prompt.slice(1);
-    try {
-      systemPrompt = await loadTemplateFile(`${skillName}.md`);
-    } catch {
-      // No system prompt template — that's fine, run without one
-    }
+  const skill = resolveSkill(skillName);
+  if (skill === undefined) {
+    return {
+      success: false,
+      output: "",
+      issues: [`Unknown skill: "${skillName}"`],
+      remediationActions: [`Register the "${skillName}" skill or use a "prompt" field instead`],
+      costUsd: 0,
+    };
   }
 
-  const result = await invokeClaude({
-    prompt,
-    systemPrompt,
-    maxTurns: 50,
-    verbose: false,
-  });
+  const invokeOptions = await skill(context);
+  const result = await deps.invoke(invokeOptions);
+  const parsed = parseHookResult(result.output);
 
-  // Log cost
-  await logCost(logDir, ctx.task.id, `hook:${hook.prompt}`, result.costUsd);
-
-  const parsed = parseHookOutput(result.output);
-
-  const hookResult: HookResult = {
-    hookPrompt: hook.prompt,
-    success: result.exitCode === 0 && parsed.success,
+  return {
+    success: parsed.pass,
     output: result.output,
+    issues: parsed.issues,
+    remediationActions: parsed.remediationActions,
     costUsd: result.costUsd,
   };
-
-  if (parsed.issues.length > 0) {
-    hookResult.remediation = parsed.issues.join("; ");
-  }
-
-  return hookResult;
 }
 
-// --- Hook Orchestrator ---
-
-export async function runHooks(
+/**
+ * Filters configured hooks by trigger point and evaluates conditions.
+ * A hook is included if its trigger matches and all conditions are met
+ * (e.g. context.confidence >= minConfidence).
+ */
+export function getHooksForTrigger(
   trigger: HookTrigger,
-  ctx: HookContext,
-): Promise<HookRunResult> {
-  const hooks = ctx.config.hooks.filter((h) => h.trigger === trigger);
+  hooks: Hook[],
+  context: HookContext,
+): Hook[] {
+  return hooks.filter((hook) => {
+    if (hook.trigger !== trigger) return false;
 
-  if (hooks.length === 0) {
-    return { allPassed: true, results: [], totalCost: 0 };
+    if (hook.conditions?.minConfidence !== undefined) {
+      if (context.confidence < hook.conditions.minConfidence) return false;
+    }
+
+    return true;
+  });
+}
+
+/**
+ * Resolves a prompt string. If it looks like a file path
+ * (starts with ./, /, templates/, or ends with .md/.txt), reads the file.
+ * Otherwise returns the inline string directly.
+ * Falls back to raw string on file read failure.
+ */
+export async function buildHookPrompt(hook: Pick<Hook, "prompt">): Promise<string> {
+  const prompt = hook.prompt;
+  if (prompt === undefined) return "";
+
+  const isFilePath =
+    prompt.startsWith("./") ||
+    prompt.startsWith("/") ||
+    prompt.startsWith("templates/") ||
+    /\.(md|txt)$/.test(prompt);
+
+  if (!isFilePath) {
+    return prompt;
   }
 
-  const logDir = join(ctx.taskDir, "..", "..", "logs");
+  try {
+    return await readFile(prompt, "utf-8");
+  } catch {
+    // Graceful degradation: use raw string if file can't be read
+    return prompt;
+  }
+}
+
+/**
+ * Parses hook output as pass/fail JSON. Extracts JSON from raw output
+ * using brace-matching (handles markdown code blocks).
+ * Supports both old field names (pass, remediationActions) and new ones
+ * (passed, fixes_applied, confidence). New names take precedence.
+ * Defaults to pass: true if JSON parsing fails (graceful degradation).
+ */
+export function parseHookResult(output: string): {
+  pass: boolean;
+  issues: string[];
+  remediationActions: string[];
+  confidence: number | null;
+} {
+  const defaultResult = { pass: true, issues: [] as string[], remediationActions: [] as string[], confidence: null as number | null };
+
+  if (output.trim() === "") return defaultResult;
+
+  // Try brace-matching to extract JSON
+  const firstBrace = output.indexOf("{");
+  if (firstBrace === -1) return defaultResult;
+
+  let depth = 0;
+  let lastBrace = -1;
+  for (let i = firstBrace; i < output.length; i++) {
+    if (output[i] === "{") depth++;
+    else if (output[i] === "}") {
+      depth--;
+      if (depth === 0) {
+        lastBrace = i;
+        break;
+      }
+    }
+  }
+
+  if (lastBrace === -1) return defaultResult;
+
+  try {
+    const parsed: unknown = JSON.parse(output.slice(firstBrace, lastBrace + 1));
+    if (typeof parsed !== "object" || parsed === null) return defaultResult;
+
+    const record = parsed as Record<string, unknown>;
+
+    // "passed" (new) takes precedence over "pass" (old)
+    const pass = typeof record["passed"] === "boolean"
+      ? record["passed"]
+      : typeof record["pass"] === "boolean"
+        ? record["pass"]
+        : true;
+
+    const issues = Array.isArray(record["issues"])
+      ? (record["issues"] as unknown[]).filter((x): x is string => typeof x === "string")
+      : [];
+
+    // "fixes_applied" (new) takes precedence over "remediationActions" (old)
+    const remediationActions = Array.isArray(record["fixes_applied"])
+      ? (record["fixes_applied"] as unknown[]).filter((x): x is string => typeof x === "string")
+      : Array.isArray(record["remediationActions"])
+        ? (record["remediationActions"] as unknown[]).filter((x): x is string => typeof x === "string")
+        : [];
+
+    const confidence = typeof record["confidence"] === "number" ? record["confidence"] : null;
+
+    return { pass, issues, remediationActions, confidence };
+  } catch {
+    return defaultResult;
+  }
+}
+
+/** Dependencies that can be injected for testing. */
+export interface HookDeps {
+  invoke: typeof invokeClaude;
+  log: typeof logCost;
+  warn: typeof uiWarn;
+}
+
+const defaultDeps: HookDeps = {
+  invoke: invokeClaude,
+  log: logCost,
+  warn: uiWarn,
+};
+
+/**
+ * Builds the system prompt that provides task context to the hook validator.
+ */
+export function buildHookSystemPrompt(context: HookContext): string {
+  return [
+    "You are a hook validator for an autonomous task completion system.",
+    `Task: ${context.task.title}`,
+    `Description: ${context.task.description}`,
+    `Confidence: ${context.confidence}%`,
+    `Branch: ${context.branchName ?? "none"}`,
+    `Base branch: ${context.baseBranch}`,
+    "",
+    "Evaluate the task according to the hook prompt below.",
+    "Respond with a JSON object containing:",
+    '  - "pass": boolean (true if the check passes)',
+    '  - "issues": string[] (list of issues found)',
+    '  - "remediationActions": string[] (suggested fixes)',
+  ].join("\n");
+}
+
+/**
+ * Runs a single hook: checks for skill first (takes precedence), then falls
+ * back to prompt resolution. Invokes Claude and parses the result.
+ */
+export async function runHook(
+  hook: Hook,
+  context: HookContext,
+  deps: HookDeps = defaultDeps,
+): Promise<HookResult> {
+  // Skill takes precedence over prompt
+  if (hook.skill !== undefined) {
+    return runSkillHook(hook.skill, context, deps);
+  }
+
+  const prompt = await buildHookPrompt(hook);
+  const systemPrompt = buildHookSystemPrompt(context);
+
+  const result = await deps.invoke({
+    prompt,
+    systemPrompt,
+    maxTurns: 3,
+  });
+
+  const parsed = parseHookResult(result.output);
+
+  return {
+    success: parsed.pass,
+    output: result.output,
+    issues: parsed.issues,
+    remediationActions: parsed.remediationActions,
+    costUsd: result.costUsd,
+  };
+}
+
+/**
+ * Orchestrates hook execution for a trigger point.
+ * Runs matching hooks sequentially, logs cost, and handles blocking vs advisory behavior:
+ * - Blocking hooks that fail cause immediate short-circuit (allPassed: false)
+ * - Advisory hooks that fail log a warning but continue
+ */
+export async function runHooks(
+  triggerPoint: HookTrigger,
+  context: HookContext,
+  config: Config,
+  deps: HookDeps = defaultDeps,
+): Promise<{ allPassed: boolean; results: HookResult[] }> {
+  const matchingHooks = getHooksForTrigger(triggerPoint, config.hooks, context);
   const results: HookResult[] = [];
-  let allPassed = true;
-  let totalCost = 0;
+  const logDir = join(process.cwd(), ".hootl", "logs");
 
-  for (const hook of hooks) {
-    // Evaluate conditions
-    if (!evaluateConditions(hook, ctx)) {
-      uiInfo(`Hook "${hook.prompt}" skipped (conditions not met)`);
-      continue;
-    }
+  for (const hook of matchingHooks) {
+    const result = await runHook(hook, context, deps);
+    results.push(result);
 
-    uiInfo(`Running hook: ${hook.prompt} [${hook.blocking ? "blocking" : "advisory"}]`);
+    // Log cost for this hook invocation
+    await deps.log(logDir, context.task.id, `hook:${triggerPoint}`, result.costUsd);
 
-    try {
-      const result = await runSingleHook(hook, ctx, logDir);
-      results.push(result);
-      totalCost += result.costUsd;
-
-      if (!result.success) {
-        if (hook.blocking) {
-          uiWarn(`Blocking hook "${hook.prompt}" failed: ${result.remediation ?? "no details"}`);
-          allPassed = false;
-        } else {
-          uiWarn(`Advisory hook "${hook.prompt}" reported issues: ${result.remediation ?? "no details"}`);
-          // Advisory hooks don't affect allPassed
-        }
-      } else {
-        uiInfo(`Hook "${hook.prompt}" passed`);
-      }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      uiWarn(`Hook "${hook.prompt}" threw: ${msg}`);
-      results.push({
-        hookPrompt: hook.prompt,
-        success: false,
-        output: msg,
-        costUsd: 0,
-        remediation: msg,
-      });
+    if (!result.success) {
       if (hook.blocking) {
-        allPassed = false;
+        return { allPassed: false, results };
       }
+      // Advisory: warn and continue
+      deps.warn(
+        `Advisory hook failed for trigger "${triggerPoint}": ${result.issues.join(", ") || "no details"}`,
+      );
     }
   }
 
-  return { allPassed, results, totalCost };
+  return { allPassed: true, results };
 }

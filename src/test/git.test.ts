@@ -17,6 +17,7 @@ import {
   deleteBranch,
   pushBranch,
   createDraftPR,
+  getMergedOrGoneBranches,
 } from "../git.js";
 
 // ---------------------------------------------------------------------------
@@ -346,6 +347,114 @@ describe("git integration", () => {
         const { branchExists } = await import("../git.js");
         const exists = await branchExists("branch-to-delete");
         assert.equal(exists, false);
+      } finally {
+        process.chdir(originalCwd);
+      }
+    });
+  });
+
+  describe("getMergedOrGoneBranches", () => {
+    it("returns gone for branches that do not exist", async () => {
+      const originalCwd = process.cwd();
+      try {
+        process.chdir(tmpDir);
+        const { merged, gone } = await getMergedOrGoneBranches(["nonexistent-branch"], "main");
+        assert.equal(gone.has("nonexistent-branch"), true);
+        assert.equal(merged.has("nonexistent-branch"), false);
+      } finally {
+        process.chdir(originalCwd);
+      }
+    });
+
+    it("returns merged for branches that are merged into base", async () => {
+      const originalCwd = process.cwd();
+      try {
+        process.chdir(tmpDir);
+        await execa("git", ["checkout", "main"], { cwd: tmpDir });
+
+        await execa("git", ["checkout", "-b", "merged-but-exists"], { cwd: tmpDir });
+        await writeFile(join(tmpDir, "merged-check.txt"), "merged");
+        await execa("git", ["add", "-A"], { cwd: tmpDir });
+        await execa("git", ["commit", "-m", "merged branch commit"], { cwd: tmpDir });
+        await execa("git", ["checkout", "main"], { cwd: tmpDir });
+        await execa("git", ["merge", "merged-but-exists"], { cwd: tmpDir });
+
+        const { merged, gone } = await getMergedOrGoneBranches(["merged-but-exists"], "main");
+        assert.equal(merged.has("merged-but-exists"), true);
+        assert.equal(gone.has("merged-but-exists"), false);
+      } finally {
+        try { await execa("git", ["checkout", "main"], { cwd: tmpDir }); } catch { /* ok */ }
+        try { await execa("git", ["branch", "-d", "merged-but-exists"], { cwd: tmpDir }); } catch { /* ok */ }
+        process.chdir(originalCwd);
+      }
+    });
+
+    it("returns neither for branches that exist but are not merged", async () => {
+      const originalCwd = process.cwd();
+      try {
+        process.chdir(tmpDir);
+        await execa("git", ["checkout", "main"], { cwd: tmpDir });
+
+        await execa("git", ["checkout", "-b", "unmerged-branch"], { cwd: tmpDir });
+        await writeFile(join(tmpDir, "unmerged-check.txt"), "unmerged");
+        await execa("git", ["add", "-A"], { cwd: tmpDir });
+        await execa("git", ["commit", "-m", "unmerged branch commit"], { cwd: tmpDir });
+        await execa("git", ["checkout", "main"], { cwd: tmpDir });
+
+        const { merged, gone } = await getMergedOrGoneBranches(["unmerged-branch"], "main");
+        assert.equal(merged.has("unmerged-branch"), false);
+        assert.equal(gone.has("unmerged-branch"), false);
+      } finally {
+        try { await execa("git", ["checkout", "main"], { cwd: tmpDir }); } catch { /* ok */ }
+        try { await execa("git", ["branch", "-D", "unmerged-branch"], { cwd: tmpDir }); } catch { /* ok */ }
+        process.chdir(originalCwd);
+      }
+    });
+
+    it("handles a batch of mixed branches in one call", async () => {
+      const originalCwd = process.cwd();
+      try {
+        process.chdir(tmpDir);
+        await execa("git", ["checkout", "main"], { cwd: tmpDir });
+
+        // Create a merged branch
+        await execa("git", ["checkout", "-b", "batch-merged"], { cwd: tmpDir });
+        await writeFile(join(tmpDir, "batch-m.txt"), "m");
+        await execa("git", ["add", "-A"], { cwd: tmpDir });
+        await execa("git", ["commit", "-m", "batch merged"], { cwd: tmpDir });
+        await execa("git", ["checkout", "main"], { cwd: tmpDir });
+        await execa("git", ["merge", "batch-merged"], { cwd: tmpDir });
+
+        // Create an unmerged branch
+        await execa("git", ["checkout", "-b", "batch-unmerged"], { cwd: tmpDir });
+        await writeFile(join(tmpDir, "batch-u.txt"), "u");
+        await execa("git", ["add", "-A"], { cwd: tmpDir });
+        await execa("git", ["commit", "-m", "batch unmerged"], { cwd: tmpDir });
+        await execa("git", ["checkout", "main"], { cwd: tmpDir });
+
+        const { merged, gone } = await getMergedOrGoneBranches(
+          ["batch-merged", "batch-unmerged", "batch-gone"],
+          "main",
+        );
+        assert.equal(merged.has("batch-merged"), true);
+        assert.equal(merged.has("batch-unmerged"), false);
+        assert.equal(gone.has("batch-gone"), true);
+        assert.equal(gone.has("batch-merged"), false);
+      } finally {
+        try { await execa("git", ["checkout", "main"], { cwd: tmpDir }); } catch { /* ok */ }
+        try { await execa("git", ["branch", "-d", "batch-merged"], { cwd: tmpDir }); } catch { /* ok */ }
+        try { await execa("git", ["branch", "-D", "batch-unmerged"], { cwd: tmpDir }); } catch { /* ok */ }
+        process.chdir(originalCwd);
+      }
+    });
+
+    it("returns empty sets for empty input", async () => {
+      const originalCwd = process.cwd();
+      try {
+        process.chdir(tmpDir);
+        const { merged, gone } = await getMergedOrGoneBranches([], "main");
+        assert.equal(merged.size, 0);
+        assert.equal(gone.size, 0);
       } finally {
         process.chdir(originalCwd);
       }

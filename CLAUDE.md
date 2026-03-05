@@ -23,18 +23,19 @@ src/
   dependencies.ts     Post-planning dependency inference and index-to-ID resolution
   selection.ts        Dependency-aware task selection (findRunnableTask)
   discuss.ts          Interactive Claude session launcher (stdio: 'inherit' for full TTY control)
-  hooks.ts             Hook execution engine: skill registry, prompt resolution, condition evaluation, orchestrator
   config.ts           Zod-validated config. 3-layer merge: ~/.hootl/config.json < .hootl/config.json < env vars
   context.ts          Project context gathering for plan command (spec, structure, tasks, git log)
   budget.ts           Global daily budget enforcement (reads cost.csv, checks against budgets.global)
   loop.ts             Core completion loop (preflight -> plan -> execute -> review). Budget/attempt tracking
   invoke.ts           Wrapper around `claude -p` via execa. Parses cost from JSON output
-  git.ts              Git operations: task branches, auto-commit, branch switching
+  git.ts              Git operations: task branches, auto-commit, branch switching, merged-branch detection
+  sync.ts             Review-task sync: auto-promotes tasks to done when branches are merged externally
   guided.ts           Interactive goal clarification (generates questions via Claude, collects answers via gum)
   ui.ts               Terminal UI helpers using `gum` with stdin fallback
   plan-memory.ts      Planning memory: records lessons from task outcomes, injects into plan prompts
   plan-review.ts      Plan critique pass (self-review before task creation)
   plan-summary.ts     TL;DR plan summary with Accept/Revise/Cancel confirmation
+  hooks.ts            Hook execution engine (filter, prompt resolution, run, orchestrate)
   status.ts           Status summary writer (grouped by state)
   tasks/
     types.ts           Zod schemas for Task, TaskState, TaskBackend interface
@@ -54,12 +55,14 @@ src/
     git.test.ts        Slugify, branch naming
     discuss.test.ts    buildDiscussArgs, system prompt construction
     prioritize.test.ts userPriority sort, dependency enforcement, schema backward compat
+    sync.test.ts       Review task sync integration tests (real git repo + LocalTaskBackend)
+    branch-block.test.ts  Branch-switch failure blocks task (dirty worktree integration test)
 templates/
   preflight.md         System prompt for preflight validation phase (Phase 0)
   plan.md              System prompt for planning phase
   execute.md           System prompt for execution phase
   review.md            System prompt for review phase
-  simplify.md          System prompt for /simplify hook skill (code quality review)
+  validate-simplify.md System prompt template for the simplify skill (default on_confidence_met hook)
 docs/
   spec.md              Full project specification
 .hootl/                Runtime data directory (tasks, logs, status)
@@ -73,7 +76,7 @@ Each task begins with a one-time preflight validation, then runs through repeate
 
 0. **PREFLIGHT** (once per task) -- Claude validates the task's clarity, scope, and reproducibility. Produces `understanding.md` for context bridging. Based on the verdict:
    - `proceed` → continue to the attempt loop
-   - `too_broad` → subtasks auto-created via `backend.createTask()` in `ready` state; parent moves to `done` with subtask ID references. Falls back to `blocked` if no subtasks provided.
+   - `too_broad` → subtasks auto-created via `backend.createTask()` in `ready` state; inter-subtask dependencies inferred via `inferDependencies()` (same heuristic as the plan command). If the parent has a `userPriority`, subtasks inherit fractional slots right after it (e.g. parent=16 → subtasks get 16.2, 16.4, 16.6, 16.8) so they're worked on before lower-priority tasks. Parent moves back to `ready` with subtask IDs as dependencies (so it's picked up again after subtasks complete). `understanding.md` is deleted so preflight runs fresh on re-run. Falls back to `blocked` if no subtasks provided.
    - `unclear` → task moves to `blocked` with clarification questions
    - `cannot_reproduce` → task moves to `blocked` with reproduction failure details
    - Skipped if `understanding.md` already exists (task is resuming after human resolved a blocker)
@@ -90,6 +93,10 @@ The loop continues until:
 - Permanent error --> task stays `in_progress` for later resume
 
 Context bridges between fresh `claude -p` calls via files in `.hootl/tasks/<id>/`: `understanding.md`, `plan.md`, `progress.md`, `test_results.md`, `blockers.md`, `last_confidence.txt`.
+
+### Branch-Switch Safety
+
+Before the loop begins, `runCompletionLoop` creates or switches to the task branch. If the branch switch fails (e.g., uncommitted changes would be overwritten), the task moves to `blocked` with a descriptive message and the loop returns immediately — no phases run on the wrong branch. The blocker message distinguishes dirty-worktree errors ("Commit or stash your changes") from other git failures. The user can resolve the issue and re-run.
 
 ### Rollback Safety (confidence regression)
 
@@ -120,32 +127,19 @@ When a task reaches the confidence target, `handleConfidenceMet()` in `src/loop.
 
 All git operations (`mergeBranch`, `deleteBranch`, `pushBranch`, `createDraftPR`) are wrapped in try/catch. On failure, they warn and fall back to `none` behavior (task moves to `review`). The `resolveOnConfidenceMode()` helper in `src/config.ts` is a pure function that encapsulates the priority logic.
 
-### Hooks Engine
+### Review Task Sync (externally merged branches)
 
-The hooks engine (`src/hooks.ts`) runs configurable Claude invocations at key points in the completion loop. Hooks are defined in `config.hooks` as an array of `{ trigger, prompt, blocking, conditions? }`.
+When `onConfidence` is `pr` or `none`, or when merge fails, tasks land in `review` state. If the user then merges those branches manually (via GitHub, `git merge`, etc.), the tasks would otherwise stay in `review` forever. `syncReviewTasks()` in `src/sync.ts` detects this and auto-promotes them to `done`.
 
-**Trigger points:**
-- `on_confidence_met` — runs after confidence reaches the target, before state transition. Blocking hooks here prevent merge/PR/review transition.
-- `on_review_complete` — after each review phase (not yet integrated)
-- `on_execute_start` — before each execute phase (not yet integrated)
-- `on_blocked` — when a task moves to blocked (not yet integrated)
+**How it works:** For all `review`-state tasks that have a `branch` recorded, it runs a batch check via `getMergedOrGoneBranches()` in `src/git.ts`:
+- Calls `git branch --format "%(refname:short)"` once to get all local branches
+- Calls `git branch --merged <base> --format "%(refname:short)"` once to get all merged branches
+- Returns two sets: `merged` (branch exists but is merged into base) and `gone` (branch no longer exists locally)
+- Tasks in either set are promoted to `done`
 
-**Prompt resolution** (`resolvePrompt`):
-- `/skillName` — looks up a built-in skill in the skill registry (e.g., `/simplify`)
-- `templates/file.md` — loads a template file from the templates directory
-- Anything else — used as an inline prompt
+This is O(2) git subprocesses regardless of how many review tasks exist. Called at the start of `statusCommand()` and `runCommand()`.
 
-**Skill registry** — a `Map<string, (ctx: HookContext) => string>` of built-in prompt builders. The first skill is `simplify`, which generates a prompt to compare the task branch against main, review changed code for quality/reuse/efficiency, and fix issues.
-
-**Blocking vs advisory:**
-- `blocking: true` — if the hook fails (`pass: false`), `allPassed` is `false` and the state transition is prevented. The loop continues for another attempt.
-- `blocking: false` (default) — failures are logged as warnings but don't prevent transitions.
-
-**Condition evaluation** — hooks can specify `conditions.minConfidence` to only run when confidence meets a threshold. Hooks with unmet conditions are silently skipped.
-
-**Cost tracking** — hook invocations are logged to `cost.csv` as `hook:<prompt>` and accumulated into task `totalCost` and session `phaseCost` for proper budget enforcement.
-
-**Output parsing** (`parseHookOutput`) — expects JSON `{ "pass": boolean, "issues": string[], "fixed": string[] }`. Falls back to treating non-empty output as success.
+**Edge case:** A force-deleted (never-merged) branch will be detected as "gone" and the task promoted. The UI message distinguishes "branch merged" from "branch removed" so the user can spot this.
 
 ### Planning Memory
 
@@ -186,12 +180,50 @@ Three layers, merged with deep-merge (later wins):
 
 Key defaults: perSession=$0.50, perTask=$5.00, global=$50.00, maxAttempts=10, confidenceTarget=95%. `git.onConfidence` defaults to null (inferred from `auto.defaultLevel`). Env var: `HOOTL_GIT_ON_CONFIDENCE`.
 
+### Hooks & Skills
+
+Hooks run at trigger points in the completion loop. Skills are named prompt templates in the skill registry (`src/hooks.ts`). Configure hooks in `.hootl/config.json`:
+
+```json
+{
+  "hooks": [
+    {
+      "trigger": "on_confidence_met",
+      "skill": "simplify",
+      "blocking": true
+    }
+  ]
+}
+```
+
+Available triggers: `on_confidence_met`, `on_review_complete`, `on_blocked`, `on_execute_start`.
+
+Built-in skills: `simplify` (runs `git diff <baseBranch>..HEAD`, reviews changed code for reuse/quality/efficiency, fixes issues, runs tests). Uses the `templates/validate-simplify.md` template with variable substitution (`{{baseBranch}}`, `{{taskTitle}}`, `{{taskDescription}}`, `{{branchName}}`). Falls back to an inline prompt if the template file cannot be read. Skill definitions may be async (e.g. for file I/O); `runSkillHook` awaits them.
+
+**Default simplify hook**: When no hooks are configured (`config.hooks` is empty), `handleConfidenceMet()` injects a default `{ trigger: "on_confidence_met", skill: "simplify", blocking: true }` hook. This ensures every task that reaches confidence target gets a code quality review before merging. To disable, configure an explicit hook list (even an empty one won't work — use a no-op advisory hook or set a custom `on_confidence_met` hook).
+
+**Hook result JSON schema**: Hooks can output either the old format (`pass`, `remediationActions`) or the new format (`passed`, `confidence`, `fixes_applied`). `parseHookResult` accepts both, with new field names taking precedence when both are present.
+
+Optional fields: `conditions.minConfidence` (number), `prompt` (inline string or file path, used if no `skill`).
+
+When `blocking: true`, a hook failure at `on_confidence_met` keeps the task `in_progress` for another attempt (rather than transitioning). Advisory hooks (`blocking: false`) log warnings but don't block.
+
+Hook integration in the completion loop (`src/loop.ts`):
+- **`on_execute_start`** — fired before Phase 2 (execute). Fire-and-forget; errors are caught and logged.
+- **`on_review_complete`** — fired after Phase 3 review parsing and confidence update. Fire-and-forget.
+- **`on_confidence_met`** — fired inside `handleConfidenceMet()` before merge/PR/state-transition. When no hooks are configured, the default simplify hook runs here as a blocking validator. Blocking failures return `in_progress` so the task gets another attempt.
+- **`on_blocked`** — fired before each blocked-state transition (budget, max attempts, confidence regression, review blockers). Fire-and-forget via `moveToBlocked()` helper.
+
+All hook calls receive a `HookContext` with task, branch info, confidence, and config. Hook costs are logged by `runHooks` with phase label `hook:<trigger>`.
+
 ### Task State Machine
 
 ```
 proposed --> ready --> in_progress --> review --> done
+                          |              |
+                          |              +--> done (auto-sync: branch merged/deleted externally)
                           |
-                          +--> blocked (budget, max attempts, or review blockers)
+                          +--> blocked (budget, max attempts, branch-switch failure, or review blockers)
                           |       |
                           +-------+ (human resolves via `hootl clarify`)
 ```
@@ -320,6 +352,7 @@ All interactive TUI calls go through helpers in `src/ui.ts` (`uiChoose`, `uiConf
 - Auto-commit after each execute phase
 - All git operations wrapped in try/catch -- warn on failure, never crash
 - Switches back to base branch (main/master) when loop finishes
+- `getMergedOrGoneBranches()` uses `--format "%(refname:short)"` for robust branch name parsing (avoids regex on `*` prefix)
 
 ## Testing
 
@@ -336,17 +369,19 @@ Test coverage:
 - **invoke.test.ts** -- Arg building, cost parsing (`total_cost_usd` / `cost_usd`), text extraction from JSON
 - **invoke-robustness.test.ts** -- Timeout handling, `is_error` detection, edge cases
 - **local-backend.test.ts** -- Task CRUD, filtering, atomic writes
-- **loop.test.ts** -- Review JSON parsing (inline, code-block, nested, remediationPlan), prompt building, preflight integration (understanding.md in execute prompt), confidence regression detection, global budget integration, preflight subtask priority parsing, too_broad subtask auto-creation (priority inheritance, ready state, parent done state, ID references)
-- **git.test.ts** -- Slugify edge cases, branch name construction, getHeadSha, resetToSha rollback
+- **loop.test.ts** -- Review JSON parsing (inline, code-block, nested, remediationPlan), prompt building, preflight integration (understanding.md in execute prompt), confidence regression detection, global budget integration, preflight subtask priority parsing, too_broad subtask auto-creation (priority inheritance, ready state, parent ready with dependencies, understanding.md cleanup, dependency accumulation), handleConfidenceMet hook integration (blocking failure returns in_progress without state update, context forwarding, cost logging with trigger label), fireHooks (context propagation, no-op on empty hooks, error swallowing), moveToBlocked (on_blocked hook firing, error resilience, blocker forwarding)
+- **git.test.ts** -- Slugify edge cases, branch name construction, getHeadSha, resetToSha rollback, getMergedOrGoneBranches (gone, merged, unmerged, mixed batch, empty input)
+- **sync.test.ts** -- Review task sync: branch merged+deleted promotes to done, branch merged but exists promotes to done, unmerged branch stays review, null branch skipped, no review tasks returns 0
 - **discuss.test.ts** -- buildDiscussArgs, system prompt construction, section ordering
-- **hooks.test.ts** -- Condition evaluation (minConfidence, null confidence, empty conditions), prompt resolution (inline, /skill, templates/, unknown skill), output parsing (pass/fail, JSON extraction, empty/non-JSON fallback), skill registry (simplify registration, prompt content), orchestration (trigger filtering, condition skipping, blocking vs advisory, error handling)
 - **dependencies.test.ts** -- Dependency inference (explicit indices, heuristic fallback, cycle detection, out-of-range filtering), keyword extraction, index-to-ID resolution
 - **guided.test.ts** -- Clarification prompt building, question JSON parsing (valid, malformed, capped), constraints formatting, edge cases
 - **plan-memory.test.ts** -- Memory entry generation (success/blocked variants, blocker categorization, truncation), append/rotation (50-entry cap, FIFO), pattern loading (recent count, empty file), metrics computation (averages, completion rate, blocker reasons), prompt formatting
 - **preflight.test.ts** -- Template existence, role declaration, verdict values, JSON output fields, no-implementation constraints, bug reproduction instructions, scope assessment
 - **plan-review.test.ts** -- Critique prompt building (goal inclusion, task JSON, indices, dependsOn), task parsing (valid, markdown-wrapped, missing fields, non-integer deps), fallback on invalid input
 - **plan-summary.test.ts** -- Summary generation (single/multiple/many tasks, truncation), priority counting (mixed, default-to-medium), empty array, priority ordering
+- **hooks.test.ts** -- Trigger filtering (condition evaluation, minConfidence), prompt resolution (inline vs file path, fallback), result parsing (JSON extraction, brace-matching, graceful degradation, new field aliases: passed/fixes_applied/confidence), system prompt construction, runHook integration (pass/fail, cost, context forwarding), runHooks orchestration (blocking short-circuit, advisory continues, cost logging, trigger filtering), validate-simplify template (existence, content markers, variable substitution)
 - **prioritize.test.ts** -- userPriority schema backward compat, sort order (userPriority before auto), dependency enforcement (findRunnableTask)
+- **branch-block.test.ts** -- Integration test: dirty worktree blocks task on branch switch (real git repo), clean worktree proceeds past branch creation
 
 ## Dependencies
 

@@ -19,12 +19,14 @@ import {
   uiWarn,
   uiSuccess,
   uiSpinner,
+  errorMsg,
 } from "./ui.js";
 import { gatherProjectContext, formatContextForPrompt } from "./context.js";
 import { autoInit } from "./init.js";
 import { checkGlobalBudget } from "./budget.js";
 import { discussCommand } from "./discuss.js";
 import { findRunnableTask } from "./selection.js";
+import { syncReviewTasks } from "./sync.js";
 import { inferDependencies, resolveIndicesToIds } from "./dependencies.js";
 import {
   generateClarifyingQuestions,
@@ -93,7 +95,7 @@ program
           break;
       }
     } catch (err: unknown) {
-      uiError(err instanceof Error ? err.message : String(err));
+      uiError(errorMsg(err));
       process.exitCode = 1;
     }
   });
@@ -116,7 +118,7 @@ program
       uiSuccess("Initialized .hootl/ directory.");
       uiInfo("Created: .hootl/config.json, .hootl/tasks/, .hootl/logs/");
     } catch (err: unknown) {
-      uiError(err instanceof Error ? err.message : String(err));
+      uiError(errorMsg(err));
       process.exitCode = 1;
     }
   });
@@ -431,39 +433,39 @@ program
     try {
       await planCommand(options);
     } catch (err: unknown) {
-      uiError(err instanceof Error ? err.message : String(err));
+      uiError(errorMsg(err));
       process.exitCode = 1;
     }
   });
+
+async function selectFromState(state: TaskState, backend: TaskBackend): Promise<Task | undefined> {
+  const tasks = await backend.listTasks({ state });
+  if (tasks.length === 0) return undefined;
+  const { task, skipped } = await findRunnableTask(tasks, backend);
+  for (const s of skipped) {
+    uiWarn(`Skipping ${s.id} (${s.reason})`);
+  }
+  return task;
+}
 
 async function runCommand(taskId?: string, cliFlags?: { merge?: boolean; noMerge?: boolean }): Promise<void> {
   await autoInit();
   const config = await loadConfig();
   const backend = getBackend(config);
 
+  // Auto-promote review tasks whose branches have been merged or deleted
+  await syncReviewTasks(backend);
+
   let targetTask: Task | undefined;
 
   if (taskId !== undefined) {
     targetTask = await backend.getTask(taskId);
   } else {
-    const readyTasks = await backend.listTasks({ state: "ready" });
-    if (readyTasks.length > 0) {
-      const { task, skipped } = await findRunnableTask(readyTasks, backend);
-      for (const s of skipped) {
-        uiWarn(`Skipping ${s.id} (${s.reason})`);
-      }
-      targetTask = task;
-    }
+    // Prioritize in-progress tasks: finish started work before picking up new work
+    targetTask = await selectFromState("in_progress", backend);
+    if (targetTask) uiInfo(`Resuming in-progress task: ${targetTask.id}`);
     if (targetTask === undefined) {
-      const inProgressTasks = await backend.listTasks({ state: "in_progress" });
-      if (inProgressTasks.length > 0) {
-        const { task, skipped } = await findRunnableTask(inProgressTasks, backend);
-        for (const s of skipped) {
-          uiWarn(`Skipping ${s.id} (${s.reason})`);
-        }
-        targetTask = task;
-        if (targetTask) uiInfo(`Resuming in-progress task: ${targetTask.id}`);
-      }
+      targetTask = await selectFromState("ready", backend);
     }
   }
 
@@ -508,7 +510,7 @@ program
       }
       await runCommand(taskId, cliFlags);
     } catch (err: unknown) {
-      uiError(err instanceof Error ? err.message : String(err));
+      uiError(errorMsg(err));
       process.exitCode = 1;
     }
   });
@@ -517,6 +519,9 @@ async function statusCommand(): Promise<void> {
   await autoInit();
   const config = await loadConfig();
   const backend = getBackend(config);
+
+  // Auto-promote review tasks whose branches have been merged or deleted
+  await syncReviewTasks(backend);
 
   const allTasks = await backend.listTasks();
 
@@ -582,7 +587,7 @@ program
     try {
       await statusCommand();
     } catch (err: unknown) {
-      uiError(err instanceof Error ? err.message : String(err));
+      uiError(errorMsg(err));
       process.exitCode = 1;
     }
   });
@@ -678,7 +683,7 @@ program
         options.clear,
       );
     } catch (err: unknown) {
-      uiError(err instanceof Error ? err.message : String(err));
+      uiError(errorMsg(err));
       process.exitCode = 1;
     }
   });
@@ -766,7 +771,7 @@ program
     try {
       await clarifyCommand();
     } catch (err: unknown) {
-      uiError(err instanceof Error ? err.message : String(err));
+      uiError(errorMsg(err));
       process.exitCode = 1;
     }
   });
@@ -778,7 +783,7 @@ program
     try {
       await discussCommand(taskId);
     } catch (err: unknown) {
-      uiError(err instanceof Error ? err.message : String(err));
+      uiError(errorMsg(err));
       process.exitCode = 1;
     }
   });
