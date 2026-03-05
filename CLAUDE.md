@@ -180,7 +180,15 @@ Built-in skills: `simplify` (runs `git diff <baseBranch>..HEAD`, reviews changed
 
 Optional fields: `conditions.minConfidence` (number), `prompt` (inline string or file path, used if no `skill`).
 
-When `blocking: true`, a hook failure prevents the confidence-met action (merge/PR) and moves the task to `review` instead. Advisory hooks (`blocking: false`) log warnings but don't block.
+When `blocking: true`, a hook failure at `on_confidence_met` keeps the task `in_progress` for another attempt (rather than transitioning). Advisory hooks (`blocking: false`) log warnings but don't block.
+
+Hook integration in the completion loop (`src/loop.ts`):
+- **`on_execute_start`** — fired before Phase 2 (execute). Fire-and-forget; errors are caught and logged.
+- **`on_review_complete`** — fired after Phase 3 review parsing and confidence update. Fire-and-forget.
+- **`on_confidence_met`** — fired inside `handleConfidenceMet()` before merge/PR/state-transition. Blocking failures return `in_progress` so the task gets another attempt.
+- **`on_blocked`** — fired before each blocked-state transition (budget, max attempts, confidence regression, review blockers). Fire-and-forget via `moveToBlocked()` helper.
+
+All hook calls receive a `HookContext` with task, branch info, confidence, and config. Hook costs are logged by `runHooks` with phase label `hook:<trigger>`.
 
 ### Task State Machine
 
@@ -332,7 +340,7 @@ Test coverage:
 - **invoke.test.ts** -- Arg building, cost parsing (`total_cost_usd` / `cost_usd`), text extraction from JSON
 - **invoke-robustness.test.ts** -- Timeout handling, `is_error` detection, edge cases
 - **local-backend.test.ts** -- Task CRUD, filtering, atomic writes
-- **loop.test.ts** -- Review JSON parsing (inline, code-block, nested, remediationPlan), prompt building, preflight integration (understanding.md in execute prompt), confidence regression detection, global budget integration, preflight subtask priority parsing, too_broad subtask auto-creation (priority inheritance, ready state, parent ready with dependencies, understanding.md cleanup, dependency accumulation)
+- **loop.test.ts** -- Review JSON parsing (inline, code-block, nested, remediationPlan), prompt building, preflight integration (understanding.md in execute prompt), confidence regression detection, global budget integration, preflight subtask priority parsing, too_broad subtask auto-creation (priority inheritance, ready state, parent ready with dependencies, understanding.md cleanup, dependency accumulation), handleConfidenceMet hook integration (blocking failure returns in_progress without state update, context forwarding, cost logging with trigger label)
 - **git.test.ts** -- Slugify edge cases, branch name construction, getHeadSha, resetToSha rollback
 - **discuss.test.ts** -- buildDiscussArgs, system prompt construction, section ordering
 - **dependencies.test.ts** -- Dependency inference (explicit indices, heuristic fallback, cycle detection, out-of-range filtering), keyword extraction, index-to-ID resolution

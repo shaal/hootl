@@ -358,7 +358,7 @@ export async function handleConfidenceMet(
   taskDir: string,
   cliFlags: CliFlags,
   hookDeps?: HookDeps,
-): Promise<{ state: "done" | "review"; mergedSuccessfully: boolean }> {
+): Promise<{ state: "done" | "review" | "in_progress"; mergedSuccessfully: boolean }> {
   // Run on_confidence_met hooks before proceeding with merge/PR/none
   if (config.hooks.length > 0) {
     try {
@@ -373,9 +373,8 @@ export async function handleConfidenceMet(
         ? await runHooks("on_confidence_met", hookContext, config, hookDeps)
         : await runHooks("on_confidence_met", hookContext, config);
       if (!hookResult.allPassed) {
-        uiWarn("Blocking hook failed — moving task to review instead of merge/PR.");
-        await backend.updateTask(task.id, { state: "review" });
-        return { state: "review", mergedSuccessfully: false };
+        uiWarn("Blocking hook failed — keeping task in_progress for another attempt.");
+        return { state: "in_progress", mergedSuccessfully: false };
       }
     } catch (err: unknown) {
       uiWarn(`Hook execution error: ${err instanceof Error ? err.message : String(err)} — proceeding anyway`);
@@ -488,12 +487,57 @@ async function recordMemory(task: Task, projectDir: string): Promise<void> {
   }
 }
 
+/** Helper to build HookContext and run hooks at a trigger point. Fire-and-forget: errors are caught. */
+async function fireHooks(
+  trigger: "on_execute_start" | "on_review_complete" | "on_blocked",
+  task: Task,
+  taskBranch: string | null,
+  baseBranch: string | null,
+  confidence: number,
+  config: Config,
+  hookDeps?: HookDeps,
+): Promise<void> {
+  if (config.hooks.length === 0) return;
+  try {
+    const hookContext: HookContext = {
+      task,
+      branchName: taskBranch,
+      baseBranch: baseBranch ?? "main",
+      confidence,
+      config,
+    };
+    if (hookDeps) {
+      await runHooks(trigger, hookContext, config, hookDeps);
+    } else {
+      await runHooks(trigger, hookContext, config);
+    }
+  } catch (err: unknown) {
+    uiWarn(`Hook error (${trigger}): ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/** Helper to run on_blocked hook, then update task to blocked state. */
+async function moveToBlocked(
+  backend: TaskBackend,
+  task: Task,
+  blockers: string[],
+  taskBranch: string | null,
+  baseBranch: string | null,
+  confidence: number,
+  config: Config,
+  hookDeps?: HookDeps,
+): Promise<Task> {
+  await fireHooks("on_blocked", task, taskBranch, baseBranch, confidence, config, hookDeps);
+  return backend.updateTask(task.id, { state: "blocked", blockers });
+}
+
 export async function runCompletionLoop(
   task: Task,
   backend: TaskBackend,
   config: Config,
   verbose = false,
   cliFlags: CliFlags = {},
+  hookDeps?: HookDeps,
 ): Promise<void> {
   const taskDir = join(getProjectDir(), "tasks", task.id);
   const costLogDir = join(getProjectDir(), "logs");
@@ -628,10 +672,10 @@ export async function runCompletionLoop(
       uiWarn(
         `Task ${task.id} exceeded per-task budget ($${currentTask.totalCost.toFixed(2)} >= $${config.budgets.perTask.toFixed(2)}). Moving to blocked.`,
       );
-      const updatedBudgetTask = await backend.updateTask(task.id, {
-        state: "blocked",
-        blockers: [...currentTask.blockers, "Per-task budget exhausted"],
-      });
+      const updatedBudgetTask = await moveToBlocked(
+        backend, currentTask, [...currentTask.blockers, "Per-task budget exhausted"],
+        taskBranch, baseBranch, currentTask.confidence, config, hookDeps,
+      );
       await recordMemory(updatedBudgetTask, getProjectDir());
       break;
     }
@@ -642,10 +686,10 @@ export async function runCompletionLoop(
       uiWarn(
         `Global daily budget exhausted ($${globalBudgetCheck.todayCost.toFixed(2)} >= $${config.budgets.global.toFixed(2)}). Moving task to blocked.`,
       );
-      const updatedGlobalTask = await backend.updateTask(task.id, {
-        state: "blocked",
-        blockers: [...currentTask.blockers, "Global daily budget exhausted"],
-      });
+      const updatedGlobalTask = await moveToBlocked(
+        backend, currentTask, [...currentTask.blockers, "Global daily budget exhausted"],
+        taskBranch, baseBranch, currentTask.confidence, config, hookDeps,
+      );
       await recordMemory(updatedGlobalTask, getProjectDir());
       break;
     }
@@ -655,10 +699,10 @@ export async function runCompletionLoop(
       uiWarn(
         `Task ${task.id} reached max attempts (${currentTask.attempts}/${config.budgets.maxAttemptsPerTask}). Moving to blocked.`,
       );
-      const updatedAttemptsTask = await backend.updateTask(task.id, {
-        state: "blocked",
-        blockers: [...currentTask.blockers, "Max attempts exhausted"],
-      });
+      const updatedAttemptsTask = await moveToBlocked(
+        backend, currentTask, [...currentTask.blockers, "Max attempts exhausted"],
+        taskBranch, baseBranch, currentTask.confidence, config, hookDeps,
+      );
       await recordMemory(updatedAttemptsTask, getProjectDir());
       break;
     }
@@ -725,6 +769,9 @@ export async function runCompletionLoop(
           uiWarn(`Could not record pre-execute SHA: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
+
+      // Run on_execute_start hooks before Phase 2
+      await fireHooks("on_execute_start", currentTask, taskBranch, baseBranch, previousConfidence ?? 0, config, hookDeps);
 
       // Phase 2: EXECUTE
       const executeSystemPrompt = await loadTemplate("execute");
@@ -826,6 +873,9 @@ export async function runCompletionLoop(
         uiInfo(`Review: ${review.summary}`);
       }
 
+      // Run on_review_complete hooks after review parsing
+      await fireHooks("on_review_complete", currentTask, taskBranch, baseBranch, review.confidence, config, hookDeps);
+
       // Rollback safety: detect confidence regression
       if (isConfidenceRegression(review.confidence, previousConfidence) && preExecuteSha !== null) {
         uiWarn(`Confidence regressed: ${review.confidence}% < ${previousConfidence}% (previous). Rolling back.`);
@@ -839,10 +889,11 @@ export async function runCompletionLoop(
         const rollbackMsg = `\n\n---\n\n## Attempt ${attempt} — ROLLED BACK\n\nConfidence regressed from ${previousConfidence}% to ${review.confidence}%. Changes reverted to ${preExecuteSha.slice(0, 8)}.\n`;
         await appendFile(join(taskDir, "progress.md"), rollbackMsg, "utf-8");
         // Move to blocked
-        const updatedRegressionTask = await backend.updateTask(task.id, {
-          state: "blocked",
-          blockers: [...currentTask.blockers, `Confidence regression: ${review.confidence}% < ${previousConfidence}% (previous attempt). Execute phase rolled back.`],
-        });
+        const updatedRegressionTask = await moveToBlocked(
+          backend, currentTask,
+          [...currentTask.blockers, `Confidence regression: ${review.confidence}% < ${previousConfidence}% (previous attempt). Execute phase rolled back.`],
+          taskBranch, baseBranch, review.confidence, config, hookDeps,
+        );
         await recordMemory(updatedRegressionTask, getProjectDir());
         break;
       }
@@ -857,8 +908,13 @@ export async function runCompletionLoop(
           `Task ${task.id} reached ${review.confidence}% confidence.`,
         );
         const result = await handleConfidenceMet(
-          currentTask, config, backend, taskBranch, baseBranch, taskDir, cliFlags,
+          currentTask, config, backend, taskBranch, baseBranch, taskDir, cliFlags, hookDeps,
         );
+        if (result.state === "in_progress") {
+          // Blocking hook failed — keep looping for another attempt
+          uiInfo("Blocking hook prevented confidence-met transition — retrying.");
+          continue;
+        }
         // Record success in planning memory
         const doneTask = await backend.getTask(task.id);
         await recordMemory(doneTask, getProjectDir());
@@ -876,10 +932,10 @@ export async function runCompletionLoop(
           review.blockers.join("\n"),
           "utf-8",
         );
-        const updatedBlockedTask = await backend.updateTask(task.id, {
-          state: "blocked",
-          blockers: review.blockers,
-        });
+        const updatedBlockedTask = await moveToBlocked(
+          backend, currentTask, review.blockers,
+          taskBranch, baseBranch, review.confidence, config, hookDeps,
+        );
         uiWarn(
           `Task ${task.id} blocked: ${review.blockers.join("; ")}`,
         );

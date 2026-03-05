@@ -569,7 +569,7 @@ describe("handleConfidenceMet", () => {
     }
   });
 
-  it("blocking hook failure prevents merge and moves task to review", async () => {
+  it("blocking hook failure keeps task in_progress for another attempt", async () => {
     const dir = await mkdtemp(join(tmpdir(), "hootl-hcm-"));
     try {
       const { backend, state: mockState } = makeMockBackend();
@@ -592,9 +592,10 @@ describe("handleConfidenceMet", () => {
       const result = await handleConfidenceMet(
         makeTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
       );
-      assert.equal(result.state, "review");
+      assert.equal(result.state, "in_progress");
       assert.equal(result.mergedSuccessfully, false);
-      assert.equal(mockState.lastUpdate?.updates.state, "review");
+      // Task state should NOT have been updated — stays in_progress implicitly
+      assert.equal(mockState.lastUpdate, null);
     } finally {
       await rm(dir, { recursive: true });
     }
@@ -1117,6 +1118,146 @@ describe("handleTooBroad subtask auto-creation", () => {
     const subtaskUpdates = updates.filter(u => u.id.startsWith("sub-") && u.updates.userPriority !== undefined);
     assert.equal(subtaskUpdates.length, 0);
     await rm(taskDir, { recursive: true, force: true });
+  });
+});
+
+describe("handleConfidenceMet hook integration", () => {
+  const makeTask = (overrides: Partial<Task> = {}): Task => ({
+    id: "task-001",
+    title: "Test task",
+    description: "A test task description",
+    priority: "medium",
+    type: "feature",
+    state: "in_progress",
+    dependencies: [],
+    backend: "local",
+    backendRef: null,
+    confidence: 95,
+    attempts: 1,
+    totalCost: 0.10,
+    branch: "hootl/task-001-test",
+    worktree: null,
+    userPriority: null,
+    blockers: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    ...overrides,
+  });
+
+  function makeMockBackend(): { backend: TaskBackend; updates: Array<{ id: string; updates: Partial<Task> }> } {
+    const updates: Array<{ id: string; updates: Partial<Task> }> = [];
+    const backend = {
+      updateTask: async (id: string, upd: Partial<Task>) => {
+        updates.push({ id, updates: upd });
+        return { ...makeTask(), ...upd } as Task;
+      },
+      createTask: async () => makeTask(),
+      getTask: async () => makeTask(),
+      listTasks: async () => [],
+      deleteTask: async () => {},
+    } as TaskBackend;
+    return { backend, updates };
+  }
+
+  it("blocking hook failure does not call backend.updateTask", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hootl-hcm-hook-"));
+    try {
+      const { backend, updates } = makeMockBackend();
+      const config = ConfigSchema.parse({
+        git: { onConfidence: "none" },
+        hooks: [
+          { trigger: "on_confidence_met", skill: "simplify", blocking: true },
+        ],
+      });
+      const hookDeps: HookDeps = {
+        invoke: async () => ({
+          output: '{"pass": false, "issues": ["bad code"], "remediationActions": []}',
+          costUsd: 0.02,
+          exitCode: 0,
+          durationMs: 50,
+        } as InvokeResult),
+        log: async () => {},
+        warn: () => {},
+      };
+      const result = await handleConfidenceMet(
+        makeTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
+      );
+      assert.equal(result.state, "in_progress");
+      // No state transition should have been persisted
+      assert.equal(updates.length, 0);
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+
+  it("on_confidence_met hook receives correct context", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hootl-hcm-ctx-"));
+    try {
+      const { backend } = makeMockBackend();
+      const task = makeTask({ confidence: 97 });
+      const config = ConfigSchema.parse({
+        git: { onConfidence: "none" },
+        hooks: [
+          { trigger: "on_confidence_met", prompt: "check quality", blocking: false },
+        ],
+      });
+      let capturedPrompt = "";
+      let capturedSystemPrompt = "";
+      const hookDeps: HookDeps = {
+        invoke: async (opts) => {
+          capturedPrompt = opts.prompt;
+          capturedSystemPrompt = opts.systemPrompt ?? "";
+          return {
+            output: '{"pass": true, "issues": [], "remediationActions": []}',
+            costUsd: 0.01,
+            exitCode: 0,
+            durationMs: 30,
+          } as InvokeResult;
+        },
+        log: async () => {},
+        warn: () => {},
+      };
+      await handleConfidenceMet(
+        task, config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
+      );
+      assert.equal(capturedPrompt, "check quality");
+      assert.ok(capturedSystemPrompt.includes("Test task"));
+      assert.ok(capturedSystemPrompt.includes("97%"));
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+
+  it("hook costs are logged with hook trigger label", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hootl-hcm-cost-"));
+    try {
+      const { backend } = makeMockBackend();
+      const config = ConfigSchema.parse({
+        git: { onConfidence: "none" },
+        hooks: [
+          { trigger: "on_confidence_met", prompt: "check", blocking: false },
+        ],
+      });
+      const logCalls: Array<{ phase: string; cost: number }> = [];
+      const hookDeps: HookDeps = {
+        invoke: async () => ({
+          output: '{"pass": true}',
+          costUsd: 0.05,
+          exitCode: 0,
+          durationMs: 20,
+        } as InvokeResult),
+        log: async (_dir, _id, phase, cost) => { logCalls.push({ phase, cost }); },
+        warn: () => {},
+      };
+      await handleConfidenceMet(
+        makeTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
+      );
+      assert.equal(logCalls.length, 1);
+      assert.equal(logCalls[0]?.phase, "hook:on_confidence_met");
+      assert.equal(logCalls[0]?.cost, 0.05);
+    } finally {
+      await rm(dir, { recursive: true });
+    }
   });
 });
 
