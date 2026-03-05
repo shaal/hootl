@@ -1,0 +1,158 @@
+import { z } from "zod";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { homedir } from "node:os";
+
+const BudgetSchema = z.object({
+  perSession: z.number().default(0.50),
+  perTask: z.number().default(5.00),
+  global: z.number().default(50.00),
+  maxAttemptsPerTask: z.number().default(10),
+});
+
+const ConfidenceSchema = z.object({
+  target: z.number().default(95),
+  requireTests: z.boolean().default(true),
+});
+
+const GitSchema = z.object({
+  useWorktrees: z.boolean().default(false),
+  autoPR: z.boolean().default(true),
+  branchPrefix: z.string().default("hootl/"),
+});
+
+const AutoSchema = z.object({
+  defaultLevel: z.enum(["conservative", "moderate", "proactive", "full"]).default("proactive"),
+  maxParallel: z.number().default(1),
+});
+
+const NotificationsSchema = z.object({
+  terminal: z.boolean().default(true),
+  osNotify: z.boolean().default(false),
+  summaryFile: z.boolean().default(true),
+  webhook: z.string().nullable().default(null),
+});
+
+export const ConfigSchema = z.object({
+  taskBackend: z.enum(["local", "github", "beads"]).default("local"),
+  budgets: BudgetSchema.default({}),
+  confidence: ConfidenceSchema.default({}),
+  git: GitSchema.default({}),
+  auto: AutoSchema.default({}),
+  notifications: NotificationsSchema.default({}),
+  permissionMode: z.string().default("default"),
+});
+export type Config = z.infer<typeof ConfigSchema>;
+
+export async function loadJsonFile(path: string): Promise<Record<string, unknown>> {
+  try {
+    const content = await readFile(path, "utf-8");
+    return JSON.parse(content) as Record<string, unknown>;
+  } catch (err: unknown) {
+    if (err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "ENOENT") {
+      return {};
+    }
+    throw err;
+  }
+}
+
+const ENV_MAP: Record<string, string[]> = {
+  HOOTL_TASK_BACKEND: ["taskBackend"],
+  HOOTL_BUDGET_PER_SESSION: ["budgets", "perSession"],
+  HOOTL_BUDGET_PER_TASK: ["budgets", "perTask"],
+  HOOTL_BUDGET_GLOBAL: ["budgets", "global"],
+  HOOTL_BUDGET_MAX_ATTEMPTS: ["budgets", "maxAttemptsPerTask"],
+  HOOTL_CONFIDENCE_TARGET: ["confidence", "target"],
+  HOOTL_CONFIDENCE_REQUIRE_TESTS: ["confidence", "requireTests"],
+  HOOTL_GIT_USE_WORKTREES: ["git", "useWorktrees"],
+  HOOTL_GIT_AUTO_PR: ["git", "autoPR"],
+  HOOTL_GIT_BRANCH_PREFIX: ["git", "branchPrefix"],
+  HOOTL_AUTO_LEVEL: ["auto", "defaultLevel"],
+  HOOTL_AUTO_MAX_PARALLEL: ["auto", "maxParallel"],
+  HOOTL_NOTIFICATIONS_TERMINAL: ["notifications", "terminal"],
+  HOOTL_NOTIFICATIONS_OS_NOTIFY: ["notifications", "osNotify"],
+  HOOTL_NOTIFICATIONS_SUMMARY_FILE: ["notifications", "summaryFile"],
+  HOOTL_NOTIFICATIONS_WEBHOOK: ["notifications", "webhook"],
+  HOOTL_PERMISSION_MODE: ["permissionMode"],
+};
+
+function coerceEnvValue(value: string): string | number | boolean {
+  if (value === "true") return true;
+  if (value === "false") return false;
+  const num = Number(value);
+  if (!Number.isNaN(num) && value.trim() !== "") return num;
+  return value;
+}
+
+export function applyEnvOverrides(config: Record<string, unknown>): Record<string, unknown> {
+  const result = structuredClone(config);
+
+  for (const [envVar, path] of Object.entries(ENV_MAP)) {
+    const rawValue = process.env[envVar];
+    if (rawValue === undefined) continue;
+
+    const value = coerceEnvValue(rawValue);
+
+    const first = path[0];
+    if (first === undefined) continue;
+
+    if (path.length === 1) {
+      result[first] = value;
+    } else if (path.length === 2) {
+      const second = path[1];
+      if (second === undefined) continue;
+      if (typeof result[first] !== "object" || result[first] === null) {
+        result[first] = {};
+      }
+      (result[first] as Record<string, unknown>)[second] = value;
+    }
+  }
+
+  return result;
+}
+
+function deepMerge(
+  base: Record<string, unknown>,
+  override: Record<string, unknown>,
+): Record<string, unknown> {
+  const result = structuredClone(base);
+  for (const key of Object.keys(override)) {
+    const baseVal = result[key];
+    const overVal = override[key];
+    if (
+      typeof baseVal === "object" &&
+      baseVal !== null &&
+      !Array.isArray(baseVal) &&
+      typeof overVal === "object" &&
+      overVal !== null &&
+      !Array.isArray(overVal)
+    ) {
+      result[key] = deepMerge(
+        baseVal as Record<string, unknown>,
+        overVal as Record<string, unknown>,
+      );
+    } else {
+      result[key] = overVal;
+    }
+  }
+  return result;
+}
+
+export async function loadConfig(projectDir?: string): Promise<Config> {
+  const resolvedProjectDir = projectDir ?? process.cwd();
+
+  const globalPath = join(homedir(), ".hootl", "config.json");
+  const projectPath = join(resolvedProjectDir, ".hootl", "config.json");
+
+  const globalConfig = await loadJsonFile(globalPath);
+  const projectConfig = await loadJsonFile(projectPath);
+
+  const merged = deepMerge(globalConfig, projectConfig);
+  const withEnv = applyEnvOverrides(merged);
+
+  return ConfigSchema.parse(withEnv);
+}
+
+export function getProjectDir(): string {
+  return join(process.cwd(), ".hootl");
+}
