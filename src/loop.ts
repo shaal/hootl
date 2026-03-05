@@ -349,6 +349,8 @@ export interface CliFlags {
   noMerge?: boolean;
 }
 
+export const MAX_REVERIFICATIONS = 2;
+
 export async function handleConfidenceMet(
   task: Task,
   config: Config,
@@ -358,6 +360,7 @@ export async function handleConfidenceMet(
   taskDir: string,
   cliFlags: CliFlags,
   hookDeps?: HookDeps,
+  verbose = false,
 ): Promise<{ state: "done" | "review" | "in_progress"; mergedSuccessfully: boolean }> {
   // Run on_confidence_met hooks before proceeding with merge/PR/none.
   // If no hooks are configured, inject the default simplify hook as a blocking validator.
@@ -382,6 +385,94 @@ export async function handleConfidenceMet(
       if (!hookResult.allPassed) {
         uiWarn("Blocking hook failed — keeping task in_progress for another attempt.");
         return { state: "in_progress", mergedSuccessfully: false };
+      }
+
+      // Re-verification loop: if hooks applied fixes, commit and re-review to verify
+      const costLogDir = join(getProjectDir(), "logs");
+      let reverifyCount = 0;
+      let currentTask = task;
+      let anyFixesApplied = hookResult.results.some((r) => r.remediationActions.length > 0);
+
+      while (anyFixesApplied && reverifyCount < MAX_REVERIFICATIONS) {
+        reverifyCount++;
+        uiInfo(`Re-verification ${reverifyCount}/${MAX_REVERIFICATIONS}: hook applied fixes — committing and re-reviewing.`);
+
+        // Auto-commit hook changes
+        if (taskBranch !== null) {
+          try {
+            await commitTaskChanges(task.id, `hook-fix-${reverifyCount}`, `[${task.id}] Hook applied fixes (re-verify ${reverifyCount})`);
+          } catch (err: unknown) {
+            uiWarn(`Could not auto-commit hook fixes: ${errorMsg(err)}`);
+          }
+        }
+
+        // Re-run Phase 3 (review) to check if fixes broke anything
+        const reviewSystemPrompt = await loadTemplate("review");
+        const reviewUserPrompt = await buildReviewPrompt(currentTask, taskDir);
+
+        const reviewResult = hookDeps
+          ? await hookDeps.invoke({
+              prompt: reviewUserPrompt,
+              systemPrompt: reviewSystemPrompt,
+              maxTurns: 20,
+              verbose,
+            })
+          : await invokeClaude({
+              prompt: reviewUserPrompt,
+              systemPrompt: reviewSystemPrompt,
+              maxTurns: 20,
+              verbose,
+            });
+
+        // Log re-verify cost
+        if (hookDeps) {
+          await hookDeps.log(costLogDir, task.id, "re-verify", reviewResult.costUsd);
+        } else {
+          await logCost(costLogDir, task.id, "re-verify", reviewResult.costUsd);
+        }
+
+        const review = parseReviewResult(reviewResult.output);
+
+        // Update task confidence
+        currentTask = await backend.updateTask(task.id, {
+          confidence: review.confidence,
+          totalCost: currentTask.totalCost + reviewResult.costUsd,
+        });
+
+        uiInfo(`Re-verify confidence: ${review.confidence}% (target: ${config.confidence.target}%)`);
+
+        if (review.confidence >= config.confidence.target) {
+          // Confidence still good — re-run hooks to check for more fixes
+          const reHookContext: HookContext = {
+            task: currentTask,
+            branchName: taskBranch,
+            baseBranch: baseBranch ?? "main",
+            confidence: review.confidence,
+            config,
+          };
+          const reHookResult = hookDeps
+            ? await runHooks("on_confidence_met", reHookContext, effectiveConfig, hookDeps)
+            : await runHooks("on_confidence_met", reHookContext, effectiveConfig);
+
+          if (!reHookResult.allPassed) {
+            uiWarn("Blocking hook failed during re-verification — keeping task in_progress.");
+            return { state: "in_progress", mergedSuccessfully: false };
+          }
+
+          anyFixesApplied = reHookResult.results.some((r) => r.remediationActions.length > 0);
+          // If no more fixes, break out and proceed to merge/PR/none
+        } else {
+          // Confidence dropped below target — write remediation plan and return in_progress
+          uiWarn(`Re-verify: confidence dropped to ${review.confidence}% (below target ${config.confidence.target}%). Writing remediation plan.`);
+          if (review.remediationPlan.trim().length > 0) {
+            await writeFile(join(taskDir, "plan.md"), review.remediationPlan, "utf-8");
+          }
+          return { state: "in_progress", mergedSuccessfully: false };
+        }
+      }
+
+      if (reverifyCount >= MAX_REVERIFICATIONS && anyFixesApplied) {
+        uiWarn(`Max re-verifications (${MAX_REVERIFICATIONS}) reached — hook keeps applying fixes. Proceeding with merge/PR/none.`);
       }
     } catch (err: unknown) {
       uiWarn(`Hook execution error: ${errorMsg(err)} — proceeding anyway`);
@@ -922,7 +1013,7 @@ export async function runCompletionLoop(
           `Task ${task.id} reached ${review.confidence}% confidence.`,
         );
         const result = await handleConfidenceMet(
-          currentTask, config, backend, taskBranch, baseBranch, taskDir, cliFlags, hookDeps,
+          currentTask, config, backend, taskBranch, baseBranch, taskDir, cliFlags, hookDeps, verbose,
         );
         if (result.state === "in_progress") {
           // Blocking hook failed — keep looping for another attempt

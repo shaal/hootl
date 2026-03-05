@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { parseReviewResult, isSessionBudgetExceeded, applySessionBudgetExceeded, buildPlanPrompt, isConfidenceRegression, handleConfidenceMet, parsePreflightResult, handleTooBroad, fireHooks, moveToBlocked } from "../loop.js";
+import { parseReviewResult, isSessionBudgetExceeded, applySessionBudgetExceeded, buildPlanPrompt, isConfidenceRegression, handleConfidenceMet, parsePreflightResult, handleTooBroad, fireHooks, moveToBlocked, MAX_REVERIFICATIONS } from "../loop.js";
 import { checkGlobalBudget } from "../budget.js";
 import { ConfigSchema } from "../config.js";
 import type { TaskBackend, CreateTaskInput } from "../tasks/types.js";
@@ -1256,6 +1256,300 @@ describe("handleConfidenceMet hook integration", () => {
       assert.equal(logCalls.length, 1);
       assert.equal(logCalls[0]?.phase, "hook:on_confidence_met");
       assert.equal(logCalls[0]?.cost, 0.05);
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+
+  it("re-verifies when hook applies fixes and confidence stays above target", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hootl-hcm-reverify-"));
+    try {
+      const { backend, updates } = makeMockBackend();
+      const config = ConfigSchema.parse({
+        git: { onConfidence: "none" },
+        hooks: [
+          { trigger: "on_confidence_met", skill: "simplify", blocking: true },
+        ],
+      });
+      let invokeCount = 0;
+      const hookDeps: HookDeps = {
+        invoke: async () => {
+          invokeCount++;
+          if (invokeCount === 1) {
+            // First call: hook passes with fixes_applied
+            return {
+              output: '{"pass": true, "issues": [], "fixes_applied": ["extracted helper"]}',
+              costUsd: 0.03,
+              exitCode: 0,
+              durationMs: 100,
+            } as InvokeResult;
+          }
+          // Second call: re-verify review — confidence above target
+          if (invokeCount === 2) {
+            return {
+              output: JSON.stringify({ confidence: 97, summary: "All good after fixes", issues: [], blockers: [], remediationPlan: "" }),
+              costUsd: 0.02,
+              exitCode: 0,
+              durationMs: 80,
+            } as InvokeResult;
+          }
+          // Third call: re-run hook after re-verify — no more fixes
+          return {
+            output: '{"pass": true, "issues": [], "fixes_applied": []}',
+            costUsd: 0.01,
+            exitCode: 0,
+            durationMs: 50,
+          } as InvokeResult;
+        },
+        log: async () => {},
+        warn: () => {},
+      };
+      const result = await handleConfidenceMet(
+        makeTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
+      );
+      // Should proceed to review since confidence stayed above target
+      assert.equal(result.state, "review");
+      assert.equal(result.mergedSuccessfully, false);
+      // invoke should have been called 3 times: hook, re-review, re-hook
+      assert.equal(invokeCount, 3);
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+
+  it("re-verify drops confidence below target — returns in_progress with remediation plan", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hootl-hcm-reverify-drop-"));
+    try {
+      const { backend } = makeMockBackend();
+      const config = ConfigSchema.parse({
+        git: { onConfidence: "none" },
+        hooks: [
+          { trigger: "on_confidence_met", skill: "simplify", blocking: true },
+        ],
+      });
+      let invokeCount = 0;
+      const hookDeps: HookDeps = {
+        invoke: async () => {
+          invokeCount++;
+          if (invokeCount === 1) {
+            // Hook passes with fixes
+            return {
+              output: '{"pass": true, "issues": [], "fixes_applied": ["refactored module"]}',
+              costUsd: 0.03,
+              exitCode: 0,
+              durationMs: 100,
+            } as InvokeResult;
+          }
+          // Re-verify review — confidence dropped below target
+          return {
+            output: JSON.stringify({ confidence: 80, summary: "Fixes broke tests", issues: ["test failures"], blockers: [], remediationPlan: "Fix the broken tests by reverting the module extraction" }),
+            costUsd: 0.02,
+            exitCode: 0,
+            durationMs: 80,
+          } as InvokeResult;
+        },
+        log: async () => {},
+        warn: () => {},
+      };
+      const result = await handleConfidenceMet(
+        makeTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
+      );
+      // Should return in_progress because confidence dropped
+      assert.equal(result.state, "in_progress");
+      assert.equal(result.mergedSuccessfully, false);
+      // Verify remediation plan was written
+      const { readFile: readF } = await import("node:fs/promises");
+      const planContent = await readF(join(dir, "plan.md"), "utf-8");
+      assert.ok(planContent.includes("Fix the broken tests"));
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+
+  it("caps re-verification at MAX_REVERIFICATIONS attempts", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hootl-hcm-reverify-cap-"));
+    try {
+      const { backend } = makeMockBackend();
+      const config = ConfigSchema.parse({
+        git: { onConfidence: "none" },
+        hooks: [
+          { trigger: "on_confidence_met", skill: "simplify", blocking: true },
+        ],
+      });
+      let invokeCount = 0;
+      const hookDeps: HookDeps = {
+        invoke: async () => {
+          invokeCount++;
+          // All hook calls return fixes_applied, all reviews return above-target confidence
+          if (invokeCount % 2 === 1) {
+            // Hook: always applies fixes
+            return {
+              output: '{"pass": true, "issues": [], "fixes_applied": ["another fix"]}',
+              costUsd: 0.01,
+              exitCode: 0,
+              durationMs: 50,
+            } as InvokeResult;
+          }
+          // Review: always above target
+          return {
+            output: JSON.stringify({ confidence: 98, summary: "Good", issues: [], blockers: [], remediationPlan: "" }),
+            costUsd: 0.01,
+            exitCode: 0,
+            durationMs: 50,
+          } as InvokeResult;
+        },
+        log: async () => {},
+        warn: () => {},
+      };
+      const result = await handleConfidenceMet(
+        makeTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
+      );
+      // Should eventually proceed (capped at MAX_REVERIFICATIONS)
+      assert.equal(result.state, "review");
+      // Expected calls: hook + (re-review + re-hook) * MAX_REVERIFICATIONS = 1 + 2*2 = 5
+      assert.equal(invokeCount, 1 + 2 * MAX_REVERIFICATIONS);
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+
+  it("no re-verification when hook has no fixes_applied", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hootl-hcm-no-reverify-"));
+    try {
+      const { backend } = makeMockBackend();
+      const config = ConfigSchema.parse({
+        git: { onConfidence: "none" },
+        hooks: [
+          { trigger: "on_confidence_met", skill: "simplify", blocking: true },
+        ],
+      });
+      let invokeCount = 0;
+      const hookDeps: HookDeps = {
+        invoke: async () => {
+          invokeCount++;
+          return {
+            output: '{"pass": true, "issues": [], "fixes_applied": []}',
+            costUsd: 0.01,
+            exitCode: 0,
+            durationMs: 50,
+          } as InvokeResult;
+        },
+        log: async () => {},
+        warn: () => {},
+      };
+      const result = await handleConfidenceMet(
+        makeTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
+      );
+      // Should proceed directly — no re-verification
+      assert.equal(result.state, "review");
+      // Only 1 invoke call (the hook itself)
+      assert.equal(invokeCount, 1);
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+
+  it("re-verify auto-commits hook changes", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hootl-hcm-reverify-commit-"));
+    try {
+      const { backend } = makeMockBackend();
+      const config = ConfigSchema.parse({
+        git: { onConfidence: "none" },
+        hooks: [
+          { trigger: "on_confidence_met", skill: "simplify", blocking: true },
+        ],
+      });
+      let invokeCount = 0;
+      const hookDeps: HookDeps = {
+        invoke: async () => {
+          invokeCount++;
+          if (invokeCount === 1) {
+            return {
+              output: '{"pass": true, "issues": [], "fixes_applied": ["optimized loop"]}',
+              costUsd: 0.02,
+              exitCode: 0,
+              durationMs: 80,
+            } as InvokeResult;
+          }
+          if (invokeCount === 2) {
+            return {
+              output: JSON.stringify({ confidence: 96, summary: "Looks good", issues: [], blockers: [], remediationPlan: "" }),
+              costUsd: 0.01,
+              exitCode: 0,
+              durationMs: 50,
+            } as InvokeResult;
+          }
+          return {
+            output: '{"pass": true, "issues": [], "fixes_applied": []}',
+            costUsd: 0.01,
+            exitCode: 0,
+            durationMs: 50,
+          } as InvokeResult;
+        },
+        log: async () => {},
+        warn: () => {},
+      };
+      // commitTaskChanges will fail (no real git repo) but that's caught and warned
+      // The key assertion is that the re-verify loop runs and proceeds
+      const result = await handleConfidenceMet(
+        makeTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
+      );
+      assert.equal(result.state, "review");
+      // 3 calls: hook (fixes), re-review, re-hook (no fixes)
+      assert.equal(invokeCount, 3);
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+
+  it("re-verify logs cost with re-verify phase label", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hootl-hcm-reverify-cost-"));
+    try {
+      const { backend } = makeMockBackend();
+      const config = ConfigSchema.parse({
+        git: { onConfidence: "none" },
+        hooks: [
+          { trigger: "on_confidence_met", skill: "simplify", blocking: true },
+        ],
+      });
+      let invokeCount = 0;
+      const logCalls: Array<{ phase: string; cost: number }> = [];
+      const hookDeps: HookDeps = {
+        invoke: async () => {
+          invokeCount++;
+          if (invokeCount === 1) {
+            return {
+              output: '{"pass": true, "issues": [], "fixes_applied": ["fix"]}',
+              costUsd: 0.03,
+              exitCode: 0,
+              durationMs: 50,
+            } as InvokeResult;
+          }
+          if (invokeCount === 2) {
+            return {
+              output: JSON.stringify({ confidence: 96, summary: "OK", issues: [], blockers: [], remediationPlan: "" }),
+              costUsd: 0.04,
+              exitCode: 0,
+              durationMs: 50,
+            } as InvokeResult;
+          }
+          return {
+            output: '{"pass": true, "issues": [], "fixes_applied": []}',
+            costUsd: 0.01,
+            exitCode: 0,
+            durationMs: 50,
+          } as InvokeResult;
+        },
+        log: async (_dir, _id, phase, cost) => { logCalls.push({ phase, cost }); },
+        warn: () => {},
+      };
+      await handleConfidenceMet(
+        makeTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
+      );
+      // Should have: hook:on_confidence_met (0.03), re-verify (0.04), hook:on_confidence_met (0.01)
+      const reVerifyCalls = logCalls.filter((c) => c.phase === "re-verify");
+      assert.equal(reVerifyCalls.length, 1);
+      assert.equal(reVerifyCalls[0]?.cost, 0.04);
     } finally {
       await rm(dir, { recursive: true });
     }
