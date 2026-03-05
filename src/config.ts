@@ -51,10 +51,14 @@ const HookConditionSchema = z.object({
 
 const HookSchema = z.object({
   trigger: HookTriggerSchema,
-  prompt: z.string(),
+  prompt: z.string().optional(),
+  skill: z.string().optional(),
   blocking: z.boolean().default(false),
   conditions: HookConditionSchema.optional(),
-});
+}).refine(
+  (h) => h.prompt !== undefined || h.skill !== undefined,
+  { message: "Hook must have at least one of 'prompt' or 'skill'" },
+);
 export type Hook = z.infer<typeof HookSchema>;
 
 const HooksSchema = z.array(HookSchema).default([]);

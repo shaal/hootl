@@ -10,6 +10,8 @@ import {
   parseHookResult,
   runHook,
   runHooks,
+  resolveSkill,
+  runSkillHook,
 } from "../hooks.js";
 import type { HookContext, HookDeps, HookResult } from "../hooks.js";
 import type { Hook } from "../config.js";
@@ -663,5 +665,167 @@ describe("runHooks", () => {
     assert.equal(result.allPassed, true);
     assert.equal(deps.warnCalls.length, 1);
     assert.ok(deps.warnCalls[0]?.includes("no details"));
+  });
+});
+
+// --- Skill registry ---
+
+describe("resolveSkill", () => {
+  it("returns a function for the built-in 'simplify' skill", () => {
+    const skill = resolveSkill("simplify");
+    assert.notEqual(skill, undefined);
+    assert.equal(typeof skill, "function");
+  });
+
+  it("returns undefined for an unregistered skill name", () => {
+    const skill = resolveSkill("nonexistent");
+    assert.equal(skill, undefined);
+  });
+
+  it("simplify skill produces invoke options with expected fields", () => {
+    const ctx = makeContext({
+      task: makeTask({ title: "Refactor auth", description: "Clean up auth module" }),
+      branchName: "hootl/t3-refactor",
+      baseBranch: "main",
+    });
+    const skill = resolveSkill("simplify");
+    assert.notEqual(skill, undefined);
+    const opts = skill!(ctx);
+    assert.ok(opts.prompt.includes("reuse"));
+    assert.ok(opts.prompt.includes("quality"));
+    assert.ok(opts.systemPrompt?.includes("Refactor auth"));
+    assert.ok(opts.systemPrompt?.includes("hootl/t3-refactor"));
+    assert.equal(opts.maxTurns, 5);
+  });
+});
+
+// --- runSkillHook ---
+
+describe("runSkillHook", () => {
+  it("invokes Claude with the skill's prompt for a known skill", async () => {
+    const deps = makeMockDeps();
+    const ctx = makeContext();
+
+    const result = await runSkillHook("simplify", ctx, deps);
+    assert.equal(result.success, true);
+    assert.equal(result.costUsd, 0.01);
+    assert.equal(deps.invokeCalls.length, 1);
+    assert.ok(deps.invokeCalls[0]?.prompt.includes("reuse"));
+  });
+
+  it("returns failure result for an unknown skill", async () => {
+    const deps = makeMockDeps();
+    const ctx = makeContext();
+
+    const result = await runSkillHook("nonexistent_skill", ctx, deps);
+    assert.equal(result.success, false);
+    assert.equal(result.costUsd, 0);
+    assert.ok(result.issues[0]?.includes("nonexistent_skill"));
+    assert.equal(deps.invokeCalls.length, 0); // should not invoke Claude
+  });
+
+  it("parses invoke output and returns issues", async () => {
+    const deps = makeMockDeps({
+      invoke: async () => ({
+        output: '{"pass": false, "issues": ["duplicated logic"], "remediationActions": ["extract helper"]}',
+        costUsd: 0.05,
+        exitCode: 0,
+        durationMs: 200,
+      }),
+    });
+    const ctx = makeContext();
+
+    const result = await runSkillHook("simplify", ctx, deps);
+    assert.equal(result.success, false);
+    assert.deepEqual(result.issues, ["duplicated logic"]);
+    assert.deepEqual(result.remediationActions, ["extract helper"]);
+    assert.equal(result.costUsd, 0.05);
+  });
+});
+
+// --- Skill-vs-prompt precedence in runHook ---
+
+describe("runHook skill-vs-prompt precedence", () => {
+  it("uses skill when hook has skill only", async () => {
+    const deps = makeMockDeps();
+    const ctx = makeContext();
+    const hook: Hook = makeHook({ skill: "simplify", prompt: undefined });
+
+    const result = await runHook(hook, ctx, deps);
+    assert.equal(result.success, true);
+    // Skill's prompt includes "reuse" — verify it was used
+    assert.ok(deps.invokeCalls[0]?.prompt.includes("reuse"));
+  });
+
+  it("uses prompt when hook has prompt only", async () => {
+    const deps = makeMockDeps();
+    const ctx = makeContext();
+    const hook: Hook = makeHook({ prompt: "Check for bugs" });
+
+    const result = await runHook(hook, ctx, deps);
+    assert.equal(result.success, true);
+    assert.equal(deps.invokeCalls[0]?.prompt, "Check for bugs");
+  });
+
+  it("skill takes precedence when hook has both skill and prompt", async () => {
+    const deps = makeMockDeps();
+    const ctx = makeContext();
+    const hook: Hook = makeHook({ skill: "simplify", prompt: "This should be ignored" });
+
+    const result = await runHook(hook, ctx, deps);
+    assert.equal(result.success, true);
+    // Should use skill's prompt, not the hook's prompt field
+    assert.ok(deps.invokeCalls[0]?.prompt.includes("reuse"));
+    assert.ok(!deps.invokeCalls[0]?.prompt.includes("This should be ignored"));
+  });
+
+  it("returns failure when hook has unknown skill and no prompt", async () => {
+    const deps = makeMockDeps();
+    const ctx = makeContext();
+    const hook: Hook = makeHook({ skill: "unknown_skill", prompt: undefined });
+
+    const result = await runHook(hook, ctx, deps);
+    assert.equal(result.success, false);
+    assert.ok(result.issues[0]?.includes("unknown_skill"));
+    assert.equal(deps.invokeCalls.length, 0);
+  });
+});
+
+// --- Hook schema validation with skill field ---
+
+describe("HookSchema with skill field", () => {
+  it("accepts hook with skill only", () => {
+    const config = ConfigSchema.parse({
+      hooks: [{ trigger: "on_confidence_met", skill: "simplify" }],
+    });
+    assert.equal(config.hooks.length, 1);
+    assert.equal(config.hooks[0]?.skill, "simplify");
+    assert.equal(config.hooks[0]?.prompt, undefined);
+  });
+
+  it("accepts hook with prompt only", () => {
+    const config = ConfigSchema.parse({
+      hooks: [{ trigger: "on_blocked", prompt: "Check quality" }],
+    });
+    assert.equal(config.hooks.length, 1);
+    assert.equal(config.hooks[0]?.prompt, "Check quality");
+    assert.equal(config.hooks[0]?.skill, undefined);
+  });
+
+  it("accepts hook with both skill and prompt", () => {
+    const config = ConfigSchema.parse({
+      hooks: [{ trigger: "on_review_complete", skill: "simplify", prompt: "Fallback prompt" }],
+    });
+    assert.equal(config.hooks.length, 1);
+    assert.equal(config.hooks[0]?.skill, "simplify");
+    assert.equal(config.hooks[0]?.prompt, "Fallback prompt");
+  });
+
+  it("rejects hook with neither skill nor prompt", () => {
+    assert.throws(() => {
+      ConfigSchema.parse({
+        hooks: [{ trigger: "on_confidence_met" }],
+      });
+    });
   });
 });

@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { invokeClaude, logCost } from "./invoke.js";
+import type { InvokeOptions } from "./invoke.js";
 import type { Config, Hook, HookTrigger } from "./config.js";
 import type { Task } from "./tasks/types.js";
 import { uiWarn } from "./ui.js";
@@ -19,6 +20,81 @@ export interface HookResult {
   issues: string[];
   remediationActions: string[];
   costUsd: number;
+}
+
+/**
+ * A skill definition maps a hook context to invoke options.
+ * Skills are named prompt templates that encapsulate a specific workflow.
+ */
+export type SkillDefinition = (ctx: HookContext) => InvokeOptions;
+
+/**
+ * Built-in skill registry. Maps skill names to their prompt workflows.
+ */
+const skillRegistry = new Map<string, SkillDefinition>([
+  ["simplify", (ctx) => ({
+    prompt: [
+      "Review the changed code for reuse, quality, and efficiency.",
+      "Look for duplicated logic that could be extracted, overly complex implementations",
+      "that could be simplified, and inefficient patterns that could be optimized.",
+      "Then fix any issues found.",
+    ].join(" "),
+    systemPrompt: [
+      "You are a code quality reviewer for an autonomous task completion system.",
+      `Task: ${ctx.task.title}`,
+      `Description: ${ctx.task.description}`,
+      `Branch: ${ctx.branchName ?? "none"}`,
+      `Base branch: ${ctx.baseBranch}`,
+      "",
+      "Respond with a JSON object containing:",
+      '  - "pass": boolean (true if code quality is acceptable)',
+      '  - "issues": string[] (list of quality issues found)',
+      '  - "remediationActions": string[] (concrete fixes to apply)',
+    ].join("\n"),
+    maxTurns: 5,
+  })],
+]);
+
+/**
+ * Looks up a skill by name in the registry.
+ * Returns undefined if the skill is not registered.
+ */
+export function resolveSkill(name: string): SkillDefinition | undefined {
+  return skillRegistry.get(name);
+}
+
+/**
+ * Runs a skill-based hook: looks up the skill, invokes Claude with the
+ * skill's prompt configuration, and parses the result.
+ * Returns a failure result if the skill is not found.
+ */
+export async function runSkillHook(
+  skillName: string,
+  context: HookContext,
+  deps: HookDeps,
+): Promise<HookResult> {
+  const skill = resolveSkill(skillName);
+  if (skill === undefined) {
+    return {
+      success: false,
+      output: "",
+      issues: [`Unknown skill: "${skillName}"`],
+      remediationActions: [`Register the "${skillName}" skill or use a "prompt" field instead`],
+      costUsd: 0,
+    };
+  }
+
+  const invokeOptions = skill(context);
+  const result = await deps.invoke(invokeOptions);
+  const parsed = parseHookResult(result.output);
+
+  return {
+    success: parsed.pass,
+    output: result.output,
+    issues: parsed.issues,
+    remediationActions: parsed.remediationActions,
+    costUsd: result.costUsd,
+  };
 }
 
 /**
@@ -43,13 +119,14 @@ export function getHooksForTrigger(
 }
 
 /**
- * Resolves the prompt field of a hook. If it looks like a file path
+ * Resolves a prompt string. If it looks like a file path
  * (starts with ./, /, templates/, or ends with .md/.txt), reads the file.
  * Otherwise returns the inline string directly.
  * Falls back to raw string on file read failure.
  */
-export async function buildHookPrompt(hook: Hook): Promise<string> {
+export async function buildHookPrompt(hook: Pick<Hook, "prompt">): Promise<string> {
   const prompt = hook.prompt;
+  if (prompt === undefined) return "";
 
   const isFilePath =
     prompt.startsWith("./") ||
@@ -155,13 +232,19 @@ export function buildHookSystemPrompt(context: HookContext): string {
 }
 
 /**
- * Runs a single hook: resolves its prompt, invokes Claude, parses the result.
+ * Runs a single hook: checks for skill first (takes precedence), then falls
+ * back to prompt resolution. Invokes Claude and parses the result.
  */
 export async function runHook(
   hook: Hook,
   context: HookContext,
   deps: HookDeps = defaultDeps,
 ): Promise<HookResult> {
+  // Skill takes precedence over prompt
+  if (hook.skill !== undefined) {
+    return runSkillHook(hook.skill, context, deps);
+  }
+
   const prompt = await buildHookPrompt(hook);
   const systemPrompt = buildHookSystemPrompt(context);
 
