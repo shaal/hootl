@@ -119,6 +119,15 @@ All `claude -p` calls go through `invokeClaude()` in `src/invoke.ts`. Critical d
 - Timeout: 5 minutes per call (exit code 124 on timeout)
 - `is_error: true` in JSON response is treated as exit code 1
 
+### UI / gum Integration
+
+All interactive TUI calls go through helpers in `src/ui.ts` (`uiChoose`, `uiConfirm`, `uiInput`). Critical details:
+
+- **All `execa("gum", ...)` calls must use `{ stdin: "inherit", stderr: "inherit" }`** -- gum renders its TUI to stderr and reads keypresses from stdin; piping these (execa's default) makes the UI invisible and the process appears stuck
+- `stdout` must stay as `"pipe"` (the default) so the user's selection can be captured via `result.stdout`
+- gum follows the Unix convention: interactive UI to stderr, result to stdout -- this is the opposite of `claude -p` which uses `stdin: "ignore"`
+- Each helper has a non-gum fallback (numbered list on stdin) for environments without gum installed
+
 ### Git Integration
 
 - Task branch naming: `hootl/<task-id>-<slug>` (prefix configurable via `config.git.branchPrefix`)

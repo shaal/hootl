@@ -38,7 +38,10 @@ export async function uiChoose(
   }
 
   if (await hasGum()) {
-    const result = await execa("gum", ["choose", "--header", title, ...choices]);
+    const result = await execa("gum", ["choose", "--header", title, ...choices], {
+      stdin: "inherit",
+      stderr: "inherit",
+    });
     return result.stdout.trim();
   }
 
@@ -61,7 +64,10 @@ export async function uiChoose(
 export async function uiConfirm(question: string): Promise<boolean> {
   if (await hasGum()) {
     try {
-      await execa("gum", ["confirm", question]);
+      await execa("gum", ["confirm", question], {
+        stdin: "inherit",
+        stderr: "inherit",
+      });
       return true;
     } catch {
       return false;
@@ -81,7 +87,10 @@ export async function uiInput(
     if (defaultValue !== undefined) {
       args.push("--value", defaultValue);
     }
-    const result = await execa("gum", args);
+    const result = await execa("gum", args, {
+      stdin: "inherit",
+      stderr: "inherit",
+    });
     return result.stdout.trim();
   }
 
