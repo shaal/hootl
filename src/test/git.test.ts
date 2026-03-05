@@ -13,6 +13,10 @@ import {
   getBaseBranch,
   getHeadSha,
   resetToSha,
+  mergeBranch,
+  deleteBranch,
+  pushBranch,
+  createDraftPR,
 } from "../git.js";
 
 // ---------------------------------------------------------------------------
@@ -246,6 +250,129 @@ describe("git integration", () => {
         // Verify the file created in the second commit is gone
         const { existsSync } = await import("node:fs");
         assert.equal(existsSync(join(tmpDir, "rollback-test.txt")), false);
+      } finally {
+        process.chdir(originalCwd);
+      }
+    });
+  });
+
+  describe("mergeBranch", () => {
+    it("merges a task branch into the base branch", async () => {
+      const originalCwd = process.cwd();
+      try {
+        process.chdir(tmpDir);
+
+        // Ensure we're on main
+        await execa("git", ["checkout", "main"], { cwd: tmpDir });
+
+        // Create a feature branch and add a commit
+        await execa("git", ["checkout", "-b", "feature-merge-test"], { cwd: tmpDir });
+        await writeFile(join(tmpDir, "merge-test.txt"), "merge content");
+        await execa("git", ["add", "-A"], { cwd: tmpDir });
+        await execa("git", ["commit", "-m", "feature commit"], { cwd: tmpDir });
+
+        // Merge back into main
+        const result = await mergeBranch("feature-merge-test", "main");
+        assert.equal(result, true);
+
+        // Verify we're on main now
+        const branch = await getCurrentBranch();
+        assert.equal(branch, "main");
+
+        // Verify the file exists on main
+        const { existsSync } = await import("node:fs");
+        assert.equal(existsSync(join(tmpDir, "merge-test.txt")), true);
+      } finally {
+        process.chdir(originalCwd);
+      }
+    });
+
+    it("returns false on merge conflict", async () => {
+      const originalCwd = process.cwd();
+      try {
+        process.chdir(tmpDir);
+
+        // Ensure we're on main
+        await execa("git", ["checkout", "main"], { cwd: tmpDir });
+
+        // Create a common ancestor file
+        await writeFile(join(tmpDir, "conflict.txt"), "original content");
+        await execa("git", ["add", "-A"], { cwd: tmpDir });
+        await execa("git", ["commit", "-m", "common ancestor"], { cwd: tmpDir });
+
+        // Create a branch and modify the file there
+        await execa("git", ["checkout", "-b", "feature-conflict-test"], { cwd: tmpDir });
+        await writeFile(join(tmpDir, "conflict.txt"), "branch content\nline2\nline3");
+        await execa("git", ["add", "-A"], { cwd: tmpDir });
+        await execa("git", ["commit", "-m", "branch side"], { cwd: tmpDir });
+
+        // Go back to main and make a conflicting change to the same file
+        await execa("git", ["checkout", "main"], { cwd: tmpDir });
+        await writeFile(join(tmpDir, "conflict.txt"), "main content\nline2\nline3");
+        await execa("git", ["add", "-A"], { cwd: tmpDir });
+        await execa("git", ["commit", "-m", "main side"], { cwd: tmpDir });
+
+        // Try to merge — should fail due to conflict
+        const result = await mergeBranch("feature-conflict-test", "main");
+        assert.equal(result, false);
+      } finally {
+        // Clean up: get back to main
+        try { await execa("git", ["merge", "--abort"], { cwd: tmpDir }); } catch { /* ok */ }
+        try { await execa("git", ["checkout", "main"], { cwd: tmpDir }); } catch { /* ok */ }
+        process.chdir(originalCwd);
+      }
+    });
+  });
+
+  describe("deleteBranch", () => {
+    it("deletes a merged branch", async () => {
+      const originalCwd = process.cwd();
+      try {
+        process.chdir(tmpDir);
+        await execa("git", ["checkout", "main"], { cwd: tmpDir });
+
+        // Create and immediately merge a branch so it can be safely deleted
+        await execa("git", ["checkout", "-b", "branch-to-delete"], { cwd: tmpDir });
+        await writeFile(join(tmpDir, "del-test.txt"), "delete me");
+        await execa("git", ["add", "-A"], { cwd: tmpDir });
+        await execa("git", ["commit", "-m", "to delete"], { cwd: tmpDir });
+        await execa("git", ["checkout", "main"], { cwd: tmpDir });
+        await execa("git", ["merge", "branch-to-delete"], { cwd: tmpDir });
+
+        // Delete the branch
+        await deleteBranch("branch-to-delete");
+
+        // Verify it no longer exists
+        const { branchExists } = await import("../git.js");
+        const exists = await branchExists("branch-to-delete");
+        assert.equal(exists, false);
+      } finally {
+        process.chdir(originalCwd);
+      }
+    });
+  });
+
+  describe("pushBranch", () => {
+    it("returns false gracefully when no remote is configured", async () => {
+      const originalCwd = process.cwd();
+      try {
+        process.chdir(tmpDir);
+        const result = await pushBranch("main");
+        assert.equal(result, false);
+      } finally {
+        process.chdir(originalCwd);
+      }
+    });
+  });
+
+  describe("createDraftPR", () => {
+    it("returns false gracefully when gh is not available or no remote", async () => {
+      const originalCwd = process.cwd();
+      try {
+        process.chdir(tmpDir);
+        // This will fail either because gh is not installed or because there's no remote
+        const result = await createDraftPR("Test PR", "Test body");
+        assert.equal(result, false);
       } finally {
         process.chdir(originalCwd);
       }

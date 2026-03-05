@@ -15,10 +15,14 @@ const ConfidenceSchema = z.object({
   requireTests: z.boolean().default(true),
 });
 
+const OnConfidenceSchema = z.enum(["merge", "pr", "none"]);
+export type OnConfidenceMode = z.infer<typeof OnConfidenceSchema>;
+
 const GitSchema = z.object({
   useWorktrees: z.boolean().default(false),
   autoPR: z.boolean().default(true),
   branchPrefix: z.string().default("hootl/"),
+  onConfidence: OnConfidenceSchema.nullable().default(null),
 });
 
 const AutoSchema = z.object({
@@ -67,6 +71,7 @@ const ENV_MAP: Record<string, string[]> = {
   HOOTL_GIT_USE_WORKTREES: ["git", "useWorktrees"],
   HOOTL_GIT_AUTO_PR: ["git", "autoPR"],
   HOOTL_GIT_BRANCH_PREFIX: ["git", "branchPrefix"],
+  HOOTL_GIT_ON_CONFIDENCE: ["git", "onConfidence"],
   HOOTL_AUTO_LEVEL: ["auto", "defaultLevel"],
   HOOTL_AUTO_MAX_PARALLEL: ["auto", "maxParallel"],
   HOOTL_NOTIFICATIONS_TERMINAL: ["notifications", "terminal"],
@@ -155,4 +160,27 @@ export async function loadConfig(projectDir?: string): Promise<Config> {
 
 export function getProjectDir(): string {
   return join(process.cwd(), ".hootl");
+}
+
+const AUTO_LEVEL_TO_ON_CONFIDENCE: Record<string, OnConfidenceMode> = {
+  conservative: "none",
+  moderate: "pr",
+  proactive: "merge",
+  full: "merge",
+};
+
+export function resolveOnConfidenceMode(
+  config: Config,
+  cliMerge?: boolean,
+  cliNoMerge?: boolean,
+): OnConfidenceMode {
+  // CLI flags take highest priority
+  if (cliMerge === true) return "merge";
+  if (cliNoMerge === true) return "none";
+
+  // Explicit config overrides auto-level inference
+  if (config.git.onConfidence !== null) return config.git.onConfidence;
+
+  // Infer from auto.defaultLevel
+  return AUTO_LEVEL_TO_ON_CONFIDENCE[config.auto.defaultLevel] ?? "none";
 }

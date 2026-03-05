@@ -268,7 +268,7 @@ program
     }
   });
 
-async function runCommand(taskId?: string): Promise<void> {
+async function runCommand(taskId?: string, cliFlags?: { merge?: boolean; noMerge?: boolean }): Promise<void> {
   await autoInit();
   const config = await loadConfig();
   const backend = getBackend(config);
@@ -320,15 +320,25 @@ async function runCommand(taskId?: string): Promise<void> {
   uiInfo(`Running task ${targetTask.id}: ${targetTask.title}`);
 
   const { runCompletionLoop } = await import("./loop.js");
-  await runCompletionLoop(targetTask, backend, config, isVerbose());
+  await runCompletionLoop(targetTask, backend, config, isVerbose(), cliFlags);
 }
 
 program
   .command("run [taskId]")
   .description("Run a task (or the next ready task)")
-  .action(async (taskId?: string) => {
+  .option("--merge", "Force auto-merge on confidence met")
+  .option("--no-merge", "Disable auto-merge/PR on confidence met")
+  .action(async (taskId: string | undefined, options: { merge?: boolean; noMerge?: boolean }) => {
     try {
-      await runCommand(taskId);
+      // Commander sets merge=false for --no-merge, so detect that case
+      const cliFlags: { merge?: boolean; noMerge?: boolean } = {};
+      if (options.merge === true) {
+        cliFlags.merge = true;
+      } else if (options.merge === false) {
+        // Commander's --no-merge sets merge to false
+        cliFlags.noMerge = true;
+      }
+      await runCommand(taskId, cliFlags);
     } catch (err: unknown) {
       uiError(err instanceof Error ? err.message : String(err));
       process.exitCode = 1;

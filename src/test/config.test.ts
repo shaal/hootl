@@ -10,6 +10,8 @@ import {
   applyEnvOverrides,
   loadConfig,
   getProjectDir,
+  resolveOnConfidenceMode,
+  type OnConfidenceMode,
 } from "../config.js";
 
 describe("ConfigSchema", () => {
@@ -187,5 +189,85 @@ describe("getProjectDir", () => {
   it("returns cwd + /.hootl", () => {
     const result = getProjectDir();
     assert.equal(result, join(process.cwd(), ".hootl"));
+  });
+});
+
+describe("ConfigSchema git.onConfidence", () => {
+  it("defaults to null when not specified", () => {
+    const config = ConfigSchema.parse({});
+    assert.equal(config.git.onConfidence, null);
+  });
+
+  it("accepts 'merge' value", () => {
+    const config = ConfigSchema.parse({ git: { onConfidence: "merge" } });
+    assert.equal(config.git.onConfidence, "merge");
+  });
+
+  it("accepts 'pr' value", () => {
+    const config = ConfigSchema.parse({ git: { onConfidence: "pr" } });
+    assert.equal(config.git.onConfidence, "pr");
+  });
+
+  it("accepts 'none' value", () => {
+    const config = ConfigSchema.parse({ git: { onConfidence: "none" } });
+    assert.equal(config.git.onConfidence, "none");
+  });
+
+  it("rejects invalid values", () => {
+    assert.throws(() => ConfigSchema.parse({ git: { onConfidence: "invalid" } }));
+  });
+});
+
+describe("resolveOnConfidenceMode", () => {
+  function makeConfig(overrides: { onConfidence?: OnConfidenceMode | null; defaultLevel?: string } = {}) {
+    return ConfigSchema.parse({
+      git: { onConfidence: overrides.onConfidence ?? null },
+      auto: overrides.defaultLevel !== undefined ? { defaultLevel: overrides.defaultLevel } : {},
+    });
+  }
+
+  it("CLI --merge overrides everything", () => {
+    const config = makeConfig({ onConfidence: "none", defaultLevel: "conservative" });
+    assert.equal(resolveOnConfidenceMode(config, true, false), "merge");
+  });
+
+  it("CLI --no-merge overrides everything", () => {
+    const config = makeConfig({ onConfidence: "merge", defaultLevel: "full" });
+    assert.equal(resolveOnConfidenceMode(config, false, true), "none");
+  });
+
+  it("explicit config 'pr' overrides auto-level inference", () => {
+    const config = makeConfig({ onConfidence: "pr", defaultLevel: "full" });
+    assert.equal(resolveOnConfidenceMode(config), "pr");
+  });
+
+  it("explicit config 'none' overrides auto-level inference", () => {
+    const config = makeConfig({ onConfidence: "none", defaultLevel: "full" });
+    assert.equal(resolveOnConfidenceMode(config), "none");
+  });
+
+  it("infers 'none' from conservative auto level", () => {
+    const config = makeConfig({ defaultLevel: "conservative" });
+    assert.equal(resolveOnConfidenceMode(config), "none");
+  });
+
+  it("infers 'pr' from moderate auto level", () => {
+    const config = makeConfig({ defaultLevel: "moderate" });
+    assert.equal(resolveOnConfidenceMode(config), "pr");
+  });
+
+  it("infers 'merge' from proactive auto level", () => {
+    const config = makeConfig({ defaultLevel: "proactive" });
+    assert.equal(resolveOnConfidenceMode(config), "merge");
+  });
+
+  it("infers 'merge' from full auto level", () => {
+    const config = makeConfig({ defaultLevel: "full" });
+    assert.equal(resolveOnConfidenceMode(config), "merge");
+  });
+
+  it("--merge takes priority over --no-merge when both provided", () => {
+    const config = makeConfig();
+    assert.equal(resolveOnConfidenceMode(config, true, true), "merge");
   });
 });

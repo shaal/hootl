@@ -3,8 +3,9 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { parseReviewResult, isSessionBudgetExceeded, applySessionBudgetExceeded, buildPlanPrompt, isConfidenceRegression } from "../loop.js";
+import { parseReviewResult, isSessionBudgetExceeded, applySessionBudgetExceeded, buildPlanPrompt, isConfidenceRegression, handleConfidenceMet } from "../loop.js";
 import { checkGlobalBudget } from "../budget.js";
+import { ConfigSchema } from "../config.js";
 import type { TaskBackend } from "../tasks/types.js";
 import type { Task } from "../tasks/types.js";
 
@@ -388,6 +389,127 @@ describe("global budget integration with loop", () => {
       const result = await checkGlobalBudget(dir, 50.0);
       assert.equal(result.exceeded, false);
       assert.equal(result.todayCost, 0.05);
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+});
+
+describe("handleConfidenceMet", () => {
+  const makeTask = (overrides: Partial<Task> = {}): Task => ({
+    id: "task-001",
+    title: "Test task",
+    description: "A test task description",
+    priority: "medium",
+    state: "in_progress",
+    dependencies: [],
+    backend: "local",
+    backendRef: null,
+    confidence: 95,
+    attempts: 1,
+    totalCost: 0.10,
+    branch: "hootl/task-001-test",
+    worktree: null,
+    userPriority: null,
+    blockers: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    ...overrides,
+  });
+
+  function makeMockBackend(): { backend: TaskBackend; state: { lastUpdate: { id: string; updates: Partial<Task> } | null } } {
+    const state = { lastUpdate: null as { id: string; updates: Partial<Task> } | null };
+    const backend = {
+      updateTask: async (id: string, updates: Partial<Task>) => {
+        state.lastUpdate = { id, updates };
+        return { ...makeTask(), ...updates } as Task;
+      },
+      createTask: async () => makeTask(),
+      getTask: async () => makeTask(),
+      listTasks: async () => [],
+      deleteTask: async () => {},
+    } as TaskBackend;
+    return { backend, state };
+  }
+
+  it("'none' mode sets task to review state", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hootl-hcm-"));
+    try {
+      const { backend, state: mockState } = makeMockBackend();
+      const config = ConfigSchema.parse({ git: { onConfidence: "none" } });
+      const result = await handleConfidenceMet(
+        makeTask(), config, backend, "hootl/task-001-test", "main", dir, {},
+      );
+      assert.equal(result.state, "review");
+      assert.equal(result.mergedSuccessfully, false);
+      assert.equal(mockState.lastUpdate?.updates.state, "review");
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+
+  it("CLI --merge flag overrides config to merge mode (falls back without git)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hootl-hcm-"));
+    try {
+      const { backend, state: mockState } = makeMockBackend();
+      const config = ConfigSchema.parse({ git: { onConfidence: "none" } });
+      // Without a real git repo, mergeBranch will fail and fall back to review
+      const result = await handleConfidenceMet(
+        makeTask(), config, backend, "hootl/task-001-test", "main", dir, { merge: true },
+      );
+      // merge will fail (no real git repo) so it falls back to review
+      assert.equal(result.state, "review");
+      assert.equal(mockState.lastUpdate?.updates.state, "review");
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+
+  it("CLI --no-merge flag forces none mode regardless of config", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hootl-hcm-"));
+    try {
+      const { backend, state: mockState } = makeMockBackend();
+      const config = ConfigSchema.parse({ git: { onConfidence: "merge" } });
+      const result = await handleConfidenceMet(
+        makeTask(), config, backend, "hootl/task-001-test", "main", dir, { noMerge: true },
+      );
+      assert.equal(result.state, "review");
+      assert.equal(result.mergedSuccessfully, false);
+      assert.equal(mockState.lastUpdate?.updates.state, "review");
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+
+  it("'pr' mode sets task to review state", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hootl-hcm-"));
+    try {
+      const { backend, state: mockState } = makeMockBackend();
+      const config = ConfigSchema.parse({ git: { onConfidence: "pr" } });
+      // pushBranch will fail (no remote) but state should still be review
+      const result = await handleConfidenceMet(
+        makeTask(), config, backend, "hootl/task-001-test", "main", dir, {},
+      );
+      assert.equal(result.state, "review");
+      assert.equal(result.mergedSuccessfully, false);
+      assert.equal(mockState.lastUpdate?.updates.state, "review");
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+
+  it("'none' mode when no branch available", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hootl-hcm-"));
+    try {
+      const { backend, state: mockState } = makeMockBackend();
+      const config = ConfigSchema.parse({ git: { onConfidence: "merge" } });
+      // With null branch, merge mode can't do anything — falls through to none
+      const result = await handleConfidenceMet(
+        makeTask(), config, backend, null, null, dir, {},
+      );
+      assert.equal(result.state, "review");
+      assert.equal(result.mergedSuccessfully, false);
+      assert.equal(mockState.lastUpdate?.updates.state, "review");
     } finally {
       await rm(dir, { recursive: true });
     }

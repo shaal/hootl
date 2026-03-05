@@ -86,3 +86,67 @@ export async function getBaseBranch(): Promise<string> {
   // Fallback: return current branch
   return getCurrentBranch();
 }
+
+export async function mergeBranch(taskBranch: string, baseBranch: string): Promise<boolean> {
+  try {
+    await execa("git", ["checkout", baseBranch]);
+    await execa("git", ["merge", taskBranch]);
+    return true;
+  } catch (err: unknown) {
+    uiWarn(`Merge failed: ${err instanceof Error ? err.message : String(err)}`);
+    // Abort any in-progress merge and try to get back to a clean state
+    try {
+      await execa("git", ["merge", "--abort"]);
+    } catch {
+      // merge --abort may fail if there's no merge in progress
+    }
+    try {
+      await execa("git", ["checkout", taskBranch]);
+    } catch {
+      // best effort to get back to task branch
+    }
+    return false;
+  }
+}
+
+export async function deleteBranch(branchName: string): Promise<void> {
+  try {
+    await execa("git", ["branch", "-d", branchName]);
+  } catch (err: unknown) {
+    uiWarn(`Could not delete branch ${branchName}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+export async function pushBranch(branchName: string): Promise<boolean> {
+  try {
+    await execa("git", ["push", "-u", "origin", branchName]);
+    return true;
+  } catch (err: unknown) {
+    uiWarn(`Push failed: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+}
+
+async function isGhAvailable(): Promise<boolean> {
+  try {
+    await execa("gh", ["--version"]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function createDraftPR(title: string, body: string): Promise<boolean> {
+  if (!(await isGhAvailable())) {
+    uiWarn("gh CLI not installed — skipping PR creation. Install from https://cli.github.com/");
+    return false;
+  }
+  try {
+    await execa("gh", ["pr", "create", "--draft", "--title", title, "--body", body]);
+    uiInfo(`Draft PR created: ${title}`);
+    return true;
+  } catch (err: unknown) {
+    uiWarn(`PR creation failed: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+}

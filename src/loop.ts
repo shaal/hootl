@@ -2,10 +2,10 @@ import { readFile, writeFile, appendFile, mkdir } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { invokeClaude, logCost } from "./invoke.js";
-import { type Config, getProjectDir } from "./config.js";
+import { type Config, type OnConfidenceMode, getProjectDir, resolveOnConfidenceMode } from "./config.js";
 import { type Task, type TaskBackend } from "./tasks/types.js";
 import { uiInfo, uiWarn, uiError, uiSuccess, uiSpinner } from "./ui.js";
-import { isGitRepo, createTaskBranch, commitTaskChanges, switchBranch, getBaseBranch, getHeadSha, resetToSha } from "./git.js";
+import { isGitRepo, createTaskBranch, commitTaskChanges, switchBranch, getBaseBranch, getHeadSha, resetToSha, mergeBranch, deleteBranch, pushBranch, createDraftPR } from "./git.js";
 import { checkGlobalBudget } from "./budget.js";
 
 export async function readFileOrEmpty(path: string): Promise<string> {
@@ -213,11 +213,69 @@ export async function applySessionBudgetExceeded(
   return backend.updateTask(taskId, { totalCost: currentTask.totalCost + phaseCost });
 }
 
+export interface CliFlags {
+  merge?: boolean;
+  noMerge?: boolean;
+}
+
+export async function handleConfidenceMet(
+  task: Task,
+  config: Config,
+  backend: TaskBackend,
+  taskBranch: string | null,
+  baseBranch: string | null,
+  taskDir: string,
+  cliFlags: CliFlags,
+): Promise<{ state: "done" | "review"; mergedSuccessfully: boolean }> {
+  const mode: OnConfidenceMode = resolveOnConfidenceMode(config, cliFlags.merge, cliFlags.noMerge);
+
+  if (mode === "merge" && taskBranch !== null && baseBranch !== null) {
+    const merged = await mergeBranch(taskBranch, baseBranch);
+    if (merged) {
+      await deleteBranch(taskBranch);
+      await backend.updateTask(task.id, { state: "done" });
+      uiSuccess(`Task ${task.id} merged into ${baseBranch} and moved to done.`);
+      return { state: "done", mergedSuccessfully: true };
+    }
+    // Merge failed — fall through to 'none' behavior
+    uiWarn("Merge failed — falling back to review state.");
+    await backend.updateTask(task.id, { state: "review" });
+    return { state: "review", mergedSuccessfully: false };
+  }
+
+  if (mode === "pr" && taskBranch !== null) {
+    const pushed = await pushBranch(taskBranch);
+    if (pushed) {
+      const progress = await readFileOrEmpty(join(taskDir, "progress.md"));
+      const body = [
+        `## Task: ${task.title}`,
+        "",
+        task.description,
+        "",
+        `**Confidence:** ${task.confidence}%`,
+        "",
+        "## Progress Summary",
+        "",
+        progress.slice(0, 3000), // Truncate to keep PR body reasonable
+      ].join("\n");
+      await createDraftPR(`[${task.id}] ${task.title}`, body);
+    }
+    await backend.updateTask(task.id, { state: "review" });
+    uiSuccess(`Task ${task.id} pushed and moved to review.`);
+    return { state: "review", mergedSuccessfully: false };
+  }
+
+  // 'none' mode or no branch available
+  await backend.updateTask(task.id, { state: "review" });
+  return { state: "review", mergedSuccessfully: false };
+}
+
 export async function runCompletionLoop(
   task: Task,
   backend: TaskBackend,
   config: Config,
   verbose = false,
+  cliFlags: CliFlags = {},
 ): Promise<void> {
   const taskDir = join(getProjectDir(), "tasks", task.id);
   const costLogDir = join(getProjectDir(), "logs");
@@ -484,10 +542,16 @@ export async function runCompletionLoop(
 
       // Check if we've reached the target
       if (review.confidence >= config.confidence.target) {
-        await backend.updateTask(task.id, { state: "review" });
         uiSuccess(
-          `Task ${task.id} reached ${review.confidence}% confidence. Ready for review.`,
+          `Task ${task.id} reached ${review.confidence}% confidence.`,
         );
+        const result = await handleConfidenceMet(
+          currentTask, config, backend, taskBranch, baseBranch, taskDir, cliFlags,
+        );
+        if (result.mergedSuccessfully) {
+          // Merge already checked out base branch — skip end-of-loop switchBranch
+          taskBranch = null;
+        }
         break;
       }
 

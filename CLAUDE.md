@@ -64,7 +64,7 @@ Each task runs through repeated attempts of:
 3. **REVIEW** -- Claude runs tests, examines `git diff`, produces a JSON confidence assessment
 
 The loop continues until:
-- Confidence >= target (default 95%) --> task moves to `review` state
+- Confidence >= target (default 95%) --> handled by `handleConfidenceMet()` (see below)
 - Confidence regression detected --> task moves to `blocked` state (changes rolled back)
 - Blockers detected --> task moves to `blocked` state
 - Budget or max attempts exhausted --> task moves to `blocked` state
@@ -83,6 +83,23 @@ Before each Phase 2 (execute), the loop records the current git HEAD SHA via `ge
 Confidence is tracked across runs via `last_confidence.txt` in the task directory. The `isConfidenceRegression(current, previous)` helper returns `true` only when `previous !== null && current < previous` — first attempts and equal scores never trigger rollback.
 
 Git helpers: `getHeadSha()` returns the 40-char HEAD SHA; `resetToSha(sha)` runs `git reset --hard`. Both are in `src/git.ts`.
+
+### Auto-merge / Auto-PR on Confidence Met
+
+When a task reaches the confidence target, `handleConfidenceMet()` in `src/loop.ts` determines what to do based on the `git.onConfidence` config:
+
+- **`merge`** — Merges the task branch into the base branch (`git checkout <base> && git merge <branch>`), deletes the task branch, moves task to `done`. Zero-friction solo dev flow.
+- **`pr`** — Pushes the branch to remote, creates a draft PR via `gh pr create --draft` with task context. Moves task to `review`. Falls back gracefully if `gh` is not installed.
+- **`none`** — Current behavior: just moves task to `review` state.
+
+**Mode resolution priority** (highest first):
+1. CLI flags: `--merge` forces merge, `--no-merge` forces none
+2. Explicit `git.onConfidence` config value
+3. Inference from `auto.defaultLevel`: conservative→none, moderate→pr, proactive→merge, full→merge
+
+**Default is null** (infer from auto level). Since `auto.defaultLevel` defaults to `proactive`, the effective default is `merge` — meaning tasks that reach confidence will auto-merge unless overridden.
+
+All git operations (`mergeBranch`, `deleteBranch`, `pushBranch`, `createDraftPR`) are wrapped in try/catch. On failure, they warn and fall back to `none` behavior (task moves to `review`). The `resolveOnConfidenceMode()` helper in `src/config.ts` is a pure function that encapsulates the priority logic.
 
 ### Remediation Plan Flow (confidence < target)
 
@@ -111,7 +128,7 @@ Three layers, merged with deep-merge (later wins):
 2. `.hootl/config.json` (project)
 3. `HOOTL_*` environment variables
 
-Key defaults: perSession=$0.50, perTask=$5.00, global=$50.00, maxAttempts=10, confidenceTarget=95%.
+Key defaults: perSession=$0.50, perTask=$5.00, global=$50.00, maxAttempts=10, confidenceTarget=95%. `git.onConfidence` defaults to null (inferred from `auto.defaultLevel`). Env var: `HOOTL_GIT_ON_CONFIDENCE`.
 
 ### Task State Machine
 
@@ -143,6 +160,8 @@ hootl plan --goal "..."        Break down a specific goal into tasks
 hootl plan --analyze           Analyze codebase for improvements
 hootl plan --next              Suggest what to work on next
 hootl run [id]                 Run a task (or next ready task) through the completion loop
+hootl run [id] --merge         Force auto-merge on confidence met (overrides config)
+hootl run [id] --no-merge      Disable auto-merge/PR on confidence met (overrides config)
 hootl status                   View tasks grouped by state
 hootl clarify                  Resolve blockers on blocked tasks
 hootl discuss [taskId]         Launch interactive Claude session, optionally with task context
