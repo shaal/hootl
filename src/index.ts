@@ -31,6 +31,7 @@ import {
   collectAnswers,
   formatConstraints,
 } from "./guided.js";
+import { critiquePlan } from "./plan-review.js";
 
 function getBackend(config: Config): TaskBackend {
   const tasksDir = join(process.cwd(), ".hootl", "tasks");
@@ -118,7 +119,7 @@ program
     }
   });
 
-async function planCommand(cliMode?: { fromSpec?: boolean; goal?: string; analyze?: boolean; next?: boolean; guided?: boolean }): Promise<void> {
+async function planCommand(cliMode?: { fromSpec?: boolean; goal?: string; analyze?: boolean; next?: boolean; guided?: boolean; noCritique?: boolean }): Promise<void> {
   await autoInit();
   const config = await loadConfig();
   const backend = getBackend(config);
@@ -238,6 +239,32 @@ async function planCommand(cliMode?: { fromSpec?: boolean; goal?: string; analyz
     return;
   }
 
+  // Critique pass: have Claude review the plan against the original goal
+  if (cliMode?.noCritique !== true) {
+    let goalDescription: string;
+    switch (mode) {
+      case "Break down a goal":
+        goalDescription = cliMode?.goal ?? "User-provided goal (interactive)";
+        break;
+      case "From spec (auto-detect gaps)":
+        goalDescription = "Find gaps between the project spec and current implementation, and create tasks to fill them.";
+        break;
+      case "Analyze codebase":
+        goalDescription = "Analyze the current codebase and suggest tasks for improvements, refactors, or missing features.";
+        break;
+      case "Suggest what's next":
+        goalDescription = "Suggest what should be worked on next given the project's current state.";
+        break;
+      default:
+        goalDescription = "Plan tasks for the project.";
+        break;
+    }
+
+    tasks = await uiSpinner("Reviewing plan...", () =>
+      critiquePlan(goalDescription, tasks, verbose),
+    );
+  }
+
   // Infer dependencies (uses Claude's dependsOn if provided, heuristic fallback otherwise)
   const depMap = inferDependencies(tasks);
 
@@ -301,7 +328,8 @@ program
   .option("--analyze", "Analyze codebase for improvements")
   .option("--next", "Suggest what to work on next")
   .option("--guided", "Interactive clarification before planning (use with --goal)")
-  .action(async (options: { fromSpec?: boolean; goal?: string; analyze?: boolean; next?: boolean; guided?: boolean }) => {
+  .option("--no-critique", "Skip the plan self-review pass")
+  .action(async (options: { fromSpec?: boolean; goal?: string; analyze?: boolean; next?: boolean; guided?: boolean; noCritique?: boolean }) => {
     try {
       await planCommand(options);
     } catch (err: unknown) {

@@ -31,6 +31,7 @@ src/
   git.ts              Git operations: task branches, auto-commit, branch switching
   guided.ts           Interactive goal clarification (generates questions via Claude, collects answers via gum)
   ui.ts               Terminal UI helpers using `gum` with stdin fallback
+  plan-review.ts      Plan critique pass (self-review before task creation)
   status.ts           Status summary writer (grouped by state)
   tasks/
     types.ts           Zod schemas for Task, TaskState, TaskBackend interface
@@ -40,6 +41,7 @@ src/
     config.test.ts     Config loading, merging, env overrides
     context.test.ts    Context formatting, section inclusion/omission, ordering
     invoke.test.ts     Arg building, cost parsing, output extraction
+    plan-review.test.ts  Critique prompt building, task parsing, fallback paths
     invoke-robustness.test.ts  Edge cases for invoke (timeouts, errors, is_error)
     local-backend.test.ts      CRUD operations on local task backend
     loop.test.ts       Review result parsing, prompt building
@@ -160,6 +162,7 @@ hootl plan                     Plan tasks (interactive mode selector)
 hootl plan --from-spec         Auto-detect spec gaps and create tasks
 hootl plan --goal "..."        Break down a specific goal into tasks
 hootl plan --goal "..." --guided  Interactive clarification before planning (2-4 questions via gum)
+hootl plan --goal "..." --no-critique  Skip the plan self-review pass
 hootl plan --analyze           Analyze codebase for improvements
 hootl plan --next              Suggest what to work on next
 hootl run [id]                 Run a task (or next ready task) through the completion loop
@@ -200,6 +203,21 @@ The plan system prompt (`templates/plan.md`) enforces two key constraints:
 
 1. **Concrete first** -- Task 1 must deliver the specific thing the user asked for, even if hardcoded. Abstraction and generalization come in later tasks. This prevents the planner from jumping to framework design before solving the actual problem.
 2. **Plan size scrutiny** -- Plans exceeding 5-6 tasks should be questioned. Large plans often indicate premature abstraction. Tasks that only serve generalization or future-proofing should be pushed to the end or dropped.
+
+### Plan Self-Review (Critique Pass)
+
+After the planner generates tasks, a second `claude -p` call critiques the plan before writing tasks to disk (`src/plan-review.ts`). The critique checks:
+
+1. Does every task map to something the user asked for?
+2. Is the plan over-engineered (abstractions before concrete delivery)?
+3. Did the planner miss specific things the user mentioned?
+4. Should any tasks be merged or split?
+
+The critique returns a revised task list (or the original unchanged). If the critique call fails or returns unparseable output, the original plan is used — graceful degradation, never destructive.
+
+- **Cost**: ~$0.05 per critique call
+- **Skip with**: `--no-critique` flag on the plan command
+- **Integration point**: Called after initial plan JSON parsing, before `inferDependencies()`
 
 ## Key Conventions
 
@@ -270,6 +288,7 @@ Test coverage:
 - **discuss.test.ts** -- buildDiscussArgs, system prompt construction, section ordering
 - **dependencies.test.ts** -- Dependency inference (explicit indices, heuristic fallback, cycle detection, out-of-range filtering), keyword extraction, index-to-ID resolution
 - **guided.test.ts** -- Clarification prompt building, question JSON parsing (valid, malformed, capped), constraints formatting, edge cases
+- **plan-review.test.ts** -- Critique prompt building (goal inclusion, task JSON, indices, dependsOn), task parsing (valid, markdown-wrapped, missing fields, non-integer deps), fallback on invalid input
 - **prioritize.test.ts** -- userPriority schema backward compat, sort order (userPriority before auto), dependency enforcement (findRunnableTask)
 
 ## Dependencies
