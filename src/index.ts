@@ -2,10 +2,10 @@
 
 import { Command } from "commander";
 import { existsSync } from "node:fs";
-import { mkdir, writeFile, readFile } from "node:fs/promises";
+import { writeFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { loadConfig, ConfigSchema, type Config } from "./config.js";
+import { loadConfig, type Config } from "./config.js";
 import { LocalTaskBackend } from "./tasks/local.js";
 import type { TaskBackend, Task, TaskState } from "./tasks/types.js";
 import { writeStatusSummary } from "./status.js";
@@ -20,6 +20,7 @@ import {
   uiSpinner,
 } from "./ui.js";
 import { gatherProjectContext, formatContextForPrompt } from "./context.js";
+import { autoInit } from "./init.js";
 
 function getBackend(config: Config): TaskBackend {
   const tasksDir = join(process.cwd(), ".hootl", "tasks");
@@ -30,15 +31,6 @@ function getBackend(config: Config): TaskBackend {
     });
   }
   return new LocalTaskBackend(tasksDir);
-}
-
-function ensureInitialized(): void {
-  const hootlDir = join(process.cwd(), ".hootl");
-  if (!existsSync(hootlDir)) {
-    throw new Error(
-      "This project has not been initialized. Run `hootl init` first.",
-    );
-  }
 }
 
 const program = new Command();
@@ -54,6 +46,7 @@ program
   .option("-v, --verbose", "Show Claude's output in real-time")
   .action(async () => {
     try {
+      await autoInit();
       const choice = await uiChoose("What would you like to do?", [
         "Plan tasks",
         "Run next task",
@@ -97,21 +90,7 @@ program
         return;
       }
 
-      await mkdir(join(hootlDir, "tasks"), { recursive: true });
-      await mkdir(join(hootlDir, "logs"), { recursive: true });
-
-      const defaultConfig = ConfigSchema.parse({});
-      await writeFile(
-        join(hootlDir, "config.json"),
-        JSON.stringify(defaultConfig, null, 2) + "\n",
-        "utf-8",
-      );
-
-      await writeFile(
-        join(hootlDir, ".gitignore"),
-        "tasks/\nlogs/\nstatus.md\n",
-        "utf-8",
-      );
+      await autoInit();
 
       uiSuccess("Initialized .hootl/ directory.");
       uiInfo("Created: .hootl/config.json, .hootl/tasks/, .hootl/logs/");
@@ -122,7 +101,7 @@ program
   });
 
 async function planCommand(cliMode?: { fromSpec?: boolean; goal?: string; analyze?: boolean; next?: boolean }): Promise<void> {
-  ensureInitialized();
+  await autoInit();
   const config = await loadConfig();
   const backend = getBackend(config);
 
@@ -278,7 +257,7 @@ program
   });
 
 async function runCommand(taskId?: string): Promise<void> {
-  ensureInitialized();
+  await autoInit();
   const config = await loadConfig();
   const backend = getBackend(config);
 
@@ -323,7 +302,7 @@ program
   });
 
 async function statusCommand(): Promise<void> {
-  ensureInitialized();
+  await autoInit();
   const config = await loadConfig();
   const backend = getBackend(config);
 
@@ -396,7 +375,7 @@ program
   });
 
 async function clarifyCommand(): Promise<void> {
-  ensureInitialized();
+  await autoInit();
   const config = await loadConfig();
   const backend = getBackend(config);
 
