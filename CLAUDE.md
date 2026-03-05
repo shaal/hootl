@@ -181,6 +181,13 @@ The plan command gathers project context via `src/context.ts` before calling Cla
 
 This keeps prompts small (~2K chars) while giving Claude full access to explore the codebase. The "From spec" mode compares the spec against existing code to generate gap-filling tasks with priorities.
 
+### Planning Philosophy: Concrete First
+
+The plan system prompt (`templates/plan.md`) enforces two key constraints:
+
+1. **Concrete first** -- Task 1 must deliver the specific thing the user asked for, even if hardcoded. Abstraction and generalization come in later tasks. This prevents the planner from jumping to framework design before solving the actual problem.
+2. **Plan size scrutiny** -- Plans exceeding 5-6 tasks should be questioned. Large plans often indicate premature abstraction. Tasks that only serve generalization or future-proofing should be pushed to the end or dropped.
+
 ## Key Conventions
 
 ### TypeScript
