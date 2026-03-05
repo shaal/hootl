@@ -21,6 +21,7 @@ import {
 } from "./ui.js";
 import { gatherProjectContext, formatContextForPrompt } from "./context.js";
 import { autoInit } from "./init.js";
+import { checkGlobalBudget } from "./budget.js";
 
 function getBackend(config: Config): TaskBackend {
   const tasksDir = join(process.cwd(), ".hootl", "tasks");
@@ -276,6 +277,19 @@ async function runCommand(taskId?: string): Promise<void> {
         if (targetTask) uiInfo(`Resuming in-progress task: ${targetTask.id}`);
       }
     }
+  }
+
+  // Check global daily budget before starting any work
+  const costLogDir = join(process.cwd(), ".hootl", "logs");
+  const { exceeded, todayCost } = await checkGlobalBudget(
+    costLogDir,
+    config.budgets.global,
+  );
+  if (exceeded) {
+    uiError(
+      `Global daily budget exceeded ($${todayCost.toFixed(2)} >= $${config.budgets.global.toFixed(2)}). All work stopped. Adjust budgets.global or wait until tomorrow.`,
+    );
+    return;
   }
 
   if (targetTask === undefined) {

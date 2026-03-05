@@ -6,6 +6,7 @@ import { type Config, getProjectDir } from "./config.js";
 import { type Task, type TaskBackend } from "./tasks/types.js";
 import { uiInfo, uiWarn, uiError, uiSuccess, uiSpinner } from "./ui.js";
 import { isGitRepo, createTaskBranch, commitTaskChanges, switchBranch, getBaseBranch, getHeadSha, resetToSha } from "./git.js";
+import { checkGlobalBudget } from "./budget.js";
 
 async function readFileOrEmpty(path: string): Promise<string> {
   try {
@@ -265,6 +266,19 @@ export async function runCompletionLoop(
       await backend.updateTask(task.id, {
         state: "blocked",
         blockers: [...currentTask.blockers, "Per-task budget exhausted"],
+      });
+      break;
+    }
+
+    // Check global daily budget
+    const globalBudgetCheck = await checkGlobalBudget(costLogDir, config.budgets.global);
+    if (globalBudgetCheck.exceeded) {
+      uiWarn(
+        `Global daily budget exhausted ($${globalBudgetCheck.todayCost.toFixed(2)} >= $${config.budgets.global.toFixed(2)}). Moving task to blocked.`,
+      );
+      await backend.updateTask(task.id, {
+        state: "blocked",
+        blockers: [...currentTask.blockers, "Global daily budget exhausted"],
       });
       break;
     }
