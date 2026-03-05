@@ -189,6 +189,10 @@ export function parseReviewResult(output: string): ReviewResult {
   return defaultResult;
 }
 
+export function isSessionBudgetExceeded(phaseCost: number, perSession: number): boolean {
+  return phaseCost >= perSession;
+}
+
 export async function runCompletionLoop(
   task: Task,
   backend: TaskBackend,
@@ -286,6 +290,17 @@ export async function runCompletionLoop(
         await writeFile(join(taskDir, "plan.md"), planResult.output, "utf-8");
         await logCost(costLogDir, task.id, "plan", planResult.costUsd);
         phaseCost += planResult.costUsd;
+
+        // Check per-session budget after plan phase
+        if (isSessionBudgetExceeded(phaseCost, config.budgets.perSession)) {
+          uiWarn(
+            `Session budget exceeded ($${phaseCost.toFixed(4)} >= $${config.budgets.perSession.toFixed(2)}). Ending attempt early.`,
+          );
+          currentTask = await backend.updateTask(task.id, {
+            totalCost: currentTask.totalCost + phaseCost,
+          });
+          continue;
+        }
       }
 
       // Phase 2: EXECUTE
@@ -329,6 +344,17 @@ export async function runCompletionLoop(
         } catch (err: unknown) {
           uiWarn(`Could not auto-commit: ${err instanceof Error ? err.message : String(err)}`);
         }
+      }
+
+      // Check per-session budget after execute phase
+      if (isSessionBudgetExceeded(phaseCost, config.budgets.perSession)) {
+        uiWarn(
+          `Session budget exceeded ($${phaseCost.toFixed(4)} >= $${config.budgets.perSession.toFixed(2)}). Ending attempt early.`,
+        );
+        currentTask = await backend.updateTask(task.id, {
+          totalCost: currentTask.totalCost + phaseCost,
+        });
+        continue;
       }
 
       // Phase 3: REVIEW

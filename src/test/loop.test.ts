@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { parseReviewResult, buildPlanPrompt } from "../loop.js";
+import { parseReviewResult, isSessionBudgetExceeded, buildPlanPrompt } from "../loop.js";
 import type { Task } from "../tasks/types.js";
 
 describe("parseReviewResult", () => {
@@ -228,5 +228,23 @@ describe("buildPlanPrompt", () => {
     } finally {
       await rm(dir, { recursive: true });
     }
+  });
+});
+
+describe("isSessionBudgetExceeded", () => {
+  it("returns true when cost equals budget", () => {
+    assert.equal(isSessionBudgetExceeded(0.50, 0.50), true);
+  });
+
+  it("returns true when cost exceeds budget", () => {
+    assert.equal(isSessionBudgetExceeded(0.75, 0.50), true);
+  });
+
+  it("returns false when cost is under budget", () => {
+    assert.equal(isSessionBudgetExceeded(0.30, 0.50), false);
+  });
+
+  it("returns false when cost is 0", () => {
+    assert.equal(isSessionBudgetExceeded(0, 0.50), false);
   });
 });
