@@ -956,5 +956,56 @@ describe("handleTooBroad subtask auto-creation", () => {
     assert.ok(depUpdates.length > 0, "should have wired at least one inter-subtask dependency");
     await rm(taskDir, { recursive: true, force: true });
   });
+
+  it("subtasks inherit fractional userPriority from parent", async () => {
+    const { backend, updates } = makeSubtaskMockBackend();
+    const task = makeTooBroadTask({ userPriority: 10 });
+    const taskDir = await makeTempTaskDir();
+    const preflight = {
+      verdict: "too_broad" as const,
+      understanding: "Broad",
+      subtasks: [
+        { title: "Sub A", description: "Do A" },
+        { title: "Sub B", description: "Do B" },
+        { title: "Sub C", description: "Do C" },
+      ],
+      reproductionResult: "",
+    };
+
+    await handleTooBroad(backend, task, preflight, taskDir);
+
+    // Subtasks should get fractional userPriority values between parent (10) and next integer (11)
+    const subtaskUpdates = updates.filter(u => u.id.startsWith("sub-") && u.updates.userPriority !== undefined);
+    assert.equal(subtaskUpdates.length, 3);
+    const priorities = subtaskUpdates.map(u => u.updates.userPriority as number);
+    // All should be between 10 and 11
+    for (const p of priorities) {
+      assert.ok(p > 10 && p < 11, `expected ${p} to be between 10 and 11`);
+    }
+    // Should be in ascending order
+    assert.ok(priorities[0]! < priorities[1]!, "first subtask should have lower priority than second");
+    assert.ok(priorities[1]! < priorities[2]!, "second subtask should have lower priority than third");
+    await rm(taskDir, { recursive: true, force: true });
+  });
+
+  it("subtasks get no userPriority when parent has none", async () => {
+    const { backend, updates } = makeSubtaskMockBackend();
+    const task = makeTooBroadTask({ userPriority: null });
+    const taskDir = await makeTempTaskDir();
+    const preflight = {
+      verdict: "too_broad" as const,
+      understanding: "Broad",
+      subtasks: [
+        { title: "Sub A", description: "Do A" },
+      ],
+      reproductionResult: "",
+    };
+
+    await handleTooBroad(backend, task, preflight, taskDir);
+
+    const subtaskUpdates = updates.filter(u => u.id.startsWith("sub-") && u.updates.userPriority !== undefined);
+    assert.equal(subtaskUpdates.length, 0);
+    await rm(taskDir, { recursive: true, force: true });
+  });
 });
 

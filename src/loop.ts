@@ -406,7 +406,8 @@ export async function handleTooBroad(
   taskDir: string,
 ): Promise<{ createdIds: string[]; updatedTask: Task }> {
   const createdIds: string[] = [];
-  for (const sub of preflight.subtasks) {
+  for (let i = 0; i < preflight.subtasks.length; i++) {
+    const sub = preflight.subtasks[i]!;
     const created = await backend.createTask({
       title: sub.title,
       description: sub.description,
@@ -415,7 +416,12 @@ export async function handleTooBroad(
       dependencies: [],
     });
     // createTask defaults to 'proposed'; move to 'ready' so subtasks are immediately runnable
-    await backend.updateTask(created.id, { state: "ready" });
+    // If parent has a userPriority, subtasks inherit fractional slots right after it (e.g. 16 → 16.1, 16.2, ...)
+    const subtaskUpdate: Partial<Task> = { state: "ready" };
+    if (currentTask.userPriority !== null) {
+      subtaskUpdate.userPriority = currentTask.userPriority + (i + 1) / (preflight.subtasks.length + 1);
+    }
+    await backend.updateTask(created.id, subtaskUpdate);
     createdIds.push(created.id);
   }
 

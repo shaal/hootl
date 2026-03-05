@@ -71,7 +71,7 @@ Each task begins with a one-time preflight validation, then runs through repeate
 
 0. **PREFLIGHT** (once per task) -- Claude validates the task's clarity, scope, and reproducibility. Produces `understanding.md` for context bridging. Based on the verdict:
    - `proceed` → continue to the attempt loop
-   - `too_broad` → subtasks auto-created via `backend.createTask()` in `ready` state; inter-subtask dependencies inferred via `inferDependencies()` (same heuristic as the plan command). Parent moves back to `ready` with subtask IDs as dependencies (so it's picked up again after subtasks complete). `understanding.md` is deleted so preflight runs fresh on re-run. Falls back to `blocked` if no subtasks provided.
+   - `too_broad` → subtasks auto-created via `backend.createTask()` in `ready` state; inter-subtask dependencies inferred via `inferDependencies()` (same heuristic as the plan command). If the parent has a `userPriority`, subtasks inherit fractional slots right after it (e.g. parent=16 → subtasks get 16.2, 16.4, 16.6, 16.8) so they're worked on before lower-priority tasks. Parent moves back to `ready` with subtask IDs as dependencies (so it's picked up again after subtasks complete). `understanding.md` is deleted so preflight runs fresh on re-run. Falls back to `blocked` if no subtasks provided.
    - `unclear` → task moves to `blocked` with clarification questions
    - `cannot_reproduce` → task moves to `blocked` with reproduction failure details
    - Skipped if `understanding.md` already exists (task is resuming after human resolved a blocker)
