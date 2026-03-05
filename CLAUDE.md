@@ -19,7 +19,8 @@ npm run test:build  # Build then run tests
 
 ```
 src/
-  index.ts            CLI entry point (commander). Commands: init, plan, run, status, clarify
+  index.ts            CLI entry point (commander). Commands: init, plan, run, status, clarify, discuss
+  discuss.ts          Interactive Claude session launcher (stdio: 'inherit' for full TTY control)
   config.ts           Zod-validated config. 3-layer merge: ~/.hootl/config.json < .hootl/config.json < env vars
   context.ts          Project context gathering for plan command (spec, structure, tasks, git log)
   budget.ts           Global daily budget enforcement (reads cost.csv, checks against budgets.global)
@@ -40,6 +41,7 @@ src/
     local-backend.test.ts      CRUD operations on local task backend
     loop.test.ts       Review result parsing, prompt building
     git.test.ts        Slugify, branch naming
+    discuss.test.ts    buildDiscussArgs, system prompt construction
 templates/
   plan.md              System prompt for planning phase
   execute.md           System prompt for execution phase
@@ -132,6 +134,7 @@ hootl plan --next              Suggest what to work on next
 hootl run [id]                 Run a task (or next ready task) through the completion loop
 hootl status                   View tasks grouped by state
 hootl clarify                  Resolve blockers on blocked tasks
+hootl discuss [taskId]         Launch interactive Claude session, optionally with task context
 ```
 
 ### Plan Command Context Gathering
@@ -180,6 +183,13 @@ All interactive TUI calls go through helpers in `src/ui.ts` (`uiChoose`, `uiConf
 - gum follows the Unix convention: interactive UI to stderr, result to stdout -- this is the opposite of `claude -p` which uses `stdin: "ignore"`
 - Each helper has a non-gum fallback (numbered list on stdin) for environments without gum installed
 
+### Interactive Claude Sessions (discuss command)
+
+- Uses `stdio: "inherit"` — the third stdio pattern alongside `stdin: "ignore"` (invoke.ts) and `stdin/stderr: "inherit"` (gum)
+- `stdio: "inherit"` gives the user full interactive control of the Claude session (keyboard input, terminal rendering)
+- Must still delete `CLAUDECODE` env var via `getClaudeEnv()` to avoid nested-Claude-Code refusal
+- No cost tracking — manual interactive sessions are outside the completion loop
+
 ### Git Integration
 
 - Task branch naming: `hootl/<task-id>-<slug>` (prefix configurable via `config.git.branchPrefix`)
@@ -204,6 +214,7 @@ Test coverage:
 - **local-backend.test.ts** -- Task CRUD, filtering, atomic writes
 - **loop.test.ts** -- Review JSON parsing (inline, code-block, nested, remediationPlan), prompt building, confidence regression detection, global budget integration
 - **git.test.ts** -- Slugify edge cases, branch name construction, getHeadSha, resetToSha rollback
+- **discuss.test.ts** -- buildDiscussArgs, system prompt construction, section ordering
 
 ## Dependencies
 

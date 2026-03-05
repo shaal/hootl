@@ -22,6 +22,7 @@ import {
 import { gatherProjectContext, formatContextForPrompt } from "./context.js";
 import { autoInit } from "./init.js";
 import { checkGlobalBudget } from "./budget.js";
+import { discussCommand } from "./discuss.js";
 
 function getBackend(config: Config): TaskBackend {
   const tasksDir = join(process.cwd(), ".hootl", "tasks");
@@ -53,6 +54,7 @@ program
         "Run next task",
         "View status",
         "Resolve blockers",
+        "Discuss with Claude",
         "Exit",
       ]);
 
@@ -68,6 +70,9 @@ program
           break;
         case "Resolve blockers":
           await clarifyCommand();
+          break;
+        case "Discuss with Claude":
+          await discussCommand();
           break;
         case "Exit":
           break;
@@ -470,6 +475,18 @@ program
   .action(async () => {
     try {
       await clarifyCommand();
+    } catch (err: unknown) {
+      uiError(err instanceof Error ? err.message : String(err));
+      process.exitCode = 1;
+    }
+  });
+
+program
+  .command("discuss [taskId]")
+  .description("Launch an interactive Claude session, optionally with task context")
+  .action(async (taskId?: string) => {
+    try {
+      await discussCommand(taskId);
     } catch (err: unknown) {
       uiError(err instanceof Error ? err.message : String(err));
       process.exitCode = 1;

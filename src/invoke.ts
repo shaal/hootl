@@ -83,7 +83,7 @@ export function extractTextOutput(raw: string, format: "text" | "json"): string 
   return raw;
 }
 
-function getClaudeEnv(): Record<string, string | undefined> {
+export function getClaudeEnv(): Record<string, string | undefined> {
   const env = { ...process.env };
   delete env["CLAUDECODE"];
   return env;
