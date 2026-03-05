@@ -37,6 +37,28 @@ const NotificationsSchema = z.object({
   webhook: z.string().nullable().default(null),
 });
 
+const HookTriggerSchema = z.enum([
+  "on_confidence_met",
+  "on_review_complete",
+  "on_blocked",
+  "on_execute_start",
+]);
+export type HookTrigger = z.infer<typeof HookTriggerSchema>;
+
+const HookConditionSchema = z.object({
+  minConfidence: z.number().optional(),
+});
+
+const HookSchema = z.object({
+  trigger: HookTriggerSchema,
+  prompt: z.string(),
+  blocking: z.boolean().default(false),
+  conditions: HookConditionSchema.optional(),
+});
+export type Hook = z.infer<typeof HookSchema>;
+
+const HooksSchema = z.array(HookSchema).default([]);
+
 export const ConfigSchema = z.object({
   taskBackend: z.enum(["local", "github", "beads"]).default("local"),
   budgets: BudgetSchema.default({}),
@@ -44,6 +66,7 @@ export const ConfigSchema = z.object({
   git: GitSchema.default({}),
   auto: AutoSchema.default({}),
   notifications: NotificationsSchema.default({}),
+  hooks: HooksSchema,
   permissionMode: z.string().default("default"),
 });
 export type Config = z.infer<typeof ConfigSchema>;

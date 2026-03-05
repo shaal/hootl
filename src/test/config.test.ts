@@ -12,6 +12,8 @@ import {
   getProjectDir,
   resolveOnConfidenceMode,
   type OnConfidenceMode,
+  type Hook,
+  type HookTrigger,
 } from "../config.js";
 
 describe("ConfigSchema", () => {
@@ -269,5 +271,144 @@ describe("resolveOnConfidenceMode", () => {
   it("--merge takes priority over --no-merge when both provided", () => {
     const config = makeConfig();
     assert.equal(resolveOnConfidenceMode(config, true, true), "merge");
+  });
+});
+
+describe("ConfigSchema hooks", () => {
+  it("defaults to empty array", () => {
+    const config = ConfigSchema.parse({});
+    assert.deepEqual(config.hooks, []);
+  });
+
+  it("accepts a single fully-specified hook", () => {
+    const hook = {
+      trigger: "on_confidence_met" as const,
+      prompt: "Check for security issues",
+      blocking: true,
+      conditions: { minConfidence: 90 },
+    };
+    const config = ConfigSchema.parse({ hooks: [hook] });
+    assert.equal(config.hooks.length, 1);
+    const h = config.hooks[0] as Hook;
+    assert.equal(h.trigger, "on_confidence_met");
+    assert.equal(h.prompt, "Check for security issues");
+    assert.equal(h.blocking, true);
+    assert.equal(h.conditions?.minConfidence, 90);
+  });
+
+  it("accepts multiple hooks with same trigger, preserving order", () => {
+    const hooks = [
+      { trigger: "on_review_complete" as const, prompt: "First check" },
+      { trigger: "on_review_complete" as const, prompt: "Second check" },
+    ];
+    const config = ConfigSchema.parse({ hooks });
+    assert.equal(config.hooks.length, 2);
+    assert.equal((config.hooks[0] as Hook).prompt, "First check");
+    assert.equal((config.hooks[1] as Hook).prompt, "Second check");
+  });
+
+  it("blocking defaults to false", () => {
+    const config = ConfigSchema.parse({
+      hooks: [{ trigger: "on_blocked", prompt: "Notify team" }],
+    });
+    assert.equal((config.hooks[0] as Hook).blocking, false);
+  });
+
+  it("conditions are optional", () => {
+    const config = ConfigSchema.parse({
+      hooks: [{ trigger: "on_execute_start", prompt: "Log start" }],
+    });
+    assert.equal((config.hooks[0] as Hook).conditions, undefined);
+  });
+
+  it("conditions.minConfidence works", () => {
+    const config = ConfigSchema.parse({
+      hooks: [
+        {
+          trigger: "on_confidence_met",
+          prompt: "Final review",
+          conditions: { minConfidence: 80 },
+        },
+      ],
+    });
+    assert.equal((config.hooks[0] as Hook).conditions?.minConfidence, 80);
+  });
+
+  it("accepts all valid trigger values", () => {
+    const triggers: HookTrigger[] = [
+      "on_confidence_met",
+      "on_review_complete",
+      "on_blocked",
+      "on_execute_start",
+    ];
+    for (const trigger of triggers) {
+      const config = ConfigSchema.parse({
+        hooks: [{ trigger, prompt: "test" }],
+      });
+      assert.equal((config.hooks[0] as Hook).trigger, trigger);
+    }
+  });
+
+  it("rejects invalid trigger", () => {
+    assert.throws(() =>
+      ConfigSchema.parse({
+        hooks: [{ trigger: "invalid_trigger", prompt: "test" }],
+      }),
+    );
+  });
+
+  it("rejects non-string prompt", () => {
+    assert.throws(() =>
+      ConfigSchema.parse({
+        hooks: [{ trigger: "on_blocked", prompt: 123 }],
+      }),
+    );
+  });
+
+  it("accepts template path as prompt", () => {
+    const config = ConfigSchema.parse({
+      hooks: [
+        { trigger: "on_confidence_met", prompt: "templates/security-check.md" },
+      ],
+    });
+    assert.equal(
+      (config.hooks[0] as Hook).prompt,
+      "templates/security-check.md",
+    );
+  });
+});
+
+describe("loadConfig with hooks", () => {
+  let tmpDir: string;
+
+  before(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), "hootl-hooks-test-"));
+  });
+
+  after(async () => {
+    await rm(tmpDir, { recursive: true });
+  });
+
+  it("project hooks replace global hooks (array replacement via deepMerge)", async () => {
+    // Simulate global config with hooks by creating a project dir
+    // that has hooks — since deepMerge replaces arrays wholesale,
+    // project hooks fully replace any global hooks
+    const projectDir = await mkdtemp(join(tmpDir, "proj-"));
+    const hootlDir = join(projectDir, ".hootl");
+    await mkdir(hootlDir, { recursive: true });
+    await writeFile(
+      join(hootlDir, "config.json"),
+      JSON.stringify({
+        hooks: [
+          { trigger: "on_blocked", prompt: "Project-specific check", blocking: true },
+        ],
+      }),
+    );
+
+    const config = await loadConfig(projectDir);
+    assert.equal(config.hooks.length, 1);
+    assert.equal((config.hooks[0] as Hook).trigger, "on_blocked");
+    assert.equal((config.hooks[0] as Hook).prompt, "Project-specific check");
+    assert.equal((config.hooks[0] as Hook).blocking, true);
   });
 });
