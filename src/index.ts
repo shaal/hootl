@@ -32,6 +32,7 @@ import {
   formatConstraints,
 } from "./guided.js";
 import { critiquePlan } from "./plan-review.js";
+import { generatePlanSummary, confirmPlan } from "./plan-summary.js";
 
 function getBackend(config: Config): TaskBackend {
   const tasksDir = join(process.cwd(), ".hootl", "tasks");
@@ -119,7 +120,7 @@ program
     }
   });
 
-async function planCommand(cliMode?: { fromSpec?: boolean; goal?: string; analyze?: boolean; next?: boolean; guided?: boolean; noCritique?: boolean }): Promise<void> {
+async function planCommand(cliMode?: { fromSpec?: boolean; goal?: string; analyze?: boolean; next?: boolean; guided?: boolean; noCritique?: boolean; yes?: boolean }): Promise<void> {
   await autoInit();
   const config = await loadConfig();
   const backend = getBackend(config);
@@ -265,6 +266,85 @@ async function planCommand(cliMode?: { fromSpec?: boolean; goal?: string; analyz
     );
   }
 
+  // TL;DR summary + Accept/Revise/Cancel (skip with --yes)
+  if (cliMode?.yes !== true) {
+    let confirmed = false;
+    while (!confirmed) {
+      const summary = generatePlanSummary(tasks);
+      const decision = await confirmPlan(summary);
+
+      if (decision === "cancel") {
+        uiWarn("Plan cancelled.");
+        return;
+      }
+
+      if (decision === "accept") {
+        confirmed = true;
+      } else {
+        // Revise: collect feedback and re-generate
+        const feedback = await uiInput("What would you like to change?");
+        if (feedback.trim() === "") {
+          uiWarn("No feedback provided — showing summary again.");
+          continue;
+        }
+
+        const revisedResult = await uiSpinner("Re-thinking...", () =>
+          invokeClaude({
+            prompt: prompt + `\n\nUser revision feedback: ${feedback}`,
+            verbose,
+          }),
+        );
+
+        if (revisedResult.exitCode !== 0) {
+          uiError(`Claude returned exit code ${revisedResult.exitCode} during revision.`);
+          return;
+        }
+
+        try {
+          const jsonMatch = revisedResult.output.match(/\[[\s\S]*\]/);
+          if (jsonMatch === null) {
+            throw new Error("No JSON array found in revision response");
+          }
+          const parsed: unknown = JSON.parse(jsonMatch[0]);
+          if (!Array.isArray(parsed)) {
+            throw new Error("Revision response is not an array");
+          }
+          tasks = parsed as Array<{ title: string; description: string; priority?: string; dependsOn?: number[] }>;
+        } catch {
+          uiError("Could not parse revised tasks from Claude response.");
+          uiWarn("Keeping the original plan.");
+          confirmed = true;
+        }
+
+        // Optionally re-critique the revised plan
+        if (!confirmed && cliMode?.noCritique !== true) {
+          let goalDescription: string;
+          switch (mode) {
+            case "Break down a goal":
+              goalDescription = cliMode?.goal ?? "User-provided goal (interactive)";
+              break;
+            case "From spec (auto-detect gaps)":
+              goalDescription = "Find gaps between the project spec and current implementation, and create tasks to fill them.";
+              break;
+            case "Analyze codebase":
+              goalDescription = "Analyze the current codebase and suggest tasks for improvements, refactors, or missing features.";
+              break;
+            case "Suggest what's next":
+              goalDescription = "Suggest what should be worked on next given the project's current state.";
+              break;
+            default:
+              goalDescription = "Plan tasks for the project.";
+              break;
+          }
+
+          tasks = await uiSpinner("Reviewing revised plan...", () =>
+            critiquePlan(goalDescription, tasks, verbose),
+          );
+        }
+      }
+    }
+  }
+
   // Infer dependencies (uses Claude's dependsOn if provided, heuristic fallback otherwise)
   const depMap = inferDependencies(tasks);
 
@@ -329,7 +409,8 @@ program
   .option("--next", "Suggest what to work on next")
   .option("--guided", "Interactive clarification before planning (use with --goal)")
   .option("--no-critique", "Skip the plan self-review pass")
-  .action(async (options: { fromSpec?: boolean; goal?: string; analyze?: boolean; next?: boolean; guided?: boolean; noCritique?: boolean }) => {
+  .option("-y, --yes", "Auto-accept the plan without confirmation")
+  .action(async (options: { fromSpec?: boolean; goal?: string; analyze?: boolean; next?: boolean; guided?: boolean; noCritique?: boolean; yes?: boolean }) => {
     try {
       await planCommand(options);
     } catch (err: unknown) {

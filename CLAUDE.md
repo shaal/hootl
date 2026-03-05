@@ -32,6 +32,7 @@ src/
   guided.ts           Interactive goal clarification (generates questions via Claude, collects answers via gum)
   ui.ts               Terminal UI helpers using `gum` with stdin fallback
   plan-review.ts      Plan critique pass (self-review before task creation)
+  plan-summary.ts     TL;DR plan summary with Accept/Revise/Cancel confirmation
   status.ts           Status summary writer (grouped by state)
   tasks/
     types.ts           Zod schemas for Task, TaskState, TaskBackend interface
@@ -42,6 +43,7 @@ src/
     context.test.ts    Context formatting, section inclusion/omission, ordering
     invoke.test.ts     Arg building, cost parsing, output extraction
     plan-review.test.ts  Critique prompt building, task parsing, fallback paths
+    plan-summary.test.ts Plan summary generation, priority counting, truncation
     invoke-robustness.test.ts  Edge cases for invoke (timeouts, errors, is_error)
     local-backend.test.ts      CRUD operations on local task backend
     loop.test.ts       Review result parsing, prompt building
@@ -163,6 +165,7 @@ hootl plan --from-spec         Auto-detect spec gaps and create tasks
 hootl plan --goal "..."        Break down a specific goal into tasks
 hootl plan --goal "..." --guided  Interactive clarification before planning (2-4 questions via gum)
 hootl plan --goal "..." --no-critique  Skip the plan self-review pass
+hootl plan --goal "..." --yes          Auto-accept plan without confirmation (for scripting/CI)
 hootl plan --analyze           Analyze codebase for improvements
 hootl plan --next              Suggest what to work on next
 hootl run [id]                 Run a task (or next ready task) through the completion loop
@@ -289,6 +292,7 @@ Test coverage:
 - **dependencies.test.ts** -- Dependency inference (explicit indices, heuristic fallback, cycle detection, out-of-range filtering), keyword extraction, index-to-ID resolution
 - **guided.test.ts** -- Clarification prompt building, question JSON parsing (valid, malformed, capped), constraints formatting, edge cases
 - **plan-review.test.ts** -- Critique prompt building (goal inclusion, task JSON, indices, dependsOn), task parsing (valid, markdown-wrapped, missing fields, non-integer deps), fallback on invalid input
+- **plan-summary.test.ts** -- Summary generation (single/multiple/many tasks, truncation), priority counting (mixed, default-to-medium), empty array, priority ordering
 - **prioritize.test.ts** -- userPriority schema backward compat, sort order (userPriority before auto), dependency enforcement (findRunnableTask)
 
 ## Dependencies
