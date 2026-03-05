@@ -71,7 +71,7 @@ Each task begins with a one-time preflight validation, then runs through repeate
 
 0. **PREFLIGHT** (once per task) -- Claude validates the task's clarity, scope, and reproducibility. Produces `understanding.md` for context bridging. Based on the verdict:
    - `proceed` → continue to the attempt loop
-   - `too_broad` → task moves to `blocked` with suggested subtasks
+   - `too_broad` → subtasks auto-created via `backend.createTask()` in `ready` state; parent moves to `done` with subtask ID references. Falls back to `blocked` if no subtasks provided.
    - `unclear` → task moves to `blocked` with clarification questions
    - `cannot_reproduce` → task moves to `blocked` with reproduction failure details
    - Skipped if `understanding.md` already exists (task is resuming after human resolved a blocker)
@@ -307,7 +307,7 @@ Test coverage:
 - **invoke.test.ts** -- Arg building, cost parsing (`total_cost_usd` / `cost_usd`), text extraction from JSON
 - **invoke-robustness.test.ts** -- Timeout handling, `is_error` detection, edge cases
 - **local-backend.test.ts** -- Task CRUD, filtering, atomic writes
-- **loop.test.ts** -- Review JSON parsing (inline, code-block, nested, remediationPlan), prompt building, preflight integration (understanding.md in execute prompt), confidence regression detection, global budget integration
+- **loop.test.ts** -- Review JSON parsing (inline, code-block, nested, remediationPlan), prompt building, preflight integration (understanding.md in execute prompt), confidence regression detection, global budget integration, preflight subtask priority parsing, too_broad subtask auto-creation (priority inheritance, ready state, parent done state, ID references)
 - **git.test.ts** -- Slugify edge cases, branch name construction, getHeadSha, resetToSha rollback
 - **discuss.test.ts** -- buildDiscussArgs, system prompt construction, section ordering
 - **dependencies.test.ts** -- Dependency inference (explicit indices, heuristic fallback, cycle detection, out-of-range filtering), keyword extraction, index-to-ID resolution

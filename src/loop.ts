@@ -4,7 +4,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { invokeClaude, logCost } from "./invoke.js";
 import { type Config, type OnConfidenceMode, getProjectDir, resolveOnConfidenceMode } from "./config.js";
-import { type Task, type TaskBackend } from "./tasks/types.js";
+import { type Task, type TaskBackend, type TaskPriority, TaskPriority as TaskPriorityEnum } from "./tasks/types.js";
 import { uiInfo, uiWarn, uiError, uiSuccess, uiSpinner } from "./ui.js";
 import { isGitRepo, createTaskBranch, commitTaskChanges, switchBranch, getBaseBranch, getHeadSha, resetToSha, mergeBranch, deleteBranch, pushBranch, createDraftPR } from "./git.js";
 import { checkGlobalBudget } from "./budget.js";
@@ -166,7 +166,7 @@ export async function buildReviewPrompt(
 export interface PreflightResult {
   verdict: "proceed" | "too_broad" | "unclear" | "cannot_reproduce";
   understanding: string;
-  subtasks: Array<{ title: string; description: string }>;
+  subtasks: Array<{ title: string; description: string; priority?: TaskPriority }>;
   reproductionResult: string;
 }
 
@@ -280,7 +280,7 @@ export function parsePreflightResult(output: string): PreflightResult {
       const understanding =
         typeof record["understanding"] === "string" ? record["understanding"] : "";
 
-      const subtasks: Array<{ title: string; description: string }> = [];
+      const subtasks: Array<{ title: string; description: string; priority?: TaskPriority }> = [];
       if (Array.isArray(record["subtasks"])) {
         for (const item of record["subtasks"] as unknown[]) {
           if (
@@ -289,9 +289,12 @@ export function parsePreflightResult(output: string): PreflightResult {
             typeof (item as Record<string, unknown>)["title"] === "string" &&
             typeof (item as Record<string, unknown>)["description"] === "string"
           ) {
+            const rawPriority = (item as Record<string, unknown>)["priority"];
+            const parsedPriority = TaskPriorityEnum.safeParse(rawPriority);
             subtasks.push({
               title: (item as Record<string, unknown>)["title"] as string,
               description: (item as Record<string, unknown>)["description"] as string,
+              ...(parsedPriority.success ? { priority: parsedPriority.data } : {}),
             });
           }
         }
@@ -391,6 +394,32 @@ export async function handleConfidenceMet(
   return { state: "review", mergedSuccessfully: false };
 }
 
+export async function handleTooBroad(
+  backend: TaskBackend,
+  currentTask: Task,
+  preflight: PreflightResult,
+): Promise<{ createdIds: string[]; updatedTask: Task }> {
+  const createdIds: string[] = [];
+  for (const sub of preflight.subtasks) {
+    const created = await backend.createTask({
+      title: sub.title,
+      description: sub.description,
+      priority: sub.priority ?? currentTask.priority,
+      dependencies: [],
+    });
+    // createTask defaults to 'proposed'; move to 'ready' so subtasks are immediately runnable
+    await backend.updateTask(created.id, { state: "ready" });
+    createdIds.push(created.id);
+  }
+  const idList = createdIds.join(", ");
+  const note = `Decomposed into subtasks: ${idList}`;
+  const updatedTask = await backend.updateTask(currentTask.id, {
+    state: "done",
+    blockers: [...currentTask.blockers, note],
+  });
+  return { createdIds, updatedTask };
+}
+
 async function recordMemory(task: Task, projectDir: string): Promise<void> {
   try {
     const entry = generateMemoryEntry(task);
@@ -484,18 +513,21 @@ export async function runCompletionLoop(
         if (preflight.verdict === "proceed") {
           uiSuccess("Preflight: task validated — proceeding to completion loop.");
         } else if (preflight.verdict === "too_broad") {
-          const subtaskLines = preflight.subtasks.slice(0, 5).map(
-            (s, i) => `${i + 1}. **${s.title}**: ${s.description}`,
-          );
-          const truncNote = preflight.subtasks.length > 5 ? `\n...and ${preflight.subtasks.length - 5} more` : "";
-          const blockerMsg = `Task is too broad. Suggested subtasks:\n${subtaskLines.join("\n")}${truncNote}`;
-          uiWarn(`Preflight: ${blockerMsg}`);
-          const updatedTask = await backend.updateTask(task.id, {
-            state: "blocked",
-            blockers: [...currentTask.blockers, blockerMsg],
-          });
-          await recordMemory(updatedTask, getProjectDir());
-          // Switch back to base branch before returning
+          if (preflight.subtasks.length === 0) {
+            // No subtasks provided — fall back to blocking with a generic message
+            const blockerMsg = "Task is too broad but no subtasks were suggested.";
+            uiWarn(`Preflight: ${blockerMsg}`);
+            const updatedTask = await backend.updateTask(task.id, {
+              state: "blocked",
+              blockers: [...currentTask.blockers, blockerMsg],
+            });
+            await recordMemory(updatedTask, getProjectDir());
+          } else {
+            const { createdIds, updatedTask } = await handleTooBroad(backend, currentTask, preflight);
+            const idList = createdIds.join(", ");
+            uiSuccess(`Preflight: task too broad — created ${createdIds.length} subtasks (${idList})`);
+            await recordMemory(updatedTask, getProjectDir());
+          }
           if (baseBranch !== null && taskBranch !== null) {
             try { await switchBranch(baseBranch); } catch { /* best-effort */ }
           }

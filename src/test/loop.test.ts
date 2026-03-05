@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { parseReviewResult, isSessionBudgetExceeded, applySessionBudgetExceeded, buildPlanPrompt, isConfidenceRegression, handleConfidenceMet } from "../loop.js";
+import { parseReviewResult, isSessionBudgetExceeded, applySessionBudgetExceeded, buildPlanPrompt, isConfidenceRegression, handleConfidenceMet, parsePreflightResult, handleTooBroad } from "../loop.js";
 import { checkGlobalBudget } from "../budget.js";
 import { ConfigSchema } from "../config.js";
-import type { TaskBackend } from "../tasks/types.js";
+import type { TaskBackend, CreateTaskInput } from "../tasks/types.js";
 import type { Task } from "../tasks/types.js";
 
 describe("parseReviewResult", () => {
@@ -562,6 +562,246 @@ describe("handleConfidenceMet", () => {
     } finally {
       await rm(dir, { recursive: true });
     }
+  });
+});
+
+describe("parsePreflightResult subtask priority", () => {
+  it("parses subtasks with valid priority", () => {
+    const input = JSON.stringify({
+      verdict: "too_broad",
+      understanding: "Task covers multiple areas",
+      subtasks: [
+        { title: "Sub A", description: "Do A", priority: "high" },
+        { title: "Sub B", description: "Do B", priority: "low" },
+      ],
+    });
+    const result = parsePreflightResult(input);
+    assert.equal(result.verdict, "too_broad");
+    assert.equal(result.subtasks.length, 2);
+    assert.equal(result.subtasks[0]?.priority, "high");
+    assert.equal(result.subtasks[1]?.priority, "low");
+  });
+
+  it("omits priority when not provided in subtask", () => {
+    const input = JSON.stringify({
+      verdict: "too_broad",
+      understanding: "Too broad",
+      subtasks: [
+        { title: "Sub A", description: "Do A" },
+      ],
+    });
+    const result = parsePreflightResult(input);
+    assert.equal(result.subtasks.length, 1);
+    assert.equal(result.subtasks[0]?.priority, undefined);
+  });
+
+  it("omits priority when invalid value is provided", () => {
+    const input = JSON.stringify({
+      verdict: "too_broad",
+      understanding: "Too broad",
+      subtasks: [
+        { title: "Sub A", description: "Do A", priority: "urgent" },
+        { title: "Sub B", description: "Do B", priority: 42 },
+      ],
+    });
+    const result = parsePreflightResult(input);
+    assert.equal(result.subtasks.length, 2);
+    assert.equal(result.subtasks[0]?.priority, undefined);
+    assert.equal(result.subtasks[1]?.priority, undefined);
+  });
+
+  it("handles mix of subtasks with and without priority", () => {
+    const input = JSON.stringify({
+      verdict: "too_broad",
+      understanding: "Mixed",
+      subtasks: [
+        { title: "Sub A", description: "Do A", priority: "critical" },
+        { title: "Sub B", description: "Do B" },
+        { title: "Sub C", description: "Do C", priority: "medium" },
+      ],
+    });
+    const result = parsePreflightResult(input);
+    assert.equal(result.subtasks.length, 3);
+    assert.equal(result.subtasks[0]?.priority, "critical");
+    assert.equal(result.subtasks[1]?.priority, undefined);
+    assert.equal(result.subtasks[2]?.priority, "medium");
+  });
+});
+
+describe("handleTooBroad subtask auto-creation", () => {
+  const makeTooBroadTask = (overrides: Partial<Task> = {}): Task => ({
+    id: "task-001",
+    title: "Broad task",
+    description: "A task that is too broad",
+    priority: "medium",
+    state: "in_progress",
+    dependencies: [],
+    backend: "local",
+    backendRef: null,
+    confidence: 0,
+    attempts: 0,
+    totalCost: 0,
+    branch: null,
+    worktree: null,
+    userPriority: null,
+    blockers: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    ...overrides,
+  });
+
+  function makeSubtaskMockBackend() {
+    let nextId = 1;
+    const createdTasks: Array<{ input: CreateTaskInput; id: string }> = [];
+    const updates: Array<{ id: string; updates: Partial<Task> }> = [];
+
+    const backend: TaskBackend = {
+      createTask: async (input: CreateTaskInput) => {
+        const id = `sub-${String(nextId++).padStart(3, "0")}`;
+        createdTasks.push({ input, id });
+        return {
+          ...makeTooBroadTask(),
+          id,
+          title: input.title,
+          description: input.description,
+          priority: input.priority ?? "medium",
+          state: "proposed" as const,
+          dependencies: input.dependencies ?? [],
+        };
+      },
+      updateTask: async (id: string, upd: Partial<Task>) => {
+        updates.push({ id, updates: upd });
+        return { ...makeTooBroadTask(), id, ...upd } as Task;
+      },
+      getTask: async () => makeTooBroadTask(),
+      listTasks: async () => [],
+      deleteTask: async () => {},
+    };
+
+    return { backend, createdTasks, updates };
+  }
+
+  it("creates subtasks from preflight result", async () => {
+    const { backend, createdTasks } = makeSubtaskMockBackend();
+    const task = makeTooBroadTask();
+    const preflight = {
+      verdict: "too_broad" as const,
+      understanding: "Task covers multiple areas",
+      subtasks: [
+        { title: "Sub A", description: "Do A" },
+        { title: "Sub B", description: "Do B" },
+        { title: "Sub C", description: "Do C" },
+      ],
+      reproductionResult: "",
+    };
+
+    const { createdIds } = await handleTooBroad(backend, task, preflight);
+
+    assert.equal(createdIds.length, 3);
+    assert.equal(createdTasks.length, 3);
+    assert.equal(createdTasks[0]?.input.title, "Sub A");
+    assert.equal(createdTasks[1]?.input.title, "Sub B");
+    assert.equal(createdTasks[2]?.input.title, "Sub C");
+  });
+
+  it("subtasks inherit parent priority when none specified", async () => {
+    const { backend, createdTasks } = makeSubtaskMockBackend();
+    const task = makeTooBroadTask({ priority: "high" });
+    const preflight = {
+      verdict: "too_broad" as const,
+      understanding: "Broad",
+      subtasks: [
+        { title: "Sub A", description: "Do A" },
+      ],
+      reproductionResult: "",
+    };
+
+    await handleTooBroad(backend, task, preflight);
+
+    assert.equal(createdTasks[0]?.input.priority, "high");
+  });
+
+  it("subtasks use Claude-specified priority when provided", async () => {
+    const { backend, createdTasks } = makeSubtaskMockBackend();
+    const task = makeTooBroadTask({ priority: "medium" });
+    const preflight = {
+      verdict: "too_broad" as const,
+      understanding: "Broad",
+      subtasks: [
+        { title: "Sub A", description: "Do A", priority: "critical" as const },
+        { title: "Sub B", description: "Do B" },
+      ],
+      reproductionResult: "",
+    };
+
+    await handleTooBroad(backend, task, preflight);
+
+    assert.equal(createdTasks[0]?.input.priority, "critical");
+    assert.equal(createdTasks[1]?.input.priority, "medium"); // inherited from parent
+  });
+
+  it("moves subtasks to ready state", async () => {
+    const { backend, updates } = makeSubtaskMockBackend();
+    const task = makeTooBroadTask();
+    const preflight = {
+      verdict: "too_broad" as const,
+      understanding: "Broad",
+      subtasks: [
+        { title: "Sub A", description: "Do A" },
+        { title: "Sub B", description: "Do B" },
+      ],
+      reproductionResult: "",
+    };
+
+    await handleTooBroad(backend, task, preflight);
+
+    // First two updates are subtask state changes to 'ready', third is parent update
+    const readyUpdates = updates.filter(u => u.updates.state === "ready");
+    assert.equal(readyUpdates.length, 2);
+  });
+
+  it("moves parent task to done with subtask ID references", async () => {
+    const { backend, updates } = makeSubtaskMockBackend();
+    const task = makeTooBroadTask();
+    const preflight = {
+      verdict: "too_broad" as const,
+      understanding: "Broad",
+      subtasks: [
+        { title: "Sub A", description: "Do A" },
+      ],
+      reproductionResult: "",
+    };
+
+    const { updatedTask } = await handleTooBroad(backend, task, preflight);
+
+    // Parent should be moved to done
+    const parentUpdate = updates.find(u => u.id === "task-001");
+    assert.ok(parentUpdate);
+    assert.equal(parentUpdate.updates.state, "done");
+    // Blockers should contain reference to created subtask IDs
+    const blockerNote = parentUpdate.updates.blockers?.[0];
+    assert.ok(blockerNote);
+    assert.ok(blockerNote.includes("sub-001"));
+    assert.ok(blockerNote.startsWith("Decomposed into subtasks:"));
+    assert.equal(updatedTask.state, "done");
+  });
+
+  it("returns created subtask IDs", async () => {
+    const { backend } = makeSubtaskMockBackend();
+    const task = makeTooBroadTask();
+    const preflight = {
+      verdict: "too_broad" as const,
+      understanding: "Broad",
+      subtasks: [
+        { title: "Sub A", description: "Do A" },
+        { title: "Sub B", description: "Do B" },
+      ],
+      reproductionResult: "",
+    };
+
+    const { createdIds } = await handleTooBroad(backend, task, preflight);
+
+    assert.deepEqual(createdIds, ["sub-001", "sub-002"]);
   });
 });
 

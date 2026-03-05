@@ -30,14 +30,14 @@ Your entire output must be a single JSON object:
 {
   "verdict": "proceed" | "too_broad" | "unclear" | "cannot_reproduce",
   "understanding": "<1-3 sentence summary of what needs to be done and where in the codebase>",
-  "subtasks": ["<concrete subtask descriptions — REQUIRED when verdict is too_broad, omit otherwise>"],
+  "subtasks": [{"title": "<short subtask name>", "description": "<what to do>", "priority": "critical|high|medium|low"}],
   "reproductionResult": "<description of what you tried and whether the bug was reproduced — REQUIRED for bug tasks, omit otherwise>"
 }
 ```
 
 ### Verdict Meanings
 - **proceed** — Task is clear, well-scoped, and (if a bug) reproducible. Ready for planning.
-- **too_broad** — Task covers too much ground. The `subtasks` array contains suggested decomposition.
+- **too_broad** — Task covers too much ground. The `subtasks` array contains suggested decomposition (each with title, description, and optional priority). These will be auto-created as ready tasks.
 - **unclear** — Requirements are ambiguous. The `understanding` field describes what is unclear.
 - **cannot_reproduce** — Bug task where the described problem could not be reproduced. The `reproductionResult` field describes what was tried.
 
