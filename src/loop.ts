@@ -1159,6 +1159,9 @@ export async function runCompletionLoop(
 
       // Transient errors (empty output, timeouts) → continue looping
       // Only break on permanent errors or if we're out of attempts
+      // Note: timeouts and rate limits are already retried with exponential
+      // backoff inside invokeClaude() (up to 3 retries). This is the fallback
+      // if all invoke-level retries were exhausted.
       const isTransient = message.includes("empty output") || message.includes("timed out");
       if (!isTransient) {
         // Permanent error — keep task in_progress so it can resume later

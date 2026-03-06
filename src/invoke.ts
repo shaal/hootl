@@ -230,29 +230,99 @@ async function invokeClaudeVerbose(
   return { output, costUsd, exitCode: isError ? 1 : exitCode, durationMs };
 }
 
+/** Maximum number of retries for transient errors (timeouts, rate limits, network errors). */
+export const MAX_RETRIES = 3;
+
+/** Initial delay in milliseconds for exponential backoff (doubles each retry: 1s, 2s, 4s). */
+export const INITIAL_DELAY_MS = 1000;
+
+/** Default sleep implementation — returns a promise that resolves after `ms` milliseconds. */
+export function defaultSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Checks whether an InvokeResult represents a transient error that should be retried.
+ * Transient errors include timeouts, rate limits, and network failures.
+ */
+export function isTransientError(result: InvokeResult): boolean {
+  if (result.exitCode === 0) return false;
+
+  const output = result.output.toLowerCase();
+  // Timeout: exit code 124 or "timed out" message (set by the catch block)
+  if (result.exitCode === 124) return true;
+  if (output.includes("timed out")) return true;
+  // Rate limits
+  if (output.includes("rate limit") || output.includes("429")) return true;
+  // Network errors
+  if (
+    output.includes("econnrefused") ||
+    output.includes("enotfound") ||
+    output.includes("etimedout") ||
+    output.includes("econnreset")
+  ) return true;
+
+  return false;
+}
+
+export interface InvokeClaudeDeps {
+  sleep: (ms: number) => Promise<void>;
+}
+
 export async function invokeClaude(
   options: InvokeOptions,
+  deps?: InvokeClaudeDeps,
 ): Promise<InvokeResult> {
+  const sleep = deps?.sleep ?? defaultSleep;
   const startMs = Date.now();
+  let accumulatedCost = 0;
+  let lastResult: InvokeResult | undefined;
 
-  try {
-    if (options.verbose) {
-      return await invokeClaudeVerbose(options, startMs);
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    // Backoff delay before retries (not before the first attempt)
+    if (attempt > 0) {
+      const delayMs = INITIAL_DELAY_MS * Math.pow(2, attempt - 1);
+      await sleep(delayMs);
     }
-    return await invokeClaudeStandard(buildArgs(options), startMs);
-  } catch (error: unknown) {
-    const durationMs = Date.now() - startMs;
-    const isTimeout = typeof error === "object" && error !== null && "timedOut" in error && (error as Record<string, unknown>)["timedOut"] === true;
-    const message = isTimeout
-      ? `claude -p timed out after ${Math.round(durationMs / 1000)}s`
-      : error instanceof Error ? error.message : String(error);
-    return {
-      output: message,
-      costUsd: 0,
-      exitCode: isTimeout ? 124 : 1,
-      durationMs,
-    };
+
+    try {
+      if (options.verbose) {
+        lastResult = await invokeClaudeVerbose(options, startMs);
+      } else {
+        lastResult = await invokeClaudeStandard(buildArgs(options), startMs);
+      }
+    } catch (error: unknown) {
+      const durationMs = Date.now() - startMs;
+      const isTimeout = typeof error === "object" && error !== null && "timedOut" in error && (error as Record<string, unknown>)["timedOut"] === true;
+      const message = isTimeout
+        ? `claude -p timed out after ${Math.round(durationMs / 1000)}s`
+        : error instanceof Error ? error.message : String(error);
+      lastResult = {
+        output: message,
+        costUsd: 0,
+        exitCode: isTimeout ? 124 : 1,
+        durationMs,
+      };
+    }
+
+    accumulatedCost += lastResult.costUsd;
+
+    // If success or non-transient error, return immediately
+    if (lastResult.exitCode === 0 || !isTransientError(lastResult)) {
+      return { ...lastResult, costUsd: accumulatedCost };
+    }
+
+    // Transient error — will retry (unless this was the last attempt)
+    if (attempt < MAX_RETRIES) {
+      const retryNum = attempt + 1;
+      process.stderr.write(
+        `Transient error (attempt ${retryNum}/${MAX_RETRIES + 1}), retrying in ${INITIAL_DELAY_MS * Math.pow(2, attempt)}ms: ${lastResult.output.slice(0, 100)}\n`
+      );
+    }
   }
+
+  // All retries exhausted — return last failure with accumulated cost
+  return { ...lastResult!, costUsd: accumulatedCost };
 }
 
 export async function logCost(
