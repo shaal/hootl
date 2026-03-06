@@ -1,4 +1,5 @@
-import { readdir, readFile, writeFile, mkdir, rm, rename } from "node:fs/promises";
+import { readdir, readFile, writeFile, mkdir, rm, rename, unlink } from "node:fs/promises";
+import { writeFileSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import {
   TaskSchema,
@@ -183,6 +184,73 @@ export class LocalTaskBackend implements TaskBackend {
       await rm(taskDir, { recursive: true, force: true });
     } catch {
       throw new Error(`Failed to delete task: ${id}`);
+    }
+  }
+
+  /**
+   * Atomically claim a task for this process using an exclusive-create `.claim` file.
+   * Returns `true` if the claim was acquired, `false` if another live process holds it.
+   * Stale claims (dead PID) are automatically cleaned up and retried once.
+   */
+  async claimTask(id: string): Promise<boolean> {
+    const claimPath = join(this.baseDir, id, ".claim");
+    const payload = JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() });
+
+    const tryExclusiveCreate = (): boolean => {
+      try {
+        writeFileSync(claimPath, payload, { flag: "wx" });
+        return true;
+      } catch (err: unknown) {
+        if (err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "EEXIST") {
+          return false;
+        }
+        throw err;
+      }
+    };
+
+    if (tryExclusiveCreate()) {
+      await this.updateTask(id, { state: "in_progress" });
+      return true;
+    }
+
+    // Claim file exists — check if the holding process is still alive
+    try {
+      const raw = readFileSync(claimPath, "utf-8");
+      const claim = JSON.parse(raw) as { pid: number; startedAt: string };
+      try {
+        process.kill(claim.pid, 0); // Throws if process is dead
+        // Process is alive — genuine conflict
+        return false;
+      } catch {
+        // Process is dead — remove stale claim and retry once
+        try {
+          unlinkSync(claimPath);
+        } catch {
+          // Another process may have already cleaned it up
+          return false;
+        }
+        if (tryExclusiveCreate()) {
+          await this.updateTask(id, { state: "in_progress" });
+          return true;
+        }
+        return false;
+      }
+    } catch {
+      // Could not read/parse claim file — treat as conflict
+      return false;
+    }
+  }
+
+  /**
+   * Release a previously acquired claim by removing the `.claim` file.
+   * No-op if the claim file does not exist.
+   */
+  async releaseTask(id: string): Promise<void> {
+    const claimPath = join(this.baseDir, id, ".claim");
+    try {
+      unlinkSync(claimPath);
+    } catch {
+      // No-op: file may not exist (already released or never claimed)
     }
   }
 }

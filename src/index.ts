@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { Command } from "commander";
-import { existsSync } from "node:fs";
+import { existsSync, unlinkSync } from "node:fs";
 import { writeFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -25,7 +25,7 @@ import { gatherProjectContext, formatContextForPrompt } from "./context.js";
 import { autoInit } from "./init.js";
 import { checkGlobalBudget } from "./budget.js";
 import { discussCommand } from "./discuss.js";
-import { findRunnableTask } from "./selection.js";
+import { findRunnableTask, findAndClaimTask } from "./selection.js";
 import { syncReviewTasks } from "./sync.js";
 import { notifyWebhook } from "./notify.js";
 import { inferDependencies, resolveIndicesToIds } from "./dependencies.js";
@@ -49,6 +49,31 @@ function getBackend(config: Config): TaskBackend {
   }
   return new LocalTaskBackend(tasksDir);
 }
+
+// Track claimed task IDs for process-level cleanup on exit/SIGINT
+const claimedTaskIds = new Set<string>();
+
+function releaseAllClaims(): void {
+  const tasksDir = join(process.cwd(), ".hootl", "tasks");
+  for (const id of claimedTaskIds) {
+    try {
+      unlinkSync(join(tasksDir, id, ".claim"));
+    } catch {
+      // Best-effort: file may already be removed
+    }
+  }
+  claimedTaskIds.clear();
+}
+
+process.on("exit", releaseAllClaims);
+process.on("SIGINT", () => {
+  releaseAllClaims();
+  process.exit(130);
+});
+process.on("SIGTERM", () => {
+  releaseAllClaims();
+  process.exit(143);
+});
 
 const program = new Command();
 
@@ -447,9 +472,12 @@ program
 async function selectFromState(state: TaskState, backend: TaskBackend): Promise<Task | undefined> {
   const tasks = await backend.listTasks({ state });
   if (tasks.length === 0) return undefined;
-  const { task, skipped } = await findRunnableTask(tasks, backend);
+  const { task, skipped } = await findAndClaimTask(tasks, backend);
   for (const s of skipped) {
     uiWarn(`Skipping ${s.id} (${s.reason})`);
+  }
+  if (task) {
+    claimedTaskIds.add(task.id);
   }
   return task;
 }
@@ -530,6 +558,15 @@ async function runCommand(taskId?: string, cliFlags?: { merge?: boolean; noMerge
 
   if (taskId !== undefined) {
     targetTask = await backend.getTask(taskId);
+    // Attempt to claim explicitly requested task
+    if (targetTask !== undefined) {
+      const claimed = await backend.claimTask(targetTask.id);
+      if (!claimed) {
+        uiError(`Task ${targetTask.id} is already claimed by another instance.`);
+        return;
+      }
+      claimedTaskIds.add(targetTask.id);
+    }
   } else {
     // Prioritize in-progress tasks: finish started work before picking up new work
     targetTask = await selectFromState("in_progress", backend);

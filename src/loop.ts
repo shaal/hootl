@@ -858,6 +858,7 @@ export async function runCompletionLoop(
           : `Cannot switch to task branch: ${msg}`;
         await moveToBlocked(backend, task, [blocker], null, baseBranch, 0, config, hookDeps);
       }
+      try { await backend.releaseTask(task.id); } catch { /* best-effort */ }
       return;
     }
   }
@@ -940,6 +941,7 @@ export async function runCompletionLoop(
             uiSuccess(`Preflight: task too broad — created ${createdIds.length} subtasks (${idList}); parent waiting on dependencies`);
             await recordMemory(updatedTask, getProjectDir());
           }
+          try { await backend.releaseTask(task.id); } catch { /* best-effort */ }
           if (!useWorktrees && baseBranch !== null && taskBranch !== null) {
             try { await switchBranch(baseBranch); } catch { /* best-effort */ }
           }
@@ -952,6 +954,7 @@ export async function runCompletionLoop(
             blockers: [...currentTask.blockers, blockerMsg],
           });
           await recordMemory(updatedTask, getProjectDir());
+          try { await backend.releaseTask(task.id); } catch { /* best-effort */ }
           if (!useWorktrees && baseBranch !== null && taskBranch !== null) {
             try { await switchBranch(baseBranch); } catch { /* best-effort */ }
           }
@@ -964,6 +967,7 @@ export async function runCompletionLoop(
             blockers: [...currentTask.blockers, blockerMsg],
           });
           await recordMemory(updatedTask, getProjectDir());
+          try { await backend.releaseTask(task.id); } catch { /* best-effort */ }
           if (!useWorktrees && baseBranch !== null && taskBranch !== null) {
             try { await switchBranch(baseBranch); } catch { /* best-effort */ }
           }
@@ -1321,6 +1325,13 @@ export async function runCompletionLoop(
 
   // Clean up checkpoint on normal exit
   await clearCheckpoint(taskDir);
+
+  // Release task claim so other instances can pick it up if it's re-queued
+  try {
+    await backend.releaseTask(task.id);
+  } catch {
+    // Best-effort: claim file may not exist
+  }
 
   // Switch back to base branch (only needed in branch-switching mode — worktrees don't touch the main working tree)
   if (!useWorktrees && baseBranch !== null && taskBranch !== null) {

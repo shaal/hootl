@@ -482,6 +482,8 @@ describe("handleConfidenceMet", () => {
       getTask: async () => makeTask(),
       listTasks: async () => [],
       deleteTask: async () => {},
+      claimTask: async () => true,
+      releaseTask: async () => {},
     } as TaskBackend;
     return { backend, state };
   }
@@ -864,6 +866,8 @@ describe("handleTooBroad subtask auto-creation", () => {
       getTask: async () => makeTooBroadTask(),
       listTasks: async () => [],
       deleteTask: async () => {},
+      claimTask: async () => true,
+      releaseTask: async () => {},
     };
 
     return { backend, createdTasks, updates };
@@ -1165,6 +1169,8 @@ describe("handleConfidenceMet hook integration", () => {
       getTask: async () => makeTask(),
       listTasks: async () => [],
       deleteTask: async () => {},
+      claimTask: async () => true,
+      releaseTask: async () => {},
     } as TaskBackend;
     return { backend, updates };
   }
@@ -1740,6 +1746,8 @@ describe("moveToBlocked", () => {
       getTask: async () => makeTask(),
       listTasks: async () => [],
       deleteTask: async () => {},
+      claimTask: async () => true,
+      releaseTask: async () => {},
     } as TaskBackend;
     return { backend, updates };
   }

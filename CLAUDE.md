@@ -62,6 +62,7 @@ src/
     sync.test.ts       Review task sync integration tests (real git repo + LocalTaskBackend)
     branch-block.test.ts  Branch-switch failure blocks task (dirty worktree integration test)
     notify.test.ts     OS notification config gating, platform dispatch, error resilience, webhook notifications
+    claim.test.ts      Claim success, conflict (live PID), stale claim cleanup, release, findAndClaimTask
 templates/
   preflight.md         System prompt for preflight validation phase (Phase 0)
   plan.md              System prompt for planning phase
@@ -110,6 +111,25 @@ On restart, the loop detects interrupted phases via `checkpoint.json` in the tas
 - `clearCheckpoint()` runs on normal exit to clean up
 
 All checkpoint operations are wrapped in try/catch — checkpoint failures never block the loop. Uses the same atomic tmp + rename pattern as `local.ts`.
+
+### Task Claiming (Parallel Instance Safety)
+
+When two `hootl auto` (or `hootl run`) instances run simultaneously, a file-based atomic claim mechanism prevents them from picking the same task.
+
+**Claim file:** `.hootl/tasks/<id>/.claim` — created with `fs.writeFileSync(..., { flag: 'wx' })` (POSIX `O_EXCL`, atomic exclusive create). Contains `{ pid: number, startedAt: string }`.
+
+**`claimTask(id): Promise<boolean>`** — On `TaskBackend` interface, implemented in `LocalTaskBackend`. Attempts the exclusive create; returns `true` on success (also transitions task to `in_progress`), `false` on conflict. Before returning `false` on `EEXIST`, reads the existing claim's PID and checks liveness via `process.kill(pid, 0)`. If the PID is dead (stale claim from a crashed instance), removes the file and retries once.
+
+**`releaseTask(id): Promise<void>`** — Removes the `.claim` file. No-op if already absent.
+
+**Task selection:** `findAndClaimTask()` in `src/selection.ts` iterates candidates (checking dependencies first), then calls `claimTask`. If the claim fails, the task is skipped with reason `"claimed by another instance"` and the next candidate is tried. Used by `selectFromState()` in `src/index.ts`. For explicit `hootl run <taskId>`, `claimTask` is called directly and the command aborts if the claim fails.
+
+**Release points:**
+- End of `runCompletionLoop` (after checkpoint cleanup, covers all terminal states: done, blocked, review)
+- Early returns in `runCompletionLoop` (preflight verdicts: too_broad, unclear, cannot_reproduce; branch-switch failures)
+- Process exit handlers: `process.on('exit')`, `process.on('SIGINT')`, `process.on('SIGTERM')` — synchronous `unlinkSync` cleanup of all claims tracked in a module-level `Set<string>`
+
+**Known limitations:** `O_EXCL` is atomic on local POSIX filesystems but not guaranteed on NFS. PID reuse is theoretically possible but extremely unlikely given the large PID space.
 
 ### Git Worktree Mode
 
@@ -464,6 +484,7 @@ Test coverage:
 - **auto.test.ts** -- Auto command task selection loop (empty queue, sequential picks, in_progress preference, dependency skipping), budget gate (exceeded stops, headroom continues, missing CSV), level validation (all four levels accepted by config schema)
 - **branch-block.test.ts** -- Integration test: dirty worktree blocks task on branch switch (real git repo), dirty worktree does NOT block in worktree mode (isolation verification), clean worktree proceeds past branch creation
 - **notify.test.ts** -- OS notification: config gating (osNotify false → no-op), platform detection (darwin → osascript, linux → notify-send, win32 → no-op), error resilience (execa failure swallowed), osascript quote/backslash escaping, linux raw passthrough. Webhook: no-op on null/empty webhook URL, correct POST payload and headers, error resilience (fetch throw, non-2xx), null confidence handling
+- **claim.test.ts** -- Claim success (file created, PID correct, state transition to in_progress), conflict (second claim with live PID returns false, state unchanged), stale claim cleanup (dead PID removed, re-claim succeeds), release (removes .claim file), release no-op (unclaimed task), findAndClaimTask (claims first runnable, skips already-claimed, retries on conflict, respects dependencies, returns undefined when all claimed)
 
 ## Dependencies
 

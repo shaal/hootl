@@ -50,4 +50,6 @@ export interface TaskBackend {
   createTask(input: CreateTaskInput): Promise<Task>;
   updateTask(id: string, updates: Partial<Task>): Promise<Task>;
   deleteTask(id: string): Promise<void>;
+  claimTask(id: string): Promise<boolean>;
+  releaseTask(id: string): Promise<void>;
 }
