@@ -46,7 +46,8 @@ export async function generateCommitMessage(
     const capped = firstLine.length > 120 ? firstLine.slice(0, 120) : firstLine;
 
     return `[${taskId}] ${capped}`;
-  } catch {
+  } catch (err: unknown) {
+    uiWarn(`Commit message generation failed, using fallback: ${errorMsg(err)}`);
     return fallback;
   }
 }
@@ -118,7 +119,8 @@ export async function commitTaskChanges(taskId: string, phase: string, message?:
         execa("git", ["diff", "--cached", "--stat"]),
       ]);
       commitMessage = await generateCommitMessage(taskId, phase, diffResult.stdout, deps, undefined, statResult.stdout);
-    } catch {
+    } catch (err: unknown) {
+      uiWarn(`Could not read staged diff for commit message: ${errorMsg(err)}`);
       commitMessage = `[${taskId}] ${phase}: automated changes`;
     }
   }
