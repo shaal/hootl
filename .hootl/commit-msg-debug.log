@@ -52,3 +52,4 @@
 2026-03-06T04:00:44.375Z | exit=0 | cost=0.001 | dur=100ms | output="update files"
 2026-03-06T04:00:44.376Z | CATCH: fail
 2026-03-06T04:00:44.382Z | CATCH: fail
+2026-03-06T04:00:45.036Z | exit=1 | cost=0 | dur=59ms | output=""
