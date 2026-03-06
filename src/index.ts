@@ -238,14 +238,51 @@ async function planCommand(cliMode?: { fromSpec?: boolean; goal?: string; analyz
 
   let tasks: Array<{ title: string; description: string; priority?: string; type?: string; dependsOn?: number[] }>;
   try {
-    // Try to extract JSON array from the response (may be wrapped in markdown)
-    const jsonMatch = result.output.match(/\[[\s\S]*\]/);
-    if (jsonMatch === null) {
-      throw new Error("No JSON array found in response");
+    // Try to extract JSON array from the response (may be wrapped in markdown or surrounded by extra text).
+    // Strategy: try code-block extraction first, then bracket-matching fallback.
+    // The greedy regex /\[[\s\S]*\]/ can overshoot when the response contains [bracketed] text
+    // after the JSON (e.g. "[task-XXX]" in explanatory prose), so we use bracket counting instead.
+    const candidates: string[] = [];
+
+    // 1. Code block extraction (non-greedy)
+    const codeBlockMatch = /```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/.exec(result.output);
+    if (codeBlockMatch?.[1]) {
+      candidates.push(codeBlockMatch[1].trim());
     }
-    const parsed: unknown = JSON.parse(jsonMatch[0]);
+
+    // 2. Bracket-matching: find first '[' and count depth to find its matching ']'
+    const firstBracket = result.output.indexOf("[");
+    if (firstBracket !== -1) {
+      let depth = 0;
+      let inString = false;
+      let escape = false;
+      for (let i = firstBracket; i < result.output.length; i++) {
+        const ch = result.output[i];
+        if (escape) { escape = false; continue; }
+        if (ch === "\\") { escape = true; continue; }
+        if (ch === '"') { inString = !inString; continue; }
+        if (inString) continue;
+        if (ch === "[") depth++;
+        if (ch === "]") { depth--; if (depth === 0) { candidates.push(result.output.slice(firstBracket, i + 1)); break; } }
+      }
+    }
+
+    // 3. Greedy fallback (original approach)
+    const greedyMatch = result.output.match(/\[[\s\S]*\]/);
+    if (greedyMatch) {
+      candidates.push(greedyMatch[0]);
+    }
+
+    let parsed: unknown = null;
+    for (const candidate of candidates) {
+      try {
+        const p: unknown = JSON.parse(candidate);
+        if (Array.isArray(p) && p.length > 0) { parsed = p; break; }
+      } catch { continue; }
+    }
+
     if (!Array.isArray(parsed)) {
-      throw new Error("Response is not an array");
+      throw new Error("No valid JSON array found in response");
     }
     tasks = parsed as Array<{ title: string; description: string; priority?: string; type?: string; dependsOn?: number[] }>;
   } catch {
