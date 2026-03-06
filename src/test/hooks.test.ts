@@ -468,7 +468,7 @@ function makeMockDeps(overrides: Partial<HookDeps> = {}): HookDeps & {
     warnCalls,
     invoke: overrides.invoke ?? (async (opts) => {
       invokeCalls.push({ prompt: opts.prompt, systemPrompt: opts.systemPrompt });
-      return { output: '{"pass": true, "issues": [], "remediationActions": []}', costUsd: 0.01, exitCode: 0, durationMs: 100 } as InvokeResult;
+      return { output: '{"pass": true, "issues": [], "remediationActions": []}', costUsd: 0.01, exitCode: 0, durationMs: 100, contextWindowPercent: 0 };
     }),
     log: overrides.log ?? (async (_dir, taskId, phase, cost) => {
       logCalls.push({ taskId, phase, cost });
@@ -487,6 +487,7 @@ describe("runHook", () => {
         costUsd: 0.01,
         exitCode: 0,
         durationMs: 50,
+        contextWindowPercent: 0,
       }),
     });
     const hook = makeHook({ prompt: "Check code quality" });
@@ -505,6 +506,7 @@ describe("runHook", () => {
         costUsd: 0.02,
         exitCode: 0,
         durationMs: 200,
+        contextWindowPercent: 0,
       }),
     });
     const hook = makeHook({ prompt: "Validate implementation" });
@@ -545,6 +547,7 @@ describe("runHook", () => {
         costUsd: 0.005,
         exitCode: 0,
         durationMs: 80,
+        contextWindowPercent: 0,
       }),
     });
     const hook = makeHook({ prompt: "Check quality" });
@@ -563,6 +566,7 @@ describe("runHook", () => {
         costUsd: 0.01,
         exitCode: 0,
         durationMs: 100,
+        contextWindowPercent: 0,
       }),
     });
     const hook = makeHook({ prompt: "Review" });
@@ -597,6 +601,7 @@ describe("runHooks", () => {
           costUsd: 0.03,
           exitCode: 0,
           durationMs: 150,
+          contextWindowPercent: 0,
         };
       },
     });
@@ -625,6 +630,7 @@ describe("runHooks", () => {
             costUsd: 0.01,
             exitCode: 0,
             durationMs: 100,
+            contextWindowPercent: 0,
           };
         }
         return {
@@ -632,6 +638,7 @@ describe("runHooks", () => {
           costUsd: 0.02,
           exitCode: 0,
           durationMs: 100,
+          contextWindowPercent: 0,
         };
       },
     });
@@ -708,6 +715,7 @@ describe("runHooks", () => {
         costUsd: 0.01,
         exitCode: 0,
         durationMs: 50,
+        contextWindowPercent: 0,
       }),
     });
     const ctx = makeContext();
@@ -788,6 +796,7 @@ describe("runSkillHook", () => {
         costUsd: 0.05,
         exitCode: 0,
         durationMs: 200,
+        contextWindowPercent: 0,
       }),
     });
     const ctx = makeContext();
