@@ -490,6 +490,21 @@ export async function autoCommand(
   const config = await loadConfig();
   const backend = getBackend(config);
 
+  // Graceful stop: first Ctrl+C sets flag to stop after current task,
+  // second Ctrl+C force-quits (default behavior restored).
+  let stopRequested = false;
+  const originalSigint = process.listeners("SIGINT");
+  process.removeAllListeners("SIGINT");
+  process.on("SIGINT", () => {
+    if (stopRequested) {
+      // Second Ctrl+C: force quit
+      releaseAllClaims();
+      process.exit(130);
+    }
+    stopRequested = true;
+    uiWarn("\nCtrl+C received — will stop after current task finishes. Press Ctrl+C again to force quit.");
+  });
+
   const level = cliLevel ?? config.auto.defaultLevel;
   if (level !== "conservative") {
     uiWarn(
@@ -541,6 +556,17 @@ export async function autoCommand(
       cliFlags,
     );
     tasksCompleted++;
+
+    if (stopRequested) {
+      uiInfo("Stopping auto mode (Ctrl+C received). Current task finished cleanly.");
+      break;
+    }
+  }
+
+  // Restore original SIGINT handlers
+  process.removeAllListeners("SIGINT");
+  for (const listener of originalSigint) {
+    process.on("SIGINT", listener as NodeJS.SignalsListener);
   }
 
   uiInfo(`Auto mode finished. Tasks processed: ${tasksCompleted}.`);
