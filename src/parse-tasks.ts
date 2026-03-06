@@ -23,18 +23,21 @@ export function extractTaskArray(output: string): PlanTask[] | null {
     let escape = false;
     for (let i = firstBracket; i < output.length; i++) {
       const ch = output[i];
-      if (escape) { escape = false; continue; }
-      if (ch === "\\") { escape = true; continue; }
-      if (ch === '"') { inString = !inString; continue; }
-      if (inString) continue;
+      if (inString) {
+        if (escape) { escape = false; continue; }
+        if (ch === "\\") { escape = true; continue; }
+        if (ch === '"') { inString = false; }
+        continue;
+      }
+      if (ch === '"') { inString = true; continue; }
       if (ch === "[") depth++;
       if (ch === "]") { depth--; if (depth === 0) { candidates.push(output.slice(firstBracket, i + 1)); break; } }
     }
   }
 
-  // 3. Greedy fallback (original approach)
+  // 3. Greedy fallback (original approach) — skip if bracket-matching already produced the same string
   const greedyMatch = output.match(/\[[\s\S]*\]/);
-  if (greedyMatch) {
+  if (greedyMatch && !candidates.includes(greedyMatch[0])) {
     candidates.push(greedyMatch[0]);
   }
 
