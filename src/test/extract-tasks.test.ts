@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { extractTaskArray } from "../index.js";
+import { extractTaskArray } from "../parse-tasks.js";
 
 describe("extractTaskArray", () => {
   const validJson = JSON.stringify([
