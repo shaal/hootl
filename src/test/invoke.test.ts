@@ -6,6 +6,7 @@ import {
   buildArgs,
   getClaudeEnv,
 } from "../invoke.js";
+import type { InvokeOptions } from "../invoke.js";
 
 describe("parseCostFromOutput", () => {
   it("returns total_cost_usd when present", () => {
@@ -182,6 +183,13 @@ describe("buildArgs", () => {
     assert.equal(typeof args[idx + 1], "string");
     assert.equal(args[idx + 1], "10");
   });
+
+  it("does not include cwd in CLI args", () => {
+    const args = buildArgs({ prompt: "hi", cwd: "/tmp/worktree" });
+    assert.ok(!args.includes("cwd"), "cwd should not appear as a CLI arg");
+    assert.ok(!args.includes("--cwd"), "--cwd should not appear as a CLI flag");
+    assert.ok(!args.includes("/tmp/worktree"), "cwd path should not appear in args");
+  });
 });
 
 describe("getClaudeEnv", () => {
@@ -254,5 +262,18 @@ describe("getClaudeEnv", () => {
     env["TEST_MUTATION"] = "mutated";
     assert.strictEqual(process.env["TEST_MUTATION"], undefined);
     delete env["TEST_MUTATION"];
+  });
+});
+
+describe("InvokeOptions.cwd", () => {
+  it("accepts cwd as an optional string field", () => {
+    // Compile-time type check: cwd is accepted in InvokeOptions
+    const opts: InvokeOptions = { prompt: "test", cwd: "/tmp/worktree" };
+    assert.equal(opts.cwd, "/tmp/worktree");
+  });
+
+  it("allows omitting cwd", () => {
+    const opts: InvokeOptions = { prompt: "test" };
+    assert.equal(opts.cwd, undefined);
   });
 });

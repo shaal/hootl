@@ -13,6 +13,7 @@ export interface InvokeOptions {
   allowedTools?: string[];
   disallowedTools?: string[];
   verbose?: boolean;
+  cwd?: string;
 }
 
 export interface InvokeResult {
@@ -100,6 +101,7 @@ export function getClaudeEnv(): Record<string, string | undefined> {
 
 async function invokeClaudeStandard(
   args: string[],
+  cwd: string | undefined,
   startMs: number,
 ): Promise<InvokeResult> {
   const result = await execa("claude", args, {
@@ -107,6 +109,7 @@ async function invokeClaudeStandard(
     timeout: 300_000,
     env: getClaudeEnv(),
     stdin: "ignore",
+    ...(cwd ? { cwd } : {}),
   });
   const stdout = result.stdout;
   const exitCode = result.exitCode ?? 1;
@@ -154,6 +157,7 @@ async function invokeClaudeVerbose(
     timeout: 300_000,
     env: getClaudeEnv(),
     stdin: "ignore",
+    ...(options.cwd ? { cwd: options.cwd } : {}),
   });
 
   let resultLine = "";
@@ -297,7 +301,7 @@ export async function invokeClaude(
       if (options.verbose) {
         lastResult = await invokeClaudeVerbose(options, startMs);
       } else {
-        lastResult = await invokeClaudeStandard(buildArgs(options), startMs);
+        lastResult = await invokeClaudeStandard(buildArgs(options), options.cwd, startMs);
       }
     } catch (error: unknown) {
       const durationMs = Date.now() - startMs;
