@@ -430,12 +430,6 @@ export async function runHooks(
   const results: HookResult[] = [];
   const logDir = join(process.cwd(), ".hootl", "logs");
 
-  // Debug: trace who is calling runHooks and for which task
-  const stack = new Error().stack ?? "";
-  const debugLine = `${new Date().toISOString()} | trigger=${triggerPoint} | task=${context.task.id} | state=${context.task.state} | hooks=${matchingHooks.length} | pid=${process.pid}\n${stack}\n---\n`;
-  const { appendFile: debugAppend } = await import("node:fs/promises");
-  await debugAppend(".hootl/hooks-debug.log", debugLine).catch(() => {});
-
   for (const hook of matchingHooks) {
     const result = await runHook(hook, context, deps);
     results.push(result);

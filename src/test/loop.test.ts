@@ -486,13 +486,19 @@ describe("handleConfidenceMet", () => {
     return { backend, state };
   }
 
+  const noopHookDeps: HookDeps = {
+    invoke: async () => ({ output: '{"pass": true}', costUsd: 0, exitCode: 0, durationMs: 50 } as InvokeResult),
+    log: async () => {},
+    warn: () => {},
+  };
+
   it("'none' mode sets task to review state", async () => {
     const dir = await mkdtemp(join(tmpdir(), "hootl-hcm-"));
     try {
       const { backend, state: mockState } = makeMockBackend();
       const config = ConfigSchema.parse({ git: { onConfidence: "none" } });
       const result = await handleConfidenceMet(
-        makeTask(), config, backend, "hootl/task-001-test", "main", dir, {},
+        makeTask(), config, backend, "hootl/task-001-test", "main", dir, {}, noopHookDeps,
       );
       assert.equal(result.state, "review");
       assert.equal(result.mergedSuccessfully, false);
@@ -509,7 +515,7 @@ describe("handleConfidenceMet", () => {
       const config = ConfigSchema.parse({ git: { onConfidence: "none" } });
       // Without a real git repo, mergeBranch will fail and fall back to review
       const result = await handleConfidenceMet(
-        makeTask(), config, backend, "hootl/task-001-test", "main", dir, { merge: true },
+        makeTask(), config, backend, "hootl/task-001-test", "main", dir, { merge: true }, noopHookDeps,
       );
       // merge will fail (no real git repo) so it falls back to review
       assert.equal(result.state, "review");
@@ -525,7 +531,7 @@ describe("handleConfidenceMet", () => {
       const { backend, state: mockState } = makeMockBackend();
       const config = ConfigSchema.parse({ git: { onConfidence: "merge" } });
       const result = await handleConfidenceMet(
-        makeTask(), config, backend, "hootl/task-001-test", "main", dir, { noMerge: true },
+        makeTask(), config, backend, "hootl/task-001-test", "main", dir, { noMerge: true }, noopHookDeps,
       );
       assert.equal(result.state, "review");
       assert.equal(result.mergedSuccessfully, false);
@@ -542,7 +548,7 @@ describe("handleConfidenceMet", () => {
       const config = ConfigSchema.parse({ git: { onConfidence: "pr" } });
       // pushBranch will fail (no remote) but state should still be review
       const result = await handleConfidenceMet(
-        makeTask(), config, backend, "hootl/task-001-test", "main", dir, {},
+        makeTask(), config, backend, "hootl/task-001-test", "main", dir, {}, noopHookDeps,
       );
       assert.equal(result.state, "review");
       assert.equal(result.mergedSuccessfully, false);
@@ -559,7 +565,7 @@ describe("handleConfidenceMet", () => {
       const config = ConfigSchema.parse({ git: { onConfidence: "merge" } });
       // With null branch, merge mode can't do anything — falls through to none
       const result = await handleConfidenceMet(
-        makeTask(), config, backend, null, null, dir, {},
+        makeTask(), config, backend, null, null, dir, {}, noopHookDeps,
       );
       assert.equal(result.state, "review");
       assert.equal(result.mergedSuccessfully, false);
