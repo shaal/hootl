@@ -37,6 +37,7 @@ src/
   plan-review.ts      Plan critique pass (self-review before task creation)
   plan-summary.ts     TL;DR plan summary with Accept/Revise/Cancel confirmation
   hooks.ts            Hook execution engine (filter, prompt resolution, run, orchestrate)
+  notify.ts           OS notifications (macOS osascript, Linux notify-send) for task events
   status.ts           Status summary writer (grouped by state)
   tasks/
     types.ts           Zod schemas for Task, TaskState, TaskBackend interface
@@ -60,6 +61,7 @@ src/
     prioritize.test.ts userPriority sort, dependency enforcement, schema backward compat
     sync.test.ts       Review task sync integration tests (real git repo + LocalTaskBackend)
     branch-block.test.ts  Branch-switch failure blocks task (dirty worktree integration test)
+    notify.test.ts     OS notification config gating, platform dispatch, error resilience
 templates/
   preflight.md         System prompt for preflight validation phase (Phase 0)
   plan.md              System prompt for planning phase
@@ -431,6 +433,7 @@ Test coverage:
 - **auto-init.test.ts** -- Init directory creation, no-op on existing, config defaults, interactive hook prompt (accept/decline), hooks-example.json content, template presets (web-app lower confidence + agent-browser hook, cli-tool standard defaults, library higher confidence + more attempts), unknown template rejection, template hook prompt skipping, TEMPLATE_NAMES export
 - **auto.test.ts** -- Auto command task selection loop (empty queue, sequential picks, in_progress preference, dependency skipping), budget gate (exceeded stops, headroom continues, missing CSV), level validation (all four levels accepted by config schema)
 - **branch-block.test.ts** -- Integration test: dirty worktree blocks task on branch switch (real git repo), clean worktree proceeds past branch creation
+- **notify.test.ts** -- OS notification: config gating (osNotify false → no-op), platform detection (darwin → osascript, linux → notify-send, win32 → no-op), error resilience (execa failure swallowed), osascript quote/backslash escaping, linux raw passthrough
 
 ## Dependencies
 
