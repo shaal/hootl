@@ -263,17 +263,51 @@ describe("git integration", () => {
   });
 
   describe("commitTaskChanges", () => {
-    it("commits staged changes and returns true", async () => {
+    it("generates commit message from staged diff via DI", async () => {
       const originalCwd = process.cwd();
       try {
         process.chdir(tmpDir);
-        // Create a file so there are changes
         await writeFile(join(tmpDir, "newfile.txt"), "hello");
-        const committed = await commitTaskChanges("T-2", "execute");
+
+        let capturedPrompt = "";
+        const mockDeps: CommitMessageDeps = {
+          invoke: async ({ prompt }) => {
+            capturedPrompt = prompt;
+            return { output: "add newfile with greeting", costUsd: 0 } as InvokeResult;
+          },
+        };
+
+        const committed = await commitTaskChanges("T-2", "execute", undefined, mockDeps);
         assert.equal(committed, true);
-        // Verify the commit exists
+
+        // Verify the diff was captured and forwarded to the generator
+        assert.ok(capturedPrompt.includes("newfile.txt"), "prompt should contain the diff with the filename");
+
+        // Verify the commit message uses the generated text with task prefix
         const log = await execa("git", ["log", "--oneline", "-1"], { cwd: tmpDir });
-        assert.ok(log.stdout.includes("[T-2] execute: automated changes"));
+        assert.ok(log.stdout.includes("[T-2] add newfile with greeting"));
+      } finally {
+        process.chdir(originalCwd);
+      }
+    });
+
+    it("falls back to static message when generation fails", async () => {
+      const originalCwd = process.cwd();
+      try {
+        process.chdir(tmpDir);
+        await writeFile(join(tmpDir, "fallback.txt"), "fallback content");
+
+        const failingDeps: CommitMessageDeps = {
+          invoke: async () => {
+            throw new Error("invoke failed");
+          },
+        };
+
+        const committed = await commitTaskChanges("T-2b", "execute", undefined, failingDeps);
+        assert.equal(committed, true);
+
+        const log = await execa("git", ["log", "--oneline", "-1"], { cwd: tmpDir });
+        assert.ok(log.stdout.includes("[T-2b] execute: automated changes"));
       } finally {
         process.chdir(originalCwd);
       }
@@ -290,13 +324,24 @@ describe("git integration", () => {
       }
     });
 
-    it("uses a custom message when provided", async () => {
+    it("uses a custom message when provided and skips generation", async () => {
       const originalCwd = process.cwd();
       try {
         process.chdir(tmpDir);
         await writeFile(join(tmpDir, "custom.txt"), "custom content");
-        const committed = await commitTaskChanges("T-4", "plan", "custom commit msg");
+
+        let invokeCalled = false;
+        const mockDeps: CommitMessageDeps = {
+          invoke: async () => {
+            invokeCalled = true;
+            return { output: "should not be used", costUsd: 0 } as InvokeResult;
+          },
+        };
+
+        const committed = await commitTaskChanges("T-4", "plan", "custom commit msg", mockDeps);
         assert.equal(committed, true);
+        assert.equal(invokeCalled, false, "generateCommitMessage should not be called when message is provided");
+
         const log = await execa("git", ["log", "--oneline", "-1"], { cwd: tmpDir });
         assert.ok(log.stdout.includes("custom commit msg"));
       } finally {

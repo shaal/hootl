@@ -400,7 +400,7 @@ export async function handleConfidenceMet(
         // Auto-commit hook changes
         if (taskBranch !== null) {
           try {
-            await commitTaskChanges(task.id, `hook-fix-${reverifyCount}`, `[${task.id}] Hook applied fixes (re-verify ${reverifyCount})`);
+            await commitTaskChanges(task.id, `hook-fix-${reverifyCount}`);
           } catch (err: unknown) {
             uiWarn(`Could not auto-commit hook fixes: ${errorMsg(err)}`);
           }
@@ -915,7 +915,7 @@ export async function runCompletionLoop(
       // Auto-commit after execute phase
       if (taskBranch !== null) {
         try {
-          await commitTaskChanges(task.id, `attempt-${attempt}`, `[${task.id}] Execute attempt ${attempt}`);
+          await commitTaskChanges(task.id, `attempt-${attempt}`);
         } catch (err: unknown) {
           uiWarn(`Could not auto-commit: ${errorMsg(err)}`);
         }

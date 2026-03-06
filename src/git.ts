@@ -88,7 +88,7 @@ export async function createTaskBranch(taskId: string, taskTitle: string, prefix
   return branchName;
 }
 
-export async function commitTaskChanges(taskId: string, phase: string, message?: string): Promise<boolean> {
+export async function commitTaskChanges(taskId: string, phase: string, message?: string, deps?: CommitMessageDeps): Promise<boolean> {
   // Check if there are any changes to commit
   const status = await execa("git", ["status", "--porcelain"]);
   if (status.stdout.trim() === "") {
@@ -98,7 +98,19 @@ export async function commitTaskChanges(taskId: string, phase: string, message?:
   // Stage all changes
   await execa("git", ["add", "-A"]);
 
-  const commitMessage = message ?? `[${taskId}] ${phase}: automated changes`;
+  let commitMessage: string;
+  if (message) {
+    commitMessage = message;
+  } else {
+    // Read the staged diff and generate a meaningful commit message via Claude
+    try {
+      const diffResult = await execa("git", ["diff", "--cached"]);
+      commitMessage = await generateCommitMessage(taskId, phase, diffResult.stdout, deps);
+    } catch {
+      commitMessage = `[${taskId}] ${phase}: automated changes`;
+    }
+  }
+
   await execa("git", ["commit", "-m", commitMessage]);
   uiInfo(`Committed: ${commitMessage}`);
   return true;
