@@ -208,6 +208,34 @@ describe("buildDiscussArgs", () => {
     assert.strictEqual(args.length, 3); // flag, --system-prompt, value
   });
 
+  it("never includes -p flag (discuss is interactive, not prompt mode)", () => {
+    const ctx = makeCtx({ plan: "Plan", progress: "Progress" });
+    const argsWithCtx = buildDiscussArgs(ctx, "/path/to/CLAUDE.md");
+    const argsWithoutCtx = buildDiscussArgs();
+
+    assert.ok(!argsWithCtx.includes("-p"), "args with context should not include -p");
+    assert.ok(!argsWithoutCtx.includes("-p"), "args without context should not include -p");
+  });
+
+  it("never includes --output-format (no JSON capture in interactive mode)", () => {
+    const ctx = makeCtx({ plan: "Plan", progress: "Progress" });
+    const argsWithCtx = buildDiscussArgs(ctx, "/path/to/CLAUDE.md");
+    const argsWithoutCtx = buildDiscussArgs();
+
+    assert.ok(!argsWithCtx.includes("--output-format"), "args with context should not include --output-format");
+    assert.ok(!argsWithoutCtx.includes("--output-format"), "args without context should not include --output-format");
+    assert.ok(!argsWithCtx.includes("json"), "args with context should not include json output format");
+  });
+
+  it("never includes --no-session-persistence (interactive sessions maintain state)", () => {
+    const ctx = makeCtx();
+    const argsWithCtx = buildDiscussArgs(ctx);
+    const argsWithoutCtx = buildDiscussArgs();
+
+    assert.ok(!argsWithCtx.includes("--no-session-persistence"), "args with context should not include --no-session-persistence");
+    assert.ok(!argsWithoutCtx.includes("--no-session-persistence"), "args without context should not include --no-session-persistence");
+  });
+
   it("includes all sections in correct order when all provided", () => {
     const ctx = makeCtx({
       plan: "Plan content",

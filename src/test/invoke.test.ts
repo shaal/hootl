@@ -4,6 +4,7 @@ import {
   parseCostFromOutput,
   extractTextOutput,
   buildArgs,
+  getClaudeEnv,
 } from "../invoke.js";
 
 describe("parseCostFromOutput", () => {
@@ -180,5 +181,78 @@ describe("buildArgs", () => {
     const idx = args.indexOf("--max-turns");
     assert.equal(typeof args[idx + 1], "string");
     assert.equal(args[idx + 1], "10");
+  });
+});
+
+describe("getClaudeEnv", () => {
+  it("removes CLAUDECODE from the returned env", (t) => {
+    const original = process.env["CLAUDECODE"];
+    process.env["CLAUDECODE"] = "1";
+    t.after(() => {
+      if (original === undefined) delete process.env["CLAUDECODE"];
+      else process.env["CLAUDECODE"] = original;
+    });
+
+    const env = getClaudeEnv();
+    assert.strictEqual(env["CLAUDECODE"], undefined);
+  });
+
+  it("removes CLAUDE_CODE_ENTRYPOINT from the returned env", (t) => {
+    const original = process.env["CLAUDE_CODE_ENTRYPOINT"];
+    process.env["CLAUDE_CODE_ENTRYPOINT"] = "cli";
+    t.after(() => {
+      if (original === undefined) delete process.env["CLAUDE_CODE_ENTRYPOINT"];
+      else process.env["CLAUDE_CODE_ENTRYPOINT"] = original;
+    });
+
+    const env = getClaudeEnv();
+    assert.strictEqual(env["CLAUDE_CODE_ENTRYPOINT"], undefined);
+  });
+
+  it("removes CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS from the returned env", (t) => {
+    const original = process.env["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"];
+    process.env["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"] = "true";
+    t.after(() => {
+      if (original === undefined) delete process.env["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"];
+      else process.env["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"] = original;
+    });
+
+    const env = getClaudeEnv();
+    assert.strictEqual(env["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"], undefined);
+  });
+
+  it("preserves other environment variables", () => {
+    const env = getClaudeEnv();
+    // PATH and HOME are essentially always set
+    assert.ok(env["PATH"] !== undefined, "PATH should be preserved");
+    assert.ok(env["HOME"] !== undefined, "HOME should be preserved");
+  });
+
+  it("does not crash when nested-session vars are not set", (t) => {
+    const originals = {
+      CLAUDECODE: process.env["CLAUDECODE"],
+      CLAUDE_CODE_ENTRYPOINT: process.env["CLAUDE_CODE_ENTRYPOINT"],
+      CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: process.env["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"],
+    };
+    delete process.env["CLAUDECODE"];
+    delete process.env["CLAUDE_CODE_ENTRYPOINT"];
+    delete process.env["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"];
+    t.after(() => {
+      for (const [key, val] of Object.entries(originals)) {
+        if (val === undefined) delete process.env[key];
+        else process.env[key] = val;
+      }
+    });
+
+    // Should not throw
+    const env = getClaudeEnv();
+    assert.strictEqual(env["CLAUDECODE"], undefined);
+  });
+
+  it("returns a copy, not the original process.env", () => {
+    const env = getClaudeEnv();
+    env["TEST_MUTATION"] = "mutated";
+    assert.strictEqual(process.env["TEST_MUTATION"], undefined);
+    delete env["TEST_MUTATION"];
   });
 });
