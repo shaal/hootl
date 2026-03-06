@@ -311,6 +311,7 @@ export interface HookDeps {
   invoke: typeof invokeClaude;
   log: typeof logCost;
   warn: typeof uiWarn;
+  commit?: (taskId: string, phase: string, message?: string) => Promise<boolean>;
 }
 
 const defaultDeps: HookDeps = {

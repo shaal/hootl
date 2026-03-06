@@ -490,6 +490,7 @@ describe("handleConfidenceMet", () => {
     invoke: async () => ({ output: '{"pass": true}', costUsd: 0, exitCode: 0, durationMs: 50 } as InvokeResult),
     log: async () => {},
     warn: () => {},
+    commit: async () => false,
   };
 
   it("'none' mode sets task to review state", async () => {
@@ -1309,6 +1310,7 @@ describe("handleConfidenceMet hook integration", () => {
         },
         log: async () => {},
         warn: () => {},
+        commit: async () => false,
       };
       const result = await handleConfidenceMet(
         makeTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
@@ -1356,6 +1358,7 @@ describe("handleConfidenceMet hook integration", () => {
         },
         log: async () => {},
         warn: () => {},
+        commit: async () => false,
       };
       const result = await handleConfidenceMet(
         makeTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
@@ -1406,6 +1409,7 @@ describe("handleConfidenceMet hook integration", () => {
         },
         log: async () => {},
         warn: () => {},
+        commit: async () => false,
       };
       const result = await handleConfidenceMet(
         makeTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
@@ -1442,6 +1446,7 @@ describe("handleConfidenceMet hook integration", () => {
         },
         log: async () => {},
         warn: () => {},
+        commit: async () => false,
       };
       const result = await handleConfidenceMet(
         makeTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
@@ -1494,8 +1499,8 @@ describe("handleConfidenceMet hook integration", () => {
         },
         log: async () => {},
         warn: () => {},
+        commit: async () => false,
       };
-      // commitTaskChanges will fail (no real git repo) but that's caught and warned
       // The key assertion is that the re-verify loop runs and proceeds
       const result = await handleConfidenceMet(
         makeTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
@@ -1548,6 +1553,7 @@ describe("handleConfidenceMet hook integration", () => {
         },
         log: async (_dir, _id, phase, cost) => { logCalls.push({ phase, cost }); },
         warn: () => {},
+        commit: async () => false,
       };
       await handleConfidenceMet(
         makeTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,

@@ -445,7 +445,8 @@ export async function handleConfidenceMet(
         // Auto-commit hook changes
         if (taskBranch !== null) {
           try {
-            await commitTaskChanges(task.id, `hook-fix-${reverifyCount}`, `[${task.id}] Apply code quality fixes (re-verify ${reverifyCount})`);
+            const commitFn = hookDeps?.commit ?? commitTaskChanges;
+            await commitFn(task.id, `hook-fix-${reverifyCount}`, `[${task.id}] Apply code quality fixes (re-verify ${reverifyCount})`);
           } catch (err: unknown) {
             uiWarn(`Could not auto-commit hook fixes: ${errorMsg(err)}`);
           }
