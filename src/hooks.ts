@@ -248,7 +248,7 @@ export async function buildHookPrompt(hook: Pick<Hook, "prompt">): Promise<strin
  * using brace-matching (handles markdown code blocks).
  * Supports both old field names (pass, remediationActions) and new ones
  * (passed, fixes_applied, confidence). New names take precedence.
- * Defaults to pass: true if JSON parsing fails (graceful degradation).
+ * Defaults to pass: false if JSON parsing fails (fail-closed).
  */
 export function parseHookResult(output: string): {
   pass: boolean;
@@ -256,7 +256,7 @@ export function parseHookResult(output: string): {
   remediationActions: string[];
   confidence: number | null;
 } {
-  const defaultResult = { pass: true, issues: [] as string[], remediationActions: [] as string[], confidence: null as number | null };
+  const defaultResult = { pass: false, issues: [] as string[], remediationActions: [] as string[], confidence: null as number | null };
 
   if (output.trim() === "") return defaultResult;
 
@@ -290,7 +290,7 @@ export function parseHookResult(output: string): {
       ? record["passed"]
       : typeof record["pass"] === "boolean"
         ? record["pass"]
-        : true;
+        : false;
 
     const issues = Array.isArray(record["issues"])
       ? (record["issues"] as unknown[]).filter((x): x is string => typeof x === "string")

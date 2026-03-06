@@ -273,23 +273,23 @@ That's my assessment.`;
     assert.deepEqual(result.issues, []);
   });
 
-  it("defaults to pass: true on unparseable output", () => {
+  it("defaults to pass: false on unparseable output", () => {
     const result = parseHookResult("This is just plain text with no JSON");
-    assert.equal(result.pass, true);
+    assert.equal(result.pass, false);
     assert.deepEqual(result.issues, []);
     assert.deepEqual(result.remediationActions, []);
   });
 
   it("handles empty string gracefully", () => {
     const result = parseHookResult("");
-    assert.equal(result.pass, true);
+    assert.equal(result.pass, false);
     assert.deepEqual(result.issues, []);
   });
 
-  it("defaults pass to true when field is missing", () => {
+  it("defaults pass to false when field is missing", () => {
     const input = JSON.stringify({ issues: ["something"], remediationActions: [] });
     const result = parseHookResult(input);
-    assert.equal(result.pass, true);
+    assert.equal(result.pass, false);
     assert.deepEqual(result.issues, ["something"]);
   });
 
@@ -323,7 +323,7 @@ That's my assessment.`;
     const input = "{ pass: true, issues: [";
     const result = parseHookResult(input);
     // Falls back to default since JSON.parse fails
-    assert.equal(result.pass, true);
+    assert.equal(result.pass, false);
   });
 
   it("accepts 'passed' as alias for 'pass'", () => {
@@ -554,7 +554,7 @@ describe("runHook", () => {
     const ctx = makeContext();
 
     const result = await runHook(hook, ctx, deps);
-    assert.equal(result.success, true); // graceful degradation
+    assert.equal(result.success, false); // fail-closed: unparseable output blocks
     assert.equal(result.costUsd, 0.005);
   });
 
