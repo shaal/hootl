@@ -27,6 +27,7 @@ import { checkGlobalBudget } from "./budget.js";
 import { discussCommand } from "./discuss.js";
 import { findRunnableTask } from "./selection.js";
 import { syncReviewTasks } from "./sync.js";
+import { notifyWebhook } from "./notify.js";
 import { inferDependencies, resolveIndicesToIds } from "./dependencies.js";
 import {
   generateClarifyingQuestions,
@@ -474,7 +475,7 @@ export async function autoCommand(
   // eslint-disable-next-line no-constant-condition
   while (true) {
     // Sync externally merged branches before each iteration
-    await syncReviewTasks(backend);
+    await syncReviewTasks(backend, config);
 
     // Check global budget before picking a task
     const { exceeded, todayCost } = await checkGlobalBudget(
@@ -523,7 +524,7 @@ async function runCommand(taskId?: string, cliFlags?: { merge?: boolean; noMerge
   const backend = getBackend(config);
 
   // Auto-promote review tasks whose branches have been merged or deleted
-  await syncReviewTasks(backend);
+  await syncReviewTasks(backend, config);
 
   let targetTask: Task | undefined;
 
@@ -622,7 +623,7 @@ async function statusCommand(): Promise<void> {
   const backend = getBackend(config);
 
   // Auto-promote review tasks whose branches have been merged or deleted
-  await syncReviewTasks(backend);
+  await syncReviewTasks(backend, config);
 
   const allTasks = await backend.listTasks();
 
@@ -850,6 +851,14 @@ async function clarifyCommand(): Promise<void> {
           blockers: [],
         });
         uiSuccess(`Task ${task.id} moved back to ready.`);
+        void notifyWebhook({
+          taskId: task.id,
+          title: task.title,
+          oldState: "blocked",
+          newState: "ready",
+          confidence: task.confidence,
+          timestamp: new Date().toISOString(),
+        }, config);
         break;
       }
       case "Mark as ready (blockers resolved)":
@@ -858,6 +867,14 @@ async function clarifyCommand(): Promise<void> {
           blockers: [],
         });
         uiSuccess(`Task ${task.id} moved back to ready.`);
+        void notifyWebhook({
+          taskId: task.id,
+          title: task.title,
+          oldState: "blocked",
+          newState: "ready",
+          confidence: task.confidence,
+          timestamp: new Date().toISOString(),
+        }, config);
         break;
       case "Skip for now":
         break;

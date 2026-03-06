@@ -1,13 +1,15 @@
 import type { TaskBackend } from "./tasks/types.js";
+import type { Config } from "./config.js";
 import { isGitRepo, getBaseBranch, getMergedOrGoneBranches } from "./git.js";
 import { uiSuccess } from "./ui.js";
+import { notifyWebhook } from "./notify.js";
 
 /**
  * Scan review-state tasks and promote to done if their branch has been
  * merged into (or deleted from) the base branch.
  * Runs at most 3 git subprocesses regardless of task count.
  */
-export async function syncReviewTasks(backend: TaskBackend): Promise<number> {
+export async function syncReviewTasks(backend: TaskBackend, config?: Config): Promise<number> {
   if (!(await isGitRepo())) return 0;
 
   const reviewTasks = await backend.listTasks({ state: "review" });
@@ -35,10 +37,30 @@ export async function syncReviewTasks(backend: TaskBackend): Promise<number> {
     if (merged.has(task.branch)) {
       await backend.updateTask(task.id, { state: "done" });
       uiSuccess(`Task ${task.id} branch merged — moved to done.`);
+      if (config) {
+        void notifyWebhook({
+          taskId: task.id,
+          title: task.title,
+          oldState: "review",
+          newState: "done",
+          confidence: task.confidence,
+          timestamp: new Date().toISOString(),
+        }, config);
+      }
       promoted++;
     } else if (gone.has(task.branch)) {
       await backend.updateTask(task.id, { state: "done" });
       uiSuccess(`Task ${task.id} branch removed — moved to done.`);
+      if (config) {
+        void notifyWebhook({
+          taskId: task.id,
+          title: task.title,
+          oldState: "review",
+          newState: "done",
+          confidence: task.confidence,
+          timestamp: new Date().toISOString(),
+        }, config);
+      }
       promoted++;
     }
   }

@@ -2,6 +2,55 @@ import { execa } from "execa";
 import type { Config } from "./config.js";
 
 /**
+ * Payload for webhook notifications on task state transitions.
+ */
+export interface WebhookPayload {
+  taskId: string;
+  title: string;
+  oldState: string;
+  newState: string;
+  confidence: number | null;
+  timestamp: string;
+}
+
+/**
+ * Dependencies for notifyWebhook(), injectable for testing.
+ */
+export interface WebhookDeps {
+  fetchFn: typeof fetch;
+}
+
+const defaultWebhookDeps: WebhookDeps = {
+  fetchFn: fetch,
+};
+
+/**
+ * POST a JSON payload to the configured webhook URL on task state transitions.
+ *
+ * - No-op if config.notifications.webhook is null/empty
+ * - Uses Node 20 native fetch()
+ * - Fire-and-forget: never throws, logs warnings on failure
+ */
+export async function notifyWebhook(
+  payload: WebhookPayload,
+  config: Config,
+  deps: WebhookDeps = defaultWebhookDeps,
+): Promise<void> {
+  const url = config.notifications.webhook;
+  if (!url) return;
+
+  try {
+    await deps.fetchFn(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch {
+    // Webhook failures must never crash the loop
+  }
+}
+
+/**
  * Dependencies for notify(), injectable for testing.
  */
 export interface NotifyDeps {

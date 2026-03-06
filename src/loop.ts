@@ -8,7 +8,7 @@ import { type Task, type TaskBackend, type TaskPriority, type TaskType, TaskPrio
 import { uiInfo, uiWarn, uiError, uiSuccess, uiSpinner, errorMsg } from "./ui.js";
 import { isGitRepo, createTaskBranch, commitTaskChanges, switchBranch, getBaseBranch, getHeadSha, resetToSha, mergeBranch, deleteBranch, pushBranch, createDraftPR, hasUncommittedChanges } from "./git.js";
 import { checkGlobalBudget } from "./budget.js";
-import { notify } from "./notify.js";
+import { notify, notifyWebhook } from "./notify.js";
 import { generateMemoryEntry, appendMemoryEntry } from "./plan-memory.js";
 import { inferDependencies, resolveIndicesToIds } from "./dependencies.js";
 import { runHooks } from "./hooks.js";
@@ -534,12 +534,28 @@ export async function handleConfidenceMet(
       await backend.updateTask(task.id, { state: "done" });
       uiSuccess(`Task ${task.id} merged into ${baseBranch} and moved to done.`);
       await notify("Task Complete", `${task.id}: ${task.title}`, config);
+      void notifyWebhook({
+        taskId: task.id,
+        title: task.title,
+        oldState: "in_progress",
+        newState: "done",
+        confidence: task.confidence,
+        timestamp: new Date().toISOString(),
+      }, config);
       return { state: "done", mergedSuccessfully: true };
     }
     // Merge failed — fall through to 'none' behavior
     uiWarn("Merge failed — falling back to review state.");
     await backend.updateTask(task.id, { state: "review" });
     await notify("Task Ready for Review", `${task.id}: ${task.title}`, config);
+    void notifyWebhook({
+      taskId: task.id,
+      title: task.title,
+      oldState: "in_progress",
+      newState: "review",
+      confidence: task.confidence,
+      timestamp: new Date().toISOString(),
+    }, config);
     return { state: "review", mergedSuccessfully: false };
   }
 
@@ -563,12 +579,28 @@ export async function handleConfidenceMet(
     await backend.updateTask(task.id, { state: "review" });
     uiSuccess(`Task ${task.id} pushed and moved to review.`);
     await notify("Task Ready for Review", `${task.id}: ${task.title}`, config);
+    void notifyWebhook({
+      taskId: task.id,
+      title: task.title,
+      oldState: "in_progress",
+      newState: "review",
+      confidence: task.confidence,
+      timestamp: new Date().toISOString(),
+    }, config);
     return { state: "review", mergedSuccessfully: false };
   }
 
   // 'none' mode or no branch available
   await backend.updateTask(task.id, { state: "review" });
   await notify("Task Ready for Review", `${task.id}: ${task.title}`, config);
+  void notifyWebhook({
+    taskId: task.id,
+    title: task.title,
+    oldState: "in_progress",
+    newState: "review",
+    confidence: task.confidence,
+    timestamp: new Date().toISOString(),
+  }, config);
   return { state: "review", mergedSuccessfully: false };
 }
 
@@ -678,6 +710,14 @@ export async function moveToBlocked(
   await fireHooks("on_blocked", task, taskBranch, baseBranch, confidence, config, hookDeps);
   const updated = await backend.updateTask(task.id, { state: "blocked", blockers });
   await notify("Task Blocked", `${task.id}: ${blockers[0] ?? "unknown reason"}`, config);
+  void notifyWebhook({
+    taskId: task.id,
+    title: task.title,
+    oldState: "in_progress",
+    newState: "blocked",
+    confidence,
+    timestamp: new Date().toISOString(),
+  }, config);
   return updated;
 }
 
@@ -730,6 +770,14 @@ export async function runCompletionLoop(
 
   // Mark task as in_progress
   let currentTask = await backend.updateTask(task.id, { state: "in_progress" });
+  void notifyWebhook({
+    taskId: task.id,
+    title: task.title,
+    oldState: task.state,
+    newState: "in_progress",
+    confidence: task.confidence,
+    timestamp: new Date().toISOString(),
+  }, config);
 
   // Create a task branch if in a git repo
   let taskBranch: string | null = null;
