@@ -5,7 +5,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { autoInit } from "../init.js";
+import { autoInit, TEMPLATE_NAMES } from "../init.js";
 import { ConfigSchema } from "../config.js";
 
 describe("autoInit", () => {
@@ -206,5 +206,118 @@ describe("autoInit", () => {
     assert.ok(exampleTriggers.includes("on_confidence_met"));
     assert.ok(exampleTriggers.includes("on_review_complete"));
     assert.ok(exampleTriggers.includes("on_execute_start"));
+  });
+
+  // --- Template tests ---
+
+  it("TEMPLATE_NAMES exports the three valid template names", () => {
+    assert.deepEqual(TEMPLATE_NAMES.sort(), ["cli-tool", "library", "web-app"]);
+  });
+
+  it("web-app template sets lower confidence target and agent-browser hook", async () => {
+    await autoInit({ template: "web-app" });
+
+    const configContent = await readFile(
+      join(tmpDir, ".hootl", "config.json"),
+      "utf-8",
+    );
+    const config = ConfigSchema.parse(JSON.parse(configContent));
+
+    assert.equal(config.confidence.target, 85);
+    assert.equal(config.hooks.length, 2);
+
+    const simplifyHook = config.hooks[0]!;
+    assert.equal(simplifyHook.trigger, "on_confidence_met");
+    assert.equal(simplifyHook.skill, "simplify");
+    assert.equal(simplifyHook.blocking, true);
+
+    const browserHook = config.hooks[1]!;
+    assert.equal(browserHook.trigger, "on_review_complete");
+    assert.equal(browserHook.skill, "agent-browser");
+    assert.equal(browserHook.blocking, false);
+  });
+
+  it("cli-tool template uses standard defaults", async () => {
+    await autoInit({ template: "cli-tool" });
+
+    const configContent = await readFile(
+      join(tmpDir, ".hootl", "config.json"),
+      "utf-8",
+    );
+    const config = ConfigSchema.parse(JSON.parse(configContent));
+
+    assert.equal(config.confidence.target, 95);
+    assert.equal(config.budgets.maxAttemptsPerTask, 10);
+    assert.deepEqual(config.hooks, []);
+  });
+
+  it("library template sets higher confidence and more attempts", async () => {
+    await autoInit({ template: "library" });
+
+    const configContent = await readFile(
+      join(tmpDir, ".hootl", "config.json"),
+      "utf-8",
+    );
+    const config = ConfigSchema.parse(JSON.parse(configContent));
+
+    assert.equal(config.confidence.target, 98);
+    assert.equal(config.confidence.requireTests, true);
+    assert.equal(config.budgets.maxAttemptsPerTask, 15);
+  });
+
+  it("unknown template name throws with valid names listed", async () => {
+    await assert.rejects(
+      () => autoInit({ template: "unknown" }),
+      (err: Error) => {
+        assert.ok(err.message.includes("Unknown template"));
+        assert.ok(err.message.includes("web-app"));
+        assert.ok(err.message.includes("cli-tool"));
+        assert.ok(err.message.includes("library"));
+        return true;
+      },
+    );
+  });
+
+  it("web-app template skips interactive hook prompt", async () => {
+    await autoInit({
+      interactive: true,
+      template: "web-app",
+      confirm: async () => {
+        throw new Error("confirm should not be called when template provides hooks");
+      },
+    });
+
+    const configContent = await readFile(
+      join(tmpDir, ".hootl", "config.json"),
+      "utf-8",
+    );
+    const config = ConfigSchema.parse(JSON.parse(configContent));
+    // Template hooks are used, not interactive prompt
+    assert.equal(config.hooks.length, 2);
+  });
+
+  it("library template still prompts for hooks interactively", async () => {
+    let confirmCalled = false;
+    await autoInit({
+      interactive: true,
+      template: "library",
+      confirm: async () => {
+        confirmCalled = true;
+        return true;
+      },
+    });
+
+    assert.ok(confirmCalled, "confirm should be called since library template has no hooks");
+
+    const configContent = await readFile(
+      join(tmpDir, ".hootl", "config.json"),
+      "utf-8",
+    );
+    const config = ConfigSchema.parse(JSON.parse(configContent));
+    // Library template doesn't preset hooks, so interactive prompt adds simplify
+    assert.equal(config.hooks.length, 1);
+    assert.equal(config.hooks[0]!.skill, "simplify");
+    // Library-specific settings are still applied
+    assert.equal(config.confidence.target, 98);
   });
 });

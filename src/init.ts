@@ -9,6 +9,8 @@ export interface InitOptions {
   interactive?: boolean;
   /** Override for uiConfirm — used in tests to avoid TTY dependency. */
   confirm?: (question: string) => Promise<boolean>;
+  /** Project template preset to apply (web-app, cli-tool, library). */
+  template?: string;
 }
 
 const DEFAULT_HOOK = {
@@ -16,6 +18,32 @@ const DEFAULT_HOOK = {
   skill: "simplify",
   blocking: true,
 };
+
+/**
+ * Template presets for common project types.
+ * Each template is a partial config object that gets deep-merged into defaults.
+ */
+const TEMPLATES: Record<string, Record<string, unknown>> = {
+  "web-app": {
+    confidence: { target: 85 },
+    hooks: [
+      DEFAULT_HOOK,
+      {
+        trigger: "on_review_complete",
+        skill: "agent-browser",
+        blocking: false,
+      },
+    ],
+  },
+  "cli-tool": {},
+  library: {
+    confidence: { target: 98, requireTests: true },
+    budgets: { maxAttemptsPerTask: 15 },
+  },
+};
+
+/** Valid template names, exported for CLI help text and validation. */
+export const TEMPLATE_NAMES = Object.keys(TEMPLATES);
 
 const HOOKS_EXAMPLE = {
   _comment: "Example hook configurations for .hootl/config.json. Copy the ones you need into your config's 'hooks' array.",
@@ -84,7 +112,22 @@ export async function autoInit(options?: InitOptions): Promise<void> {
 
   const configData: Record<string, unknown> = {};
 
-  if (options?.interactive) {
+  // Apply template preset if specified
+  if (options?.template) {
+    const preset = TEMPLATES[options.template];
+    if (!preset) {
+      throw new Error(
+        `Unknown template "${options.template}". Valid templates: ${TEMPLATE_NAMES.join(", ")}`,
+      );
+    }
+    // Deep-merge template preset into configData
+    for (const [key, value] of Object.entries(preset)) {
+      configData[key] = value;
+    }
+  }
+
+  // Prompt for hooks interactively, but skip if the template already provides hooks
+  if (options?.interactive && !("hooks" in configData)) {
     const confirmFn = options.confirm ?? uiConfirm;
     const enableHook = await confirmFn(
       "Enable default code quality hook (simplify on confidence met)?",

@@ -112,8 +112,8 @@ program
 program
   .command("init")
   .description("Initialize a .hootl/ directory in the current project")
-  .option("--template <name>", "Template name (reserved for future use)")
-  .action(async () => {
+  .option("--template <name>", "Project template (web-app, cli-tool, library)")
+  .action(async (opts: { template?: string }) => {
     try {
       const hootlDir = join(process.cwd(), ".hootl");
 
@@ -122,7 +122,7 @@ program
         return;
       }
 
-      await autoInit({ interactive: true });
+      await autoInit({ interactive: true, template: opts.template });
 
       uiSuccess("Initialized .hootl/ directory.");
       uiInfo("Created: .hootl/config.json, .hootl/tasks/, .hootl/logs/");

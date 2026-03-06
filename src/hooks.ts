@@ -422,8 +422,9 @@ export async function runHooks(
 
   // Debug: trace who is calling runHooks and for which task
   const stack = new Error().stack ?? "";
-  const callerLine = stack.split("\n").slice(2, 4).join(" <- ").trim();
-  process.stderr.write(`[DEBUG runHooks] trigger=${triggerPoint} task=${context.task.id} state=${context.task.state} hooks=${matchingHooks.length} caller=${callerLine}\n`);
+  const debugLine = `${new Date().toISOString()} | trigger=${triggerPoint} | task=${context.task.id} | state=${context.task.state} | hooks=${matchingHooks.length} | pid=${process.pid}\n${stack}\n---\n`;
+  const { appendFile: debugAppend } = await import("node:fs/promises");
+  await debugAppend(".hootl/hooks-debug.log", debugLine).catch(() => {});
 
   for (const hook of matchingHooks) {
     const result = await runHook(hook, context, deps);
