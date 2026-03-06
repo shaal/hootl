@@ -104,16 +104,39 @@ Context bridges between fresh `claude -p` calls via files in `.hootl/tasks/<id>/
 On restart, the loop detects interrupted phases via `checkpoint.json` in the task directory. Before each phase (preflight, plan, execute, review), `writeCheckpoint()` atomically writes the current phase name and attempt number. On resume:
 
 - `readCheckpoint()` detects the interrupted phase and logs a recovery message
-- If the execute phase was interrupted, `hasUncommittedChanges()` checks for leftover changes and auto-commits them with a recovery message (appended to `progress.md`)
+- If the execute phase was interrupted, `hasUncommittedChanges()` checks for leftover changes and auto-commits them with a recovery message (appended to `progress.md`). In worktree mode, `task.worktree` is used as `cwd` for these operations.
 - If a plan exists from an interrupted execute/review phase, the log notes it will skip re-planning
 - The stale checkpoint is cleared before the loop writes fresh ones
 - `clearCheckpoint()` runs on normal exit to clean up
 
 All checkpoint operations are wrapped in try/catch — checkpoint failures never block the loop. Uses the same atomic tmp + rename pattern as `local.ts`.
 
-### Branch-Switch Safety
+### Git Worktree Mode
 
-Before the loop begins, `runCompletionLoop` creates or switches to the task branch. If the branch switch fails (e.g., uncommitted changes would be overwritten), the task moves to `blocked` with a descriptive message and the loop returns immediately — no phases run on the wrong branch. The blocker message distinguishes dirty-worktree errors ("Commit or stash your changes") from other git failures. The user can resolve the issue and re-run.
+When `config.git.useWorktrees` is `true`, tasks run in isolated git worktrees instead of switching branches in the main working tree. This allows multiple tasks to run without affecting the developer's checkout.
+
+**How it works:**
+- `runCompletionLoop` creates a worktree at `.hootl/worktrees/<taskId>/` via `createWorktree()` in `src/git.ts`
+- All `invokeClaude()` calls (preflight, plan, execute, review, hooks) receive `cwd: worktreePath`
+- All git operations (`commitTaskChanges`, `getHeadSha`, `resetToSha`) receive `cwd: worktreePath`
+- The main working tree is **never touched** — no branch switching, no dirty-worktree risk
+- Task metadata (`.hootl/tasks/<id>/`) stays in the main tree (gitignored, persists across worktree lifecycle)
+- The `task.worktree` field stores the worktree path for crash recovery
+
+**Worktree lifecycle:**
+- Created when the task starts (or reused if already exists — resume case)
+- `merge` mode: worktree removed after successful merge + branch deletion
+- `pr` mode: worktree kept alive until PR is merged (user may get review feedback)
+- `blocked` state: worktree kept alive (user may want to inspect)
+- Crash recovery uses `task.worktree` to pass `cwd` to `hasUncommittedChanges()` and `commitTaskChanges()`
+
+**Config:** `git.useWorktrees: true` (default: `false`). Env var: `HOOTL_GIT_USE_WORKTREES`.
+
+**Git functions with `cwd` support:** `commitTaskChanges`, `getHeadSha`, `resetToSha`, `hasUncommittedChanges`, `pushBranch`, `mergeBranch`, `deleteBranch`, `generateCommitMessage`. All default to `undefined` (current directory) for backward compatibility.
+
+### Branch-Switch Safety (non-worktree mode only)
+
+Before the loop begins, `runCompletionLoop` creates or switches to the task branch. If the branch switch fails (e.g., uncommitted changes would be overwritten), the task moves to `blocked` with a descriptive message and the loop returns immediately — no phases run on the wrong branch. The blocker message distinguishes dirty-worktree errors ("Commit or stash your changes") from other git failures. The user can resolve the issue and re-run. In worktree mode, this safety check is unnecessary since the main working tree is never modified.
 
 ### Rollback Safety (confidence regression)
 
@@ -211,7 +234,7 @@ Three layers, merged with deep-merge (later wins):
 2. `.hootl/config.json` (project)
 3. `HOOTL_*` environment variables
 
-Key defaults: perSession=$0.50, perTask=$5.00, global=$50.00, maxAttempts=10, confidenceTarget=95%. `git.onConfidence` defaults to null (inferred from `auto.defaultLevel`). Env var: `HOOTL_GIT_ON_CONFIDENCE`. `notifications.webhook` — webhook URL for state transition notifications (default: null). Env var: `HOOTL_NOTIFICATIONS_WEBHOOK`.
+Key defaults: perSession=$0.50, perTask=$5.00, global=$50.00, maxAttempts=10, confidenceTarget=95%. `git.onConfidence` defaults to null (inferred from `auto.defaultLevel`). Env var: `HOOTL_GIT_ON_CONFIDENCE`. `git.useWorktrees` defaults to `false`. Env var: `HOOTL_GIT_USE_WORKTREES`. `notifications.webhook` — webhook URL for state transition notifications (default: null). Env var: `HOOTL_NOTIFICATIONS_WEBHOOK`.
 
 ### Hooks & Skills
 
@@ -417,7 +440,7 @@ Test coverage:
 - **invoke-robustness.test.ts** -- Timeout handling, `is_error` detection, edge cases, `isTransientError` detection (timeout exit code, rate limit, 429, ECONNREFUSED, ENOTFOUND, ETIMEDOUT, ECONNRESET, success bypass, non-transient bypass, case insensitivity), retry constants and backoff pattern verification
 - **local-backend.test.ts** -- Task CRUD, filtering, atomic writes
 - **loop.test.ts** -- Review JSON parsing (inline, code-block, nested, remediationPlan), prompt building, preflight integration (understanding.md in execute prompt), confidence regression detection, global budget integration, preflight subtask priority parsing, too_broad subtask auto-creation (priority inheritance, ready state, parent ready with dependencies, understanding.md cleanup, dependency accumulation), handleConfidenceMet hook integration (blocking failure returns in_progress without state update, context forwarding, cost logging with trigger label, re-verification on fixes_applied with above-target confidence, re-verify confidence drop returns in_progress with remediation plan, re-verification capped at MAX_REVERIFICATIONS, no re-verification when no fixes_applied, re-verify auto-commits hook changes via hookDeps.commit, re-verify cost logged with re-verify phase label), fireHooks (context propagation, no-op on empty hooks, error swallowing), moveToBlocked (on_blocked hook firing, error resilience, blocker forwarding)
-- **git.test.ts** -- Slugify edge cases, branch name construction, getHeadSha, resetToSha rollback, getMergedOrGoneBranches (gone, merged, unmerged, mixed batch, empty input), generateCommitMessage (Claude-generated with prefix, whitespace stripping, fallback on throw/empty, diff truncation, multi-line enforcement, 120-char cap, stat summary in prompt, phase in fallback), commitTaskChanges (DI-based diff capture, fallback on failure, no-op on clean, explicit message bypass)
+- **git.test.ts** -- Slugify edge cases, branch name construction, getHeadSha, resetToSha rollback, getMergedOrGoneBranches (gone, merged, unmerged, mixed batch, empty input), generateCommitMessage (Claude-generated with prefix, whitespace stripping, fallback on throw/empty, diff truncation, multi-line enforcement, 120-char cap, stat summary in prompt, phase in fallback), commitTaskChanges (DI-based diff capture, fallback on failure, no-op on clean, explicit message bypass), createWorktree (new branch, existing branch, reuse existing path), removeWorktree (removes existing, no-op on missing), worktreeExists (valid worktree, non-existent path, non-worktree directory), git operations with cwd (commitTaskChanges via worktree, getHeadSha/resetToSha via worktree)
 - **sync.test.ts** -- Review task sync: branch merged+deleted promotes to done, branch merged but exists promotes to done, unmerged branch stays review, null branch skipped, no review tasks returns 0
 - **discuss.test.ts** -- buildDiscussArgs, system prompt construction, section ordering
 - **dependencies.test.ts** -- Dependency inference (explicit indices, heuristic fallback, cycle detection, out-of-range filtering), keyword extraction, index-to-ID resolution
@@ -432,7 +455,7 @@ Test coverage:
 - **checkpoint.test.ts** -- Checkpoint write (valid JSON, atomic overwrite, error resilience), read (valid file, missing file, invalid JSON, missing fields, wrong types), clear (removes file, no-op if missing), round-trip (write+read, clear+read)
 - **auto-init.test.ts** -- Init directory creation, no-op on existing, config defaults, interactive hook prompt (accept/decline), hooks-example.json content, template presets (web-app lower confidence + agent-browser hook, cli-tool standard defaults, library higher confidence + more attempts), unknown template rejection, template hook prompt skipping, TEMPLATE_NAMES export
 - **auto.test.ts** -- Auto command task selection loop (empty queue, sequential picks, in_progress preference, dependency skipping), budget gate (exceeded stops, headroom continues, missing CSV), level validation (all four levels accepted by config schema)
-- **branch-block.test.ts** -- Integration test: dirty worktree blocks task on branch switch (real git repo), clean worktree proceeds past branch creation
+- **branch-block.test.ts** -- Integration test: dirty worktree blocks task on branch switch (real git repo), dirty worktree does NOT block in worktree mode (isolation verification), clean worktree proceeds past branch creation
 - **notify.test.ts** -- OS notification: config gating (osNotify false → no-op), platform detection (darwin → osascript, linux → notify-send, win32 → no-op), error resilience (execa failure swallowed), osascript quote/backslash escaping, linux raw passthrough. Webhook: no-op on null/empty webhook URL, correct POST payload and headers, error resilience (fetch throw, non-2xx), null confidence handling
 
 ## Dependencies

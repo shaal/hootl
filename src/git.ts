@@ -1,3 +1,4 @@
+import { existsSync, realpathSync } from "node:fs";
 import { execa } from "execa";
 import { uiInfo, uiWarn, errorMsg } from "./ui.js";
 import { invokeClaude } from "./invoke.js";
@@ -5,7 +6,7 @@ import type { InvokeResult } from "./invoke.js";
 
 /** Dependency injection interface for generateCommitMessage (testability). */
 export interface CommitMessageDeps {
-  invoke: (options: { prompt: string; systemPrompt?: string; maxTurns?: number }) => Promise<InvokeResult>;
+  invoke: (options: { prompt: string; systemPrompt?: string; maxTurns?: number; cwd?: string }) => Promise<InvokeResult>;
 }
 
 const DEFAULT_MAX_DIFF_LENGTH = 8000;
@@ -23,6 +24,7 @@ export async function generateCommitMessage(
   deps?: CommitMessageDeps,
   maxDiffLength?: number,
   stat?: string,
+  cwd?: string,
 ): Promise<string> {
   const fallback = `[${taskId}] ${phase}: automated changes`;
   const limit = maxDiffLength ?? DEFAULT_MAX_DIFF_LENGTH;
@@ -36,6 +38,7 @@ export async function generateCommitMessage(
       prompt: `Write a concise git commit message (one line, no prefix, no quotes) summarizing these changes:\n\n${statSection}${truncatedDiff}`,
       systemPrompt: "You are a commit message generator. Output ONLY the commit message text, nothing else. No quotes, no explanation. Single line only.",
       maxTurns: 1,
+      ...(cwd ? { cwd } : {}),
     });
 
     const rawMessage = result.output.trim();
@@ -101,15 +104,17 @@ export async function createTaskBranch(taskId: string, taskTitle: string, prefix
   return branchName;
 }
 
-export async function commitTaskChanges(taskId: string, phase: string, message?: string, deps?: CommitMessageDeps): Promise<boolean> {
+export async function commitTaskChanges(taskId: string, phase: string, message?: string, deps?: CommitMessageDeps, cwd?: string): Promise<boolean> {
+  const execOpts = cwd ? { cwd } : {};
+
   // Check if there are any changes to commit
-  const status = await execa("git", ["status", "--porcelain"]);
+  const status = await execa("git", ["status", "--porcelain"], execOpts);
   if (status.stdout.trim() === "") {
     return false; // Nothing to commit
   }
 
   // Stage all changes
-  await execa("git", ["add", "-A"]);
+  await execa("git", ["add", "-A"], execOpts);
 
   let commitMessage: string;
   if (message) {
@@ -118,28 +123,28 @@ export async function commitTaskChanges(taskId: string, phase: string, message?:
     // Read the staged diff (full + stat summary) and generate a meaningful commit message via Claude
     try {
       const [diffResult, statResult] = await Promise.all([
-        execa("git", ["diff", "--cached"]),
-        execa("git", ["diff", "--cached", "--stat"]),
+        execa("git", ["diff", "--cached"], execOpts),
+        execa("git", ["diff", "--cached", "--stat"], execOpts),
       ]);
-      commitMessage = await generateCommitMessage(taskId, phase, diffResult.stdout, deps, undefined, statResult.stdout);
+      commitMessage = await generateCommitMessage(taskId, phase, diffResult.stdout, deps, undefined, statResult.stdout, cwd);
     } catch (err: unknown) {
       uiWarn(`Could not read staged diff for commit message: ${errorMsg(err)}`);
       commitMessage = `[${taskId}] ${phase}: automated changes`;
     }
   }
 
-  await execa("git", ["commit", "-m", commitMessage]);
+  await execa("git", ["commit", "-m", commitMessage], execOpts);
   uiInfo(`Committed: ${commitMessage}`);
   return true;
 }
 
-export async function getHeadSha(): Promise<string> {
-  const result = await execa("git", ["rev-parse", "HEAD"]);
+export async function getHeadSha(cwd?: string): Promise<string> {
+  const result = await execa("git", ["rev-parse", "HEAD"], cwd ? { cwd } : {});
   return result.stdout.trim();
 }
 
-export async function resetToSha(sha: string): Promise<void> {
-  await execa("git", ["reset", "--hard", sha]);
+export async function resetToSha(sha: string, cwd?: string): Promise<void> {
+  await execa("git", ["reset", "--hard", sha], cwd ? { cwd } : {});
 }
 
 export async function switchBranch(branchName: string): Promise<void> {
@@ -157,21 +162,22 @@ export async function getBaseBranch(): Promise<string> {
   return getCurrentBranch();
 }
 
-export async function mergeBranch(taskBranch: string, baseBranch: string): Promise<boolean> {
+export async function mergeBranch(taskBranch: string, baseBranch: string, cwd?: string): Promise<boolean> {
+  const execOpts = cwd ? { cwd } : {};
   try {
-    await execa("git", ["checkout", baseBranch]);
-    await execa("git", ["merge", taskBranch]);
+    await execa("git", ["checkout", baseBranch], execOpts);
+    await execa("git", ["merge", taskBranch], execOpts);
     return true;
   } catch (err: unknown) {
     uiWarn(`Merge failed: ${errorMsg(err)}`);
     // Abort any in-progress merge and try to get back to a clean state
     try {
-      await execa("git", ["merge", "--abort"]);
+      await execa("git", ["merge", "--abort"], execOpts);
     } catch {
       // merge --abort may fail if there's no merge in progress
     }
     try {
-      await execa("git", ["checkout", taskBranch]);
+      await execa("git", ["checkout", taskBranch], execOpts);
     } catch {
       // best effort to get back to task branch
     }
@@ -179,17 +185,17 @@ export async function mergeBranch(taskBranch: string, baseBranch: string): Promi
   }
 }
 
-export async function deleteBranch(branchName: string): Promise<void> {
+export async function deleteBranch(branchName: string, cwd?: string): Promise<void> {
   try {
-    await execa("git", ["branch", "-d", branchName]);
+    await execa("git", ["branch", "-d", branchName], cwd ? { cwd } : {});
   } catch (err: unknown) {
     uiWarn(`Could not delete branch ${branchName}: ${errorMsg(err)}`);
   }
 }
 
-export async function pushBranch(branchName: string): Promise<boolean> {
+export async function pushBranch(branchName: string, cwd?: string): Promise<boolean> {
   try {
-    await execa("git", ["push", "-u", "origin", branchName]);
+    await execa("git", ["push", "-u", "origin", branchName], cwd ? { cwd } : {});
     return true;
   } catch (err: unknown) {
     uiWarn(`Push failed: ${errorMsg(err)}`);
@@ -235,9 +241,9 @@ export async function getMergedOrGoneBranches(branchNames: string[], baseBranch:
 }
 
 /** Check if the working tree has uncommitted changes (staged or unstaged). */
-export async function hasUncommittedChanges(): Promise<boolean> {
+export async function hasUncommittedChanges(cwd?: string): Promise<boolean> {
   try {
-    const result = await execa("git", ["status", "--porcelain"]);
+    const result = await execa("git", ["status", "--porcelain"], cwd ? { cwd } : {});
     return result.stdout.trim().length > 0;
   } catch {
     return false;
@@ -248,6 +254,78 @@ async function isGhAvailable(): Promise<boolean> {
   try {
     await execa("gh", ["--version"]);
     return true;
+  } catch {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Git Worktree support
+// ---------------------------------------------------------------------------
+
+/**
+ * Creates a git worktree at the specified path on a new or existing branch.
+ * If the worktree path already exists (resume case), logs and returns.
+ * If the branch already exists, attaches the worktree to it.
+ * Otherwise, creates a new branch from baseBranch.
+ */
+export async function createWorktree(baseBranch: string, branchName: string, worktreePath: string): Promise<void> {
+  if (existsSync(worktreePath)) {
+    uiInfo(`Worktree already exists at ${worktreePath} — reusing`);
+    return;
+  }
+
+  if (await branchExists(branchName)) {
+    uiInfo(`Creating worktree at ${worktreePath} for existing branch ${branchName}`);
+    await execa("git", ["worktree", "add", worktreePath, branchName]);
+  } else {
+    uiInfo(`Creating worktree at ${worktreePath} with new branch ${branchName} from ${baseBranch}`);
+    await execa("git", ["worktree", "add", "-b", branchName, worktreePath, baseBranch]);
+  }
+}
+
+/**
+ * Removes a git worktree at the specified path. Wrapped in try/catch for safety.
+ */
+export async function removeWorktree(worktreePath: string): Promise<void> {
+  try {
+    await execa("git", ["worktree", "remove", worktreePath, "--force"]);
+    uiInfo(`Removed worktree at ${worktreePath}`);
+  } catch (err: unknown) {
+    uiWarn(`Could not remove worktree at ${worktreePath}: ${errorMsg(err)}`);
+  }
+}
+
+/**
+ * Checks if a path is a valid git worktree by checking the filesystem
+ * and verifying it appears in `git worktree list`.
+ */
+export async function worktreeExists(worktreePath: string): Promise<boolean> {
+  if (!existsSync(worktreePath)) return false;
+  try {
+    const result = await execa("git", ["worktree", "list", "--porcelain"]);
+    // Resolve symlinks for comparison (macOS /var → /private/var)
+    const resolvedTarget = realpathSync(worktreePath);
+    // Porcelain output has "worktree <path>" lines
+    const lines = result.stdout.split("\n");
+    for (const line of lines) {
+      if (line.startsWith("worktree ")) {
+        const listedPath = line.slice(9).trim();
+        // Compare both raw and resolved paths to handle symlinks
+        if (listedPath === worktreePath || listedPath === resolvedTarget) {
+          return true;
+        }
+        // Also resolve the listed path in case it's the one with symlinks
+        try {
+          if (existsSync(listedPath) && realpathSync(listedPath) === resolvedTarget) {
+            return true;
+          }
+        } catch {
+          // Ignore resolution failures for individual entries
+        }
+      }
+    }
+    return false;
   } catch {
     return false;
   }

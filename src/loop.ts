@@ -6,7 +6,7 @@ import { invokeClaude, logCost } from "./invoke.js";
 import { type Config, type OnConfidenceMode, getProjectDir, resolveOnConfidenceMode } from "./config.js";
 import { type Task, type TaskBackend, type TaskPriority, type TaskType, TaskPriority as TaskPriorityEnum, TaskType as TaskTypeEnum } from "./tasks/types.js";
 import { uiInfo, uiWarn, uiError, uiSuccess, uiSpinner, errorMsg } from "./ui.js";
-import { isGitRepo, createTaskBranch, commitTaskChanges, switchBranch, getBaseBranch, getHeadSha, resetToSha, mergeBranch, deleteBranch, pushBranch, createDraftPR, hasUncommittedChanges } from "./git.js";
+import { isGitRepo, createTaskBranch, commitTaskChanges, switchBranch, getBaseBranch, getHeadSha, resetToSha, mergeBranch, deleteBranch, pushBranch, createDraftPR, hasUncommittedChanges, slugify, createWorktree, removeWorktree } from "./git.js";
 import { checkGlobalBudget } from "./budget.js";
 import { notify, notifyWebhook } from "./notify.js";
 import { generateMemoryEntry, appendMemoryEntry } from "./plan-memory.js";
@@ -406,6 +406,7 @@ export async function handleConfidenceMet(
   cliFlags: CliFlags,
   hookDeps?: HookDeps,
   verbose = false,
+  worktreePath?: string,
 ): Promise<{ state: "done" | "review" | "in_progress"; mergedSuccessfully: boolean }> {
   // Run on_confidence_met hooks before proceeding with merge/PR/none.
   // If no hooks are configured, inject the default simplify hook as a blocking validator.
@@ -422,6 +423,7 @@ export async function handleConfidenceMet(
         baseBranch: baseBranch ?? "main",
         confidence: task.confidence,
         config,
+        ...(worktreePath ? { cwd: worktreePath } : {}),
       };
       const effectiveConfig = { ...config, hooks: effectiveHooks };
       const hookResult = hookDeps
@@ -446,7 +448,7 @@ export async function handleConfidenceMet(
         if (taskBranch !== null) {
           try {
             const commitFn = hookDeps?.commit ?? commitTaskChanges;
-            await commitFn(task.id, `hook-fix-${reverifyCount}`, `[${task.id}] Apply code quality fixes (re-verify ${reverifyCount})`);
+            await commitFn(task.id, `hook-fix-${reverifyCount}`, `[${task.id}] Apply code quality fixes (re-verify ${reverifyCount})`, undefined, worktreePath);
           } catch (err: unknown) {
             uiWarn(`Could not auto-commit hook fixes: ${errorMsg(err)}`);
           }
@@ -462,12 +464,14 @@ export async function handleConfidenceMet(
               systemPrompt: reviewSystemPrompt,
               maxTurns: 20,
               verbose,
+              ...(worktreePath ? { cwd: worktreePath } : {}),
             })
           : await invokeClaude({
               prompt: reviewUserPrompt,
               systemPrompt: reviewSystemPrompt,
               maxTurns: 20,
               verbose,
+              ...(worktreePath ? { cwd: worktreePath } : {}),
             });
 
         // Log re-verify cost
@@ -495,6 +499,7 @@ export async function handleConfidenceMet(
             baseBranch: baseBranch ?? "main",
             confidence: review.confidence,
             config,
+            ...(worktreePath ? { cwd: worktreePath } : {}),
           };
           const reHookResult = hookDeps
             ? await runHooks("on_confidence_met", reHookContext, effectiveConfig, hookDeps)
@@ -528,9 +533,15 @@ export async function handleConfidenceMet(
   const mode: OnConfidenceMode = resolveOnConfidenceMode(config, cliFlags.merge, cliFlags.noMerge);
 
   if (mode === "merge" && taskBranch !== null && baseBranch !== null) {
+    // Merge from the main working tree (not the worktree), since we need to checkout baseBranch
     const merged = await mergeBranch(taskBranch, baseBranch);
     if (merged) {
       await deleteBranch(taskBranch);
+      // Clean up worktree after successful merge
+      if (worktreePath) {
+        await removeWorktree(worktreePath);
+        await backend.updateTask(task.id, { worktree: null });
+      }
       await backend.updateTask(task.id, { state: "done" });
       uiSuccess(`Task ${task.id} merged into ${baseBranch} and moved to done.`);
       await notify("Task Complete", `${task.id}: ${task.title}`, config);
@@ -560,7 +571,8 @@ export async function handleConfidenceMet(
   }
 
   if (mode === "pr" && taskBranch !== null) {
-    const pushed = await pushBranch(taskBranch);
+    // Push from the worktree if available, otherwise from cwd
+    const pushed = await pushBranch(taskBranch, worktreePath);
     if (pushed) {
       const progress = await readFileOrEmpty(join(taskDir, "progress.md"));
       const body = [
@@ -676,6 +688,7 @@ export async function fireHooks(
   confidence: number,
   config: Config,
   hookDeps?: HookDeps,
+  cwd?: string,
 ): Promise<void> {
   if (config.hooks.length === 0) return;
   try {
@@ -685,6 +698,7 @@ export async function fireHooks(
       baseBranch: baseBranch ?? "main",
       confidence,
       config,
+      ...(cwd ? { cwd } : {}),
     };
     if (hookDeps) {
       await runHooks(trigger, hookContext, config, hookDeps);
@@ -706,8 +720,9 @@ export async function moveToBlocked(
   confidence: number,
   config: Config,
   hookDeps?: HookDeps,
+  cwd?: string,
 ): Promise<Task> {
-  await fireHooks("on_blocked", task, taskBranch, baseBranch, confidence, config, hookDeps);
+  await fireHooks("on_blocked", task, taskBranch, baseBranch, confidence, config, hookDeps, cwd);
   const updated = await backend.updateTask(task.id, { state: "blocked", blockers });
   await notify("Task Blocked", `${task.id}: ${blockers[0] ?? "unknown reason"}`, config);
   void notifyWebhook({
@@ -739,12 +754,14 @@ export async function runCompletionLoop(
   if (checkpoint !== null) {
     uiInfo(`Resuming from interrupted ${checkpoint.phase} phase (attempt ${checkpoint.attempt})`);
 
-    // If the execute phase was interrupted, check for uncommitted changes
+    // If the execute phase was interrupted, check for uncommitted changes.
+    // Use the task's stored worktree path if available (for worktree mode).
     if (checkpoint.phase === "execute") {
       try {
-        if (await hasUncommittedChanges()) {
+        const recoveryCwd = task.worktree ?? undefined;
+        if (await hasUncommittedChanges(recoveryCwd)) {
           uiInfo("Detected uncommitted changes from interrupted execute phase — auto-committing.");
-          await commitTaskChanges(task.id, "recovery", `[${task.id}] recovery: uncommitted changes from interrupted execute phase`);
+          await commitTaskChanges(task.id, "recovery", `[${task.id}] recovery: uncommitted changes from interrupted execute phase`, undefined, recoveryCwd);
           await appendFile(
             join(taskDir, "progress.md"),
             `\n\n---\n\n## Recovery\n\nProcess was interrupted during execute phase (attempt ${checkpoint.attempt}). Uncommitted changes were auto-committed.\n`,
@@ -779,22 +796,40 @@ export async function runCompletionLoop(
     timestamp: new Date().toISOString(),
   }, config);
 
-  // Create a task branch if in a git repo
+  // Create a task branch (or worktree) if in a git repo
   let taskBranch: string | null = null;
   let baseBranch: string | null = null;
+  let worktreePath: string | undefined;
+  const useWorktrees = config.git.useWorktrees;
+
   if (await isGitRepo()) {
     try {
       baseBranch = await getBaseBranch();
-      taskBranch = await createTaskBranch(task.id, task.title, config.git.branchPrefix);
-      currentTask = await backend.updateTask(task.id, { branch: taskBranch });
+      const branchName = `${config.git.branchPrefix}${task.id}-${slugify(task.title)}`;
+
+      if (useWorktrees) {
+        worktreePath = join(getProjectDir(), "worktrees", task.id);
+        await createWorktree(baseBranch, branchName, worktreePath);
+        taskBranch = branchName;
+        currentTask = await backend.updateTask(task.id, { branch: taskBranch, worktree: worktreePath });
+      } else {
+        taskBranch = await createTaskBranch(task.id, task.title, config.git.branchPrefix);
+        currentTask = await backend.updateTask(task.id, { branch: taskBranch });
+      }
     } catch (err: unknown) {
       const msg = errorMsg(err);
       uiWarn(`Could not create task branch: ${msg}`);
-      const isDirtyWorktree = msg.includes("local changes") || msg.includes("Please commit your changes or stash");
-      const blocker = isDirtyWorktree
-        ? "Cannot switch to task branch: uncommitted changes would be overwritten. Commit or stash your changes, then re-run."
-        : `Cannot switch to task branch: ${msg}`;
-      await moveToBlocked(backend, task, [blocker], null, baseBranch, 0, config, hookDeps);
+      if (useWorktrees) {
+        // Worktree creation failures don't involve dirty worktree issues
+        const blocker = `Cannot create worktree: ${msg}`;
+        await moveToBlocked(backend, task, [blocker], null, baseBranch, 0, config, hookDeps);
+      } else {
+        const isDirtyWorktree = msg.includes("local changes") || msg.includes("Please commit your changes or stash");
+        const blocker = isDirtyWorktree
+          ? "Cannot switch to task branch: uncommitted changes would be overwritten. Commit or stash your changes, then re-run."
+          : `Cannot switch to task branch: ${msg}`;
+        await moveToBlocked(backend, task, [blocker], null, baseBranch, 0, config, hookDeps);
+      }
       return;
     }
   }
@@ -834,6 +869,7 @@ export async function runCompletionLoop(
           systemPrompt: preflightSystemPrompt,
           maxTurns: 20,
           verbose,
+          ...(worktreePath ? { cwd: worktreePath } : {}),
         }),
       );
 
@@ -871,7 +907,7 @@ export async function runCompletionLoop(
             uiSuccess(`Preflight: task too broad — created ${createdIds.length} subtasks (${idList}); parent waiting on dependencies`);
             await recordMemory(updatedTask, getProjectDir());
           }
-          if (baseBranch !== null && taskBranch !== null) {
+          if (!useWorktrees && baseBranch !== null && taskBranch !== null) {
             try { await switchBranch(baseBranch); } catch { /* best-effort */ }
           }
           return;
@@ -883,7 +919,7 @@ export async function runCompletionLoop(
             blockers: [...currentTask.blockers, blockerMsg],
           });
           await recordMemory(updatedTask, getProjectDir());
-          if (baseBranch !== null && taskBranch !== null) {
+          if (!useWorktrees && baseBranch !== null && taskBranch !== null) {
             try { await switchBranch(baseBranch); } catch { /* best-effort */ }
           }
           return;
@@ -895,7 +931,7 @@ export async function runCompletionLoop(
             blockers: [...currentTask.blockers, blockerMsg],
           });
           await recordMemory(updatedTask, getProjectDir());
-          if (baseBranch !== null && taskBranch !== null) {
+          if (!useWorktrees && baseBranch !== null && taskBranch !== null) {
             try { await switchBranch(baseBranch); } catch { /* best-effort */ }
           }
           return;
@@ -916,7 +952,7 @@ export async function runCompletionLoop(
       );
       const updatedBudgetTask = await moveToBlocked(
         backend, currentTask, [...currentTask.blockers, "Per-task budget exhausted"],
-        taskBranch, baseBranch, currentTask.confidence, config, hookDeps,
+        taskBranch, baseBranch, currentTask.confidence, config, hookDeps, worktreePath,
       );
       await recordMemory(updatedBudgetTask, getProjectDir());
       break;
@@ -930,7 +966,7 @@ export async function runCompletionLoop(
       );
       const updatedGlobalTask = await moveToBlocked(
         backend, currentTask, [...currentTask.blockers, "Global daily budget exhausted"],
-        taskBranch, baseBranch, currentTask.confidence, config, hookDeps,
+        taskBranch, baseBranch, currentTask.confidence, config, hookDeps, worktreePath,
       );
       await recordMemory(updatedGlobalTask, getProjectDir());
       break;
@@ -953,7 +989,7 @@ export async function runCompletionLoop(
       );
       const updatedAttemptsTask = await moveToBlocked(
         backend, currentTask, [...currentTask.blockers, "Max attempts exhausted"],
-        taskBranch, baseBranch, currentTask.confidence, config, hookDeps,
+        taskBranch, baseBranch, currentTask.confidence, config, hookDeps, worktreePath,
       );
       await recordMemory(updatedAttemptsTask, getProjectDir());
       break;
@@ -986,6 +1022,7 @@ export async function runCompletionLoop(
             systemPrompt: planSystemPrompt,
             maxTurns: 20,
             verbose,
+            ...(worktreePath ? { cwd: worktreePath } : {}),
           }),
         );
 
@@ -1017,14 +1054,14 @@ export async function runCompletionLoop(
       let preExecuteSha: string | null = null;
       if (taskBranch !== null) {
         try {
-          preExecuteSha = await getHeadSha();
+          preExecuteSha = await getHeadSha(worktreePath);
         } catch (err: unknown) {
           uiWarn(`Could not record pre-execute SHA: ${errorMsg(err)}`);
         }
       }
 
       // Run on_execute_start hooks before Phase 2
-      await fireHooks("on_execute_start", currentTask, taskBranch, baseBranch, previousConfidence ?? 0, config, hookDeps);
+      await fireHooks("on_execute_start", currentTask, taskBranch, baseBranch, previousConfidence ?? 0, config, hookDeps, worktreePath);
 
       // Phase 2: EXECUTE
       await writeCheckpoint(taskDir, "execute", attempt);
@@ -1038,6 +1075,7 @@ export async function runCompletionLoop(
           systemPrompt: executeSystemPrompt,
           maxTurns: 50,
           verbose,
+          ...(worktreePath ? { cwd: worktreePath } : {}),
         }),
       );
 
@@ -1064,7 +1102,7 @@ export async function runCompletionLoop(
       // Auto-commit after execute phase
       if (taskBranch !== null) {
         try {
-          await commitTaskChanges(task.id, `attempt-${attempt}`);
+          await commitTaskChanges(task.id, `attempt-${attempt}`, undefined, undefined, worktreePath);
         } catch (err: unknown) {
           uiWarn(`Could not auto-commit: ${errorMsg(err)}`);
         }
@@ -1091,6 +1129,7 @@ export async function runCompletionLoop(
           systemPrompt: reviewSystemPrompt,
           maxTurns: 20,
           verbose,
+          ...(worktreePath ? { cwd: worktreePath } : {}),
         }),
       );
 
@@ -1129,13 +1168,13 @@ export async function runCompletionLoop(
       }
 
       // Run on_review_complete hooks after review parsing
-      await fireHooks("on_review_complete", currentTask, taskBranch, baseBranch, review.confidence, config, hookDeps);
+      await fireHooks("on_review_complete", currentTask, taskBranch, baseBranch, review.confidence, config, hookDeps, worktreePath);
 
       // Rollback safety: detect confidence regression
       if (isConfidenceRegression(review.confidence, previousConfidence) && preExecuteSha !== null) {
         uiWarn(`Confidence regressed: ${review.confidence}% < ${previousConfidence}% (previous). Rolling back.`);
         try {
-          await resetToSha(preExecuteSha);
+          await resetToSha(preExecuteSha, worktreePath);
           uiInfo(`Rolled back to ${preExecuteSha.slice(0, 8)}`);
         } catch (rollbackErr: unknown) {
           uiError(`Rollback failed: ${rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)}`);
@@ -1147,7 +1186,7 @@ export async function runCompletionLoop(
         const updatedRegressionTask = await moveToBlocked(
           backend, currentTask,
           [...currentTask.blockers, `Confidence regression: ${review.confidence}% < ${previousConfidence}% (previous attempt). Execute phase rolled back.`],
-          taskBranch, baseBranch, review.confidence, config, hookDeps,
+          taskBranch, baseBranch, review.confidence, config, hookDeps, worktreePath,
         );
         await recordMemory(updatedRegressionTask, getProjectDir());
         break;
@@ -1163,7 +1202,7 @@ export async function runCompletionLoop(
           `Task ${task.id} reached ${review.confidence}% confidence.`,
         );
         const result = await handleConfidenceMet(
-          currentTask, config, backend, taskBranch, baseBranch, taskDir, cliFlags, hookDeps, verbose,
+          currentTask, config, backend, taskBranch, baseBranch, taskDir, cliFlags, hookDeps, verbose, worktreePath,
         );
         if (result.state === "in_progress") {
           // Blocking hook failed — keep looping for another attempt
@@ -1189,7 +1228,7 @@ export async function runCompletionLoop(
         );
         const updatedBlockedTask = await moveToBlocked(
           backend, currentTask, review.blockers,
-          taskBranch, baseBranch, review.confidence, config, hookDeps,
+          taskBranch, baseBranch, review.confidence, config, hookDeps, worktreePath,
         );
         uiWarn(
           `Task ${task.id} blocked: ${review.blockers.join("; ")}`,
@@ -1244,8 +1283,8 @@ export async function runCompletionLoop(
   // Clean up checkpoint on normal exit
   await clearCheckpoint(taskDir);
 
-  // Switch back to base branch
-  if (baseBranch !== null && taskBranch !== null) {
+  // Switch back to base branch (only needed in branch-switching mode — worktrees don't touch the main working tree)
+  if (!useWorktrees && baseBranch !== null && taskBranch !== null) {
     try {
       await switchBranch(baseBranch);
     } catch (err: unknown) {

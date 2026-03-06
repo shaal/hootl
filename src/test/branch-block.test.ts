@@ -82,6 +82,46 @@ describe("runCompletionLoop branch-switch blocked", () => {
     await execa("git", ["checkout", "--", "README"], { cwd: tmpDir });
   });
 
+  it("does NOT block the task when dirty worktree exists in worktree mode", async () => {
+    // In worktree mode, the main working tree is never touched, so dirty state should not block.
+    // First, stage a conflicting change on main (simulating dirty worktree)
+    await writeFile(join(tmpDir, "README"), "dirty for worktree test");
+    await execa("git", ["add", "README"], { cwd: tmpDir });
+
+    // Create task AFTER git setup
+    const task = await backend.createTask({
+      title: "Worktree dirty test",
+      description: "Should NOT be blocked in worktree mode",
+    });
+
+    const config = ConfigSchema.parse({ git: { useWorktrees: true } });
+
+    // runCompletionLoop should proceed past branch/worktree creation.
+    // It will fail at preflight (no claude binary), but the task should be in_progress, not blocked.
+    await runCompletionLoop(task, backend, config);
+
+    const updated = await backend.getTask(task.id);
+    // Task should NOT be blocked due to dirty worktree — worktree mode isolates the work
+    assert.notEqual(updated.state, "blocked",
+      `task should not be blocked in worktree mode, got state=${updated.state} blockers=${JSON.stringify(updated.blockers)}`);
+
+    // Verify a worktree path was stored on the task
+    assert.ok(updated.worktree !== null, "task should have a worktree path stored");
+
+    // Clean up: unstage changes, remove worktree
+    await execa("git", ["checkout", "--", "README"], { cwd: tmpDir });
+    if (updated.worktree) {
+      try {
+        await execa("git", ["worktree", "remove", updated.worktree, "--force"], { cwd: tmpDir });
+      } catch { /* best effort */ }
+    }
+    if (updated.branch) {
+      try {
+        await execa("git", ["branch", "-D", updated.branch], { cwd: tmpDir });
+      } catch { /* best effort */ }
+    }
+  });
+
   it("blocks the task with generic message on non-dirty-worktree git errors", async () => {
     // Simulate a branch that doesn't exist but createTaskBranch fails for another reason.
     // We can't easily cause a non-dirty git error, so instead we verify the dirty-worktree

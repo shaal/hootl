@@ -19,6 +19,9 @@ import {
   createDraftPR,
   getMergedOrGoneBranches,
   generateCommitMessage,
+  createWorktree,
+  removeWorktree,
+  worktreeExists,
 } from "../git.js";
 import type { CommitMessageDeps } from "../git.js";
 import type { InvokeResult } from "../invoke.js";
@@ -667,6 +670,227 @@ describe("git integration", () => {
         // This will fail either because gh is not installed or because there's no remote
         const result = await createDraftPR("Test PR", "Test body");
         assert.equal(result, false);
+      } finally {
+        process.chdir(originalCwd);
+      }
+    });
+  });
+
+  describe("createWorktree", () => {
+    it("creates a worktree with a new branch from baseBranch", async () => {
+      const originalCwd = process.cwd();
+      try {
+        process.chdir(tmpDir);
+        await execa("git", ["checkout", "main"], { cwd: tmpDir });
+
+        const wtPath = join(tmpDir, "worktrees", "wt-new");
+        await createWorktree("main", "wt-new-branch", wtPath);
+
+        // Verify the worktree directory exists
+        const { existsSync } = await import("node:fs");
+        assert.equal(existsSync(wtPath), true);
+
+        // Verify the branch was created
+        const { branchExists } = await import("../git.js");
+        assert.equal(await branchExists("wt-new-branch"), true);
+
+        // Clean up
+        await execa("git", ["worktree", "remove", wtPath, "--force"], { cwd: tmpDir });
+        await execa("git", ["branch", "-D", "wt-new-branch"], { cwd: tmpDir });
+      } finally {
+        process.chdir(originalCwd);
+      }
+    });
+
+    it("attaches to an existing branch", async () => {
+      const originalCwd = process.cwd();
+      try {
+        process.chdir(tmpDir);
+        await execa("git", ["checkout", "main"], { cwd: tmpDir });
+
+        // Create the branch first
+        await execa("git", ["branch", "wt-existing-branch"], { cwd: tmpDir });
+
+        const wtPath = join(tmpDir, "worktrees", "wt-existing");
+        await createWorktree("main", "wt-existing-branch", wtPath);
+
+        const { existsSync } = await import("node:fs");
+        assert.equal(existsSync(wtPath), true);
+
+        // Clean up
+        await execa("git", ["worktree", "remove", wtPath, "--force"], { cwd: tmpDir });
+        await execa("git", ["branch", "-D", "wt-existing-branch"], { cwd: tmpDir });
+      } finally {
+        process.chdir(originalCwd);
+      }
+    });
+
+    it("reuses existing worktree path without error", async () => {
+      const originalCwd = process.cwd();
+      try {
+        process.chdir(tmpDir);
+        await execa("git", ["checkout", "main"], { cwd: tmpDir });
+
+        const wtPath = join(tmpDir, "worktrees", "wt-reuse");
+        await createWorktree("main", "wt-reuse-branch", wtPath);
+
+        // Call again — should not throw
+        await createWorktree("main", "wt-reuse-branch", wtPath);
+
+        const { existsSync } = await import("node:fs");
+        assert.equal(existsSync(wtPath), true);
+
+        // Clean up
+        await execa("git", ["worktree", "remove", wtPath, "--force"], { cwd: tmpDir });
+        await execa("git", ["branch", "-D", "wt-reuse-branch"], { cwd: tmpDir });
+      } finally {
+        process.chdir(originalCwd);
+      }
+    });
+  });
+
+  describe("removeWorktree", () => {
+    it("removes an existing worktree", async () => {
+      const originalCwd = process.cwd();
+      try {
+        process.chdir(tmpDir);
+        await execa("git", ["checkout", "main"], { cwd: tmpDir });
+
+        const wtPath = join(tmpDir, "worktrees", "wt-remove");
+        await createWorktree("main", "wt-remove-branch", wtPath);
+
+        const { existsSync } = await import("node:fs");
+        assert.equal(existsSync(wtPath), true);
+
+        await removeWorktree(wtPath);
+        assert.equal(existsSync(wtPath), false);
+
+        // Clean up branch
+        await execa("git", ["branch", "-D", "wt-remove-branch"], { cwd: tmpDir });
+      } finally {
+        process.chdir(originalCwd);
+      }
+    });
+
+    it("does not throw for non-existent path", async () => {
+      const originalCwd = process.cwd();
+      try {
+        process.chdir(tmpDir);
+        // Should not throw — wrapped in try/catch internally
+        await removeWorktree(join(tmpDir, "worktrees", "wt-nonexistent"));
+      } finally {
+        process.chdir(originalCwd);
+      }
+    });
+  });
+
+  describe("worktreeExists", () => {
+    it("returns true for a valid worktree", async () => {
+      const originalCwd = process.cwd();
+      try {
+        process.chdir(tmpDir);
+        await execa("git", ["checkout", "main"], { cwd: tmpDir });
+
+        const wtPath = join(tmpDir, "worktrees", "wt-exists");
+        await createWorktree("main", "wt-exists-branch", wtPath);
+
+        const result = await worktreeExists(wtPath);
+        assert.equal(result, true);
+
+        // Clean up
+        await execa("git", ["worktree", "remove", wtPath, "--force"], { cwd: tmpDir });
+        await execa("git", ["branch", "-D", "wt-exists-branch"], { cwd: tmpDir });
+      } finally {
+        process.chdir(originalCwd);
+      }
+    });
+
+    it("returns false for a non-existent path", async () => {
+      const result = await worktreeExists(join(tmpDir, "worktrees", "nope"));
+      assert.equal(result, false);
+    });
+
+    it("returns false for a directory that is not a worktree", async () => {
+      const originalCwd = process.cwd();
+      try {
+        process.chdir(tmpDir);
+        const { mkdir: mkdirFs } = await import("node:fs/promises");
+        const fakePath = join(tmpDir, "worktrees", "fake-wt");
+        await mkdirFs(fakePath, { recursive: true });
+
+        const result = await worktreeExists(fakePath);
+        assert.equal(result, false);
+
+        // Clean up
+        const { rm: rmFs } = await import("node:fs/promises");
+        await rmFs(fakePath, { recursive: true, force: true });
+      } finally {
+        process.chdir(originalCwd);
+      }
+    });
+  });
+
+  describe("git operations with cwd parameter", () => {
+    it("commitTaskChanges works with explicit cwd", async () => {
+      const originalCwd = process.cwd();
+      try {
+        process.chdir(tmpDir);
+        await execa("git", ["checkout", "main"], { cwd: tmpDir });
+
+        // Create a worktree for this test
+        const wtPath = join(tmpDir, "worktrees", "wt-commit-cwd");
+        await createWorktree("main", "wt-commit-cwd-branch", wtPath);
+
+        // Write a file inside the worktree
+        await writeFile(join(wtPath, "cwd-test.txt"), "cwd test content");
+
+        const mockDeps: CommitMessageDeps = {
+          invoke: async () => makeInvokeResult("test commit via cwd"),
+        };
+
+        const committed = await commitTaskChanges("T-cwd", "execute", undefined, mockDeps, wtPath);
+        assert.equal(committed, true);
+
+        // Verify the commit exists in the worktree
+        const log = await execa("git", ["log", "--oneline", "-1"], { cwd: wtPath });
+        assert.ok(log.stdout.includes("[T-cwd] test commit via cwd"));
+
+        // Clean up
+        await execa("git", ["worktree", "remove", wtPath, "--force"], { cwd: tmpDir });
+        await execa("git", ["branch", "-D", "wt-commit-cwd-branch"], { cwd: tmpDir });
+      } finally {
+        process.chdir(originalCwd);
+      }
+    });
+
+    it("getHeadSha and resetToSha work with explicit cwd", async () => {
+      const originalCwd = process.cwd();
+      try {
+        process.chdir(tmpDir);
+        await execa("git", ["checkout", "main"], { cwd: tmpDir });
+
+        const wtPath = join(tmpDir, "worktrees", "wt-sha-cwd");
+        await createWorktree("main", "wt-sha-cwd-branch", wtPath);
+
+        const sha1 = await getHeadSha(wtPath);
+        assert.match(sha1, /^[0-9a-f]{40}$/);
+
+        // Add a commit in the worktree
+        await writeFile(join(wtPath, "sha-test.txt"), "sha test");
+        await execa("git", ["add", "-A"], { cwd: wtPath });
+        await execa("git", ["commit", "-m", "sha test commit"], { cwd: wtPath });
+
+        const sha2 = await getHeadSha(wtPath);
+        assert.notEqual(sha1, sha2);
+
+        // Reset back
+        await resetToSha(sha1, wtPath);
+        const sha3 = await getHeadSha(wtPath);
+        assert.equal(sha3, sha1);
+
+        // Clean up
+        await execa("git", ["worktree", "remove", wtPath, "--force"], { cwd: tmpDir });
+        await execa("git", ["branch", "-D", "wt-sha-cwd-branch"], { cwd: tmpDir });
       } finally {
         process.chdir(originalCwd);
       }

@@ -13,6 +13,7 @@ export interface HookContext {
   baseBranch: string;
   confidence: number;
   config: Config;
+  cwd?: string;
 }
 
 export interface HookResult {
@@ -177,6 +178,10 @@ export async function runSkillHook(
   }
 
   const invokeOptions = await skill(context);
+  // Forward cwd from context to invoke options if not already set
+  if (context.cwd && !invokeOptions.cwd) {
+    invokeOptions.cwd = context.cwd;
+  }
   const result = await deps.invoke(invokeOptions);
   const parsed = parseHookResult(result.output);
 
@@ -361,6 +366,7 @@ export async function runHook(
     prompt,
     systemPrompt,
     maxTurns: 3,
+    ...(context.cwd ? { cwd: context.cwd } : {}),
   });
 
   const parsed = parseHookResult(result.output);
