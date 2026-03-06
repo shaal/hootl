@@ -54,7 +54,7 @@ src/
     invoke-robustness.test.ts  Edge cases for invoke (timeouts, errors, is_error)
     local-backend.test.ts      CRUD operations on local task backend
     loop.test.ts       Review result parsing, prompt building
-    git.test.ts        Slugify, branch naming
+    git.test.ts        Slugify, branch naming, commit message generation
     discuss.test.ts    buildDiscussArgs, system prompt construction
     prioritize.test.ts userPriority sort, dependency enforcement, schema backward compat
     sync.test.ts       Review task sync integration tests (real git repo + LocalTaskBackend)
@@ -360,7 +360,8 @@ All interactive TUI calls go through helpers in `src/ui.ts` (`uiChoose`, `uiConf
 ### Git Integration
 
 - Task branch naming: `hootl/<task-id>-<slug>` (prefix configurable via `config.git.branchPrefix`)
-- Auto-commit after each execute phase
+- Auto-commit after each execute phase with Claude-generated commit messages
+- `generateCommitMessage()` generates commit messages via Claude from staged diffs (`git diff --cached` + `git diff --cached --stat`). Falls back to `[taskId] phase: automated changes` on failure. Uses DI via `CommitMessageDeps` for testability. Diffs truncated to 8K chars by default. Output constrained to single line, max 120 characters (before task ID prefix).
 - All git operations wrapped in try/catch -- warn on failure, never crash
 - Switches back to base branch (main/master) when loop finishes
 - `getMergedOrGoneBranches()` uses `--format "%(refname:short)"` for robust branch name parsing (avoids regex on `*` prefix)
@@ -381,7 +382,7 @@ Test coverage:
 - **invoke-robustness.test.ts** -- Timeout handling, `is_error` detection, edge cases
 - **local-backend.test.ts** -- Task CRUD, filtering, atomic writes
 - **loop.test.ts** -- Review JSON parsing (inline, code-block, nested, remediationPlan), prompt building, preflight integration (understanding.md in execute prompt), confidence regression detection, global budget integration, preflight subtask priority parsing, too_broad subtask auto-creation (priority inheritance, ready state, parent ready with dependencies, understanding.md cleanup, dependency accumulation), handleConfidenceMet hook integration (blocking failure returns in_progress without state update, context forwarding, cost logging with trigger label, re-verification on fixes_applied with above-target confidence, re-verify confidence drop returns in_progress with remediation plan, re-verification capped at MAX_REVERIFICATIONS, no re-verification when no fixes_applied, re-verify auto-commits hook changes, re-verify cost logged with re-verify phase label), fireHooks (context propagation, no-op on empty hooks, error swallowing), moveToBlocked (on_blocked hook firing, error resilience, blocker forwarding)
-- **git.test.ts** -- Slugify edge cases, branch name construction, getHeadSha, resetToSha rollback, getMergedOrGoneBranches (gone, merged, unmerged, mixed batch, empty input)
+- **git.test.ts** -- Slugify edge cases, branch name construction, getHeadSha, resetToSha rollback, getMergedOrGoneBranches (gone, merged, unmerged, mixed batch, empty input), generateCommitMessage (Claude-generated with prefix, whitespace stripping, fallback on throw/empty, diff truncation, multi-line enforcement, 120-char cap, stat summary in prompt, phase in fallback), commitTaskChanges (DI-based diff capture, fallback on failure, no-op on clean, explicit message bypass)
 - **sync.test.ts** -- Review task sync: branch merged+deleted promotes to done, branch merged but exists promotes to done, unmerged branch stays review, null branch skipped, no review tasks returns 0
 - **discuss.test.ts** -- buildDiscussArgs, system prompt construction, section ordering
 - **dependencies.test.ts** -- Dependency inference (explicit indices, heuristic fallback, cycle detection, out-of-range filtering), keyword extraction, index-to-ID resolution

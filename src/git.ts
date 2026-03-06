@@ -13,6 +13,8 @@ const DEFAULT_MAX_DIFF_LENGTH = 8000;
 /**
  * Generate a commit message for task changes using Claude.
  * Falls back to a static message if Claude invocation fails or returns empty.
+ * Accepts both full diff and optional stat summary for richer context.
+ * Output is constrained to a single line, max 120 characters (before task prefix).
  */
 export async function generateCommitMessage(
   taskId: string,
@@ -20,6 +22,7 @@ export async function generateCommitMessage(
   diff: string,
   deps?: CommitMessageDeps,
   maxDiffLength?: number,
+  stat?: string,
 ): Promise<string> {
   const fallback = `[${taskId}] ${phase}: automated changes`;
   const limit = maxDiffLength ?? DEFAULT_MAX_DIFF_LENGTH;
@@ -27,16 +30,22 @@ export async function generateCommitMessage(
   try {
     const truncatedDiff = diff.length > limit ? diff.slice(0, limit) : diff;
     const invoke = deps?.invoke ?? invokeClaude;
+
+    const statSection = stat ? `File summary:\n${stat}\n\n` : "";
     const result = await invoke({
-      prompt: `Write a concise git commit message (one line, no prefix, no quotes) summarizing these changes:\n\n${truncatedDiff}`,
-      systemPrompt: "You are a commit message generator. Output ONLY the commit message text, nothing else. No quotes, no explanation.",
+      prompt: `Write a concise git commit message (one line, no prefix, no quotes) summarizing these changes:\n\n${statSection}${truncatedDiff}`,
+      systemPrompt: "You are a commit message generator. Output ONLY the commit message text, nothing else. No quotes, no explanation. Single line only.",
       maxTurns: 1,
     });
 
-    const message = result.output.trim();
-    if (!message) return fallback;
+    const rawMessage = result.output.trim();
+    if (!rawMessage) return fallback;
 
-    return `[${taskId}] ${message}`;
+    // Enforce single-line output and cap at 120 characters
+    const firstLine = rawMessage.split("\n")[0] ?? rawMessage;
+    const capped = firstLine.length > 120 ? firstLine.slice(0, 120) : firstLine;
+
+    return `[${taskId}] ${capped}`;
   } catch {
     return fallback;
   }
@@ -102,10 +111,13 @@ export async function commitTaskChanges(taskId: string, phase: string, message?:
   if (message) {
     commitMessage = message;
   } else {
-    // Read the staged diff and generate a meaningful commit message via Claude
+    // Read the staged diff (full + stat summary) and generate a meaningful commit message via Claude
     try {
-      const diffResult = await execa("git", ["diff", "--cached"]);
-      commitMessage = await generateCommitMessage(taskId, phase, diffResult.stdout, deps);
+      const [diffResult, statResult] = await Promise.all([
+        execa("git", ["diff", "--cached"]),
+        execa("git", ["diff", "--cached", "--stat"]),
+      ]);
+      commitMessage = await generateCommitMessage(taskId, phase, diffResult.stdout, deps, undefined, statResult.stdout);
     } catch {
       commitMessage = `[${taskId}] ${phase}: automated changes`;
     }

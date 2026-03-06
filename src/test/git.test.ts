@@ -154,6 +154,38 @@ describe("generateCommitMessage", () => {
     assert.equal(r2, "[T-42] update config handling");
   });
 
+  it("takes only the first line when Claude returns multi-line output", async () => {
+    const deps: CommitMessageDeps = {
+      invoke: async () => makeInvokeResult("refactor auth module\n\nThis changes the middleware to use async/await\nand removes callbacks."),
+    };
+    const result = await generateCommitMessage("T-1", "execute", "diff content", deps);
+    assert.equal(result, "[T-1] refactor auth module");
+  });
+
+  it("truncates the first line to 120 characters", async () => {
+    const longLine = "a".repeat(200);
+    const deps: CommitMessageDeps = {
+      invoke: async () => makeInvokeResult(longLine),
+    };
+    const result = await generateCommitMessage("T-1", "execute", "diff content", deps);
+    // The prefix "[T-1] " is 6 chars, the capped message is 120 chars
+    assert.equal(result, `[T-1] ${"a".repeat(120)}`);
+    assert.equal(result.length, 6 + 120);
+  });
+
+  it("includes stat summary in prompt when provided", async () => {
+    let capturedPrompt = "";
+    const deps: CommitMessageDeps = {
+      invoke: async (options) => {
+        capturedPrompt = options.prompt;
+        return makeInvokeResult("update files");
+      },
+    };
+    await generateCommitMessage("T-1", "execute", "diff content", deps, undefined, "src/git.ts | 5 +++--");
+    assert.ok(capturedPrompt.includes("File summary:"), "prompt should contain stat header");
+    assert.ok(capturedPrompt.includes("src/git.ts | 5 +++--"), "prompt should contain the stat content");
+  });
+
   it("uses correct phase in fallback message", async () => {
     const deps: CommitMessageDeps = {
       invoke: async () => { throw new Error("fail"); },
