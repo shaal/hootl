@@ -70,7 +70,7 @@ describe("slugify", () => {
 // ---------------------------------------------------------------------------
 
 function makeInvokeResult(output: string): InvokeResult {
-  return { output, costUsd: 0.001, exitCode: 0, durationMs: 100 };
+  return { output, costUsd: 0.001, exitCode: 0, durationMs: 100, contextWindowPercent: 0 };
 }
 
 describe("generateCommitMessage", () => {
@@ -308,7 +308,7 @@ describe("git integration", () => {
         const mockDeps: CommitMessageDeps = {
           invoke: async ({ prompt }) => {
             capturedPrompt = prompt;
-            return { output: "add newfile with greeting", costUsd: 0 } as InvokeResult;
+            return { output: "add newfile with greeting", costUsd: 0, exitCode: 0, durationMs: 0, contextWindowPercent: 0 } as InvokeResult;
           },
         };
 
@@ -369,7 +369,7 @@ describe("git integration", () => {
         const mockDeps: CommitMessageDeps = {
           invoke: async () => {
             invokeCalled = true;
-            return { output: "should not be used", costUsd: 0 } as InvokeResult;
+            return { output: "should not be used", costUsd: 0, exitCode: 0, durationMs: 0, contextWindowPercent: 0 } as InvokeResult;
           },
         };
 

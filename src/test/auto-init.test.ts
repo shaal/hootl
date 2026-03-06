@@ -42,7 +42,7 @@ describe("autoInit", () => {
     );
     const parsed = ConfigSchema.parse(JSON.parse(configContent));
     assert.equal(parsed.taskBackend, "local");
-    assert.equal(parsed.budgets.perSession, 0.5);
+    assert.equal(parsed.budgets.contextWindowLimit, 60);
 
     // .gitignore exists with expected content
     const gitignore = await readFile(

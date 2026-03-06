@@ -21,6 +21,7 @@ export interface InvokeResult {
   costUsd: number;
   exitCode: number;
   durationMs: number;
+  contextWindowPercent: number;
 }
 
 export function buildArgs(options: InvokeOptions): string[] {
@@ -63,6 +64,20 @@ export function parseCostFromOutput(raw: string): number {
     }
   } catch {
     // Not valid JSON or missing cost fields — fall through
+  }
+  return 0;
+}
+
+export function parseContextWindowPercent(raw: string): number {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed === "object" && parsed !== null) {
+      const record = parsed as Record<string, unknown>;
+      const pct = Number(record["context_window_percent"] ?? 0);
+      return Number.isFinite(pct) ? pct : 0;
+    }
+  } catch {
+    // Not valid JSON — fall through
   }
   return 0;
 }
@@ -115,6 +130,7 @@ async function invokeClaudeStandard(
   const exitCode = result.exitCode ?? 1;
   const durationMs = Date.now() - startMs;
   const costUsd = parseCostFromOutput(stdout);
+  const contextWindowPercent = parseContextWindowPercent(stdout);
   const output = extractTextOutput(stdout, "json");
 
   let isError = false;
@@ -125,7 +141,7 @@ async function invokeClaudeStandard(
     }
   } catch { /* ignore */ }
 
-  return { output, costUsd, exitCode: isError ? 1 : exitCode, durationMs };
+  return { output, costUsd, exitCode: isError ? 1 : exitCode, durationMs, contextWindowPercent };
 }
 
 async function invokeClaudeVerbose(
@@ -227,6 +243,7 @@ async function invokeClaudeVerbose(
 
   // Parse the result line (same format as non-verbose JSON output)
   const costUsd = resultLine ? parseCostFromOutput(resultLine) : 0;
+  const contextWindowPercent = resultLine ? parseContextWindowPercent(resultLine) : 0;
   const output = resultLine ? extractTextOutput(resultLine, "json") : result.stdout;
 
   let isError = false;
@@ -239,7 +256,7 @@ async function invokeClaudeVerbose(
     } catch { /* ignore */ }
   }
 
-  return { output, costUsd, exitCode: isError ? 1 : exitCode, durationMs };
+  return { output, costUsd, exitCode: isError ? 1 : exitCode, durationMs, contextWindowPercent };
 }
 
 /** Maximum number of retries for transient errors (timeouts, rate limits, network errors). */
@@ -314,6 +331,7 @@ export async function invokeClaude(
         costUsd: 0,
         exitCode: isTimeout ? 124 : 1,
         durationMs,
+        contextWindowPercent: 0,
       };
     }
 

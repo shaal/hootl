@@ -371,20 +371,21 @@ export function isConfidenceRegression(current: number, previous: number | null)
   return current < previous;
 }
 
-export function isSessionBudgetExceeded(phaseCost: number, perSession: number): boolean {
-  return phaseCost >= perSession;
+export function isContextWindowExceeded(contextWindowPercent: number, limit: number): boolean {
+  return contextWindowPercent >= limit;
 }
 
-export async function applySessionBudgetExceeded(
+export async function applyContextWindowExceeded(
   backend: TaskBackend,
   taskId: string,
   currentTask: Task,
   phaseCost: number,
-  perSession: number,
+  contextWindowPercent: number,
+  limit: number,
 ): Promise<Task | null> {
-  if (!isSessionBudgetExceeded(phaseCost, perSession)) return null;
+  if (!isContextWindowExceeded(contextWindowPercent, limit)) return null;
   uiWarn(
-    `Session budget exceeded ($${phaseCost.toFixed(4)} >= $${perSession.toFixed(2)}). Ending attempt early.`,
+    `Context window usage ${contextWindowPercent}% exceeds ${limit}% — ending attempt to preserve quality.`,
   );
   return backend.updateTask(taskId, { totalCost: currentTask.totalCost + phaseCost });
 }
@@ -1041,10 +1042,10 @@ export async function runCompletionLoop(
         await logCost(costLogDir, task.id, "plan", planResult.costUsd);
         phaseCost += planResult.costUsd;
 
-        // Check per-session budget after plan phase
-        const planBudgetResult = await applySessionBudgetExceeded(backend, task.id, currentTask, phaseCost, config.budgets.perSession);
-        if (planBudgetResult) {
-          currentTask = planBudgetResult;
+        // Check context window usage after plan phase
+        const planCtxResult = await applyContextWindowExceeded(backend, task.id, currentTask, phaseCost, planResult.contextWindowPercent, config.budgets.contextWindowLimit);
+        if (planCtxResult) {
+          currentTask = planCtxResult;
           // phaseCost resets at loop top (let phaseCost = 0); totalCost persisted in backend
           continue;
         }
@@ -1108,11 +1109,11 @@ export async function runCompletionLoop(
         }
       }
 
-      // Check per-session budget after execute phase
+      // Check context window usage after execute phase
       // Note: hasRemediationPlan was already consumed/reset before this point (at Phase 1), so no explicit reset is needed here.
-      const execBudgetResult = await applySessionBudgetExceeded(backend, task.id, currentTask, phaseCost, config.budgets.perSession);
-      if (execBudgetResult) {
-        currentTask = execBudgetResult;
+      const execCtxResult = await applyContextWindowExceeded(backend, task.id, currentTask, phaseCost, executeResult.contextWindowPercent, config.budgets.contextWindowLimit);
+      if (execCtxResult) {
+        currentTask = execCtxResult;
         // phaseCost resets at loop top (let phaseCost = 0); totalCost persisted in backend
         continue;
       }

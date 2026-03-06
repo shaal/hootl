@@ -1300,7 +1300,7 @@ describe("hooks add config mutation", () => {
 
     const initial = {
       taskBackend: "local",
-      budgets: { perSession: 1, perTask: 5, global: 50 },
+      budgets: { contextWindowLimit: 60, perTask: 5, global: 50 },
       confidence: { target: 90 },
       git: { branchPrefix: "custom/" },
       permissionMode: "lenient",
@@ -1320,7 +1320,7 @@ describe("hooks add config mutation", () => {
     const result = await loadJsonFile(join(hootlDir, "config.json"));
     // All original keys intact
     assert.equal(result["taskBackend"], "local");
-    assert.deepStrictEqual(result["budgets"], { perSession: 1, perTask: 5, global: 50 });
+    assert.deepStrictEqual(result["budgets"], { contextWindowLimit: 60, perTask: 5, global: 50 });
     assert.deepStrictEqual(result["confidence"], { target: 90 });
     assert.deepStrictEqual(result["git"], { branchPrefix: "custom/" });
     assert.equal(result["permissionMode"], "lenient");
