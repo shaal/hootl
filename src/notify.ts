@@ -29,7 +29,7 @@ const defaultWebhookDeps: WebhookDeps = {
  *
  * - No-op if config.notifications.webhook is null/empty
  * - Uses Node 20 native fetch()
- * - Fire-and-forget: never throws, logs warnings on failure
+ * - Fire-and-forget: never throws, silently ignores errors
  */
 export async function notifyWebhook(
   payload: WebhookPayload,
