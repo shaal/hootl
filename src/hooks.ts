@@ -420,6 +420,11 @@ export async function runHooks(
   const results: HookResult[] = [];
   const logDir = join(process.cwd(), ".hootl", "logs");
 
+  // Debug: trace who is calling runHooks and for which task
+  const stack = new Error().stack ?? "";
+  const callerLine = stack.split("\n").slice(2, 4).join(" <- ").trim();
+  process.stderr.write(`[DEBUG runHooks] trigger=${triggerPoint} task=${context.task.id} state=${context.task.state} hooks=${matchingHooks.length} caller=${callerLine}\n`);
+
   for (const hook of matchingHooks) {
     const result = await runHook(hook, context, deps);
     results.push(result);
