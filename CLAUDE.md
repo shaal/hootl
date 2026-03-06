@@ -144,6 +144,20 @@ All git operations (`mergeBranch`, `deleteBranch`, `pushBranch`, `createDraftPR`
 
 **Re-verification after hook fixes**: When an `on_confidence_met` hook reports `fixes_applied` (non-empty `remediationActions`), `handleConfidenceMet()` enters a re-verification loop: (1) auto-commits the hook's changes, (2) re-runs Phase 3 (review) to get an updated confidence score, (3) if confidence is still >= target, re-runs hooks to check for more fixes, (4) if confidence dropped below target, writes a remediation plan to `plan.md` and returns `in_progress` so the main loop continues. The loop is capped at `MAX_REVERIFICATIONS` (2) to prevent infinite hook↔review cycles. Re-verification costs are logged with the `"re-verify"` phase label. When `hookDeps` is injected (testing), invoke and log calls route through the injected dependencies.
 
+### Autonomous Mode (`hootl auto`)
+
+The `auto` command runs tasks sequentially until the queue drains or the global budget is exhausted. It wraps the same building blocks as `runCommand()`:
+
+1. **Sync** — calls `syncReviewTasks()` to promote externally merged branches
+2. **Budget gate** — calls `checkGlobalBudget()` and breaks if exceeded
+3. **Task selection** — prefers `in_progress` tasks (resume), then `ready` tasks, both via `selectFromState()` which enforces dependencies
+4. **Execution** — calls `runCompletionLoop()` which handles per-task budget, max attempts, blocking, and state transitions
+5. **Loop** — repeats until no runnable tasks remain
+
+Currently only the `conservative` level is implemented (sequential, no parallelism). Other levels (`moderate`, `proactive`, `full`) log a warning and fall back to conservative. The `--level` flag overrides `config.auto.defaultLevel`.
+
+The function is exported as `autoCommand()` for testability. CLI flags `--merge`/`--no-merge` are forwarded to `runCompletionLoop` identically to the `run` command.
+
 ### Review Task Sync (externally merged branches)
 
 When `onConfidence` is `pr` or `none`, or when merge fails, tasks land in `review` state. If the user then merges those branches manually (via GitHub, `git merge`, etc.), the tasks would otherwise stay in `review` forever. `syncReviewTasks()` in `src/sync.ts` detects this and auto-promotes them to `done`.
@@ -270,6 +284,10 @@ hootl plan --next              Suggest what to work on next
 hootl run [id]                 Run a task (or next ready task) through the completion loop
 hootl run [id] --merge         Force auto-merge on confidence met (overrides config)
 hootl run [id] --no-merge      Disable auto-merge/PR on confidence met (overrides config)
+hootl auto                     Autonomous mode — run tasks until queue drains or budget exhausted
+hootl auto --level <level>     Automation level (conservative|moderate|proactive|full; default from config)
+hootl auto --merge             Force auto-merge on confidence met
+hootl auto --no-merge          Disable auto-merge/PR on confidence met
 hootl status                   View tasks grouped by state
 hootl clarify                  Resolve blockers on blocked tasks
 hootl discuss [taskId]         Launch interactive Claude session, optionally with task context
@@ -409,6 +427,7 @@ Test coverage:
 - **hooks.test.ts** -- Trigger filtering (condition evaluation, minConfidence), prompt resolution (inline vs file path, fallback), result parsing (JSON extraction, brace-matching, graceful degradation, new field aliases: passed/fixes_applied/confidence), system prompt construction, runHook integration (pass/fail, cost, context forwarding), runHooks orchestration (blocking short-circuit, advisory continues, cost logging, trigger filtering), validate-simplify template (existence, content markers, variable substitution), buildTestHookContext (synthetic task defaults, parameter passthrough, config forwarding, ISO timestamps, edge confidence values), formatHookLabel (skill/prompt display, truncation, 1-based numbering, skill precedence), validateRemoveIndex (valid/invalid/boundary indices, NaN, empty list, single-hook), saveProjectConfig (hooks splice, last-hook removal, empty config, JSON formatting), hooks add config mutation (append to existing array, create array when absent, conditions with minConfidence, preserve existing config keys), HOOK_TRIGGERS export (values, HookSchema acceptance)
 - **prioritize.test.ts** -- userPriority schema backward compat, sort order (userPriority before auto), dependency enforcement (findRunnableTask)
 - **checkpoint.test.ts** -- Checkpoint write (valid JSON, atomic overwrite, error resilience), read (valid file, missing file, invalid JSON, missing fields, wrong types), clear (removes file, no-op if missing), round-trip (write+read, clear+read)
+- **auto.test.ts** -- Auto command task selection loop (empty queue, sequential picks, in_progress preference, dependency skipping), budget gate (exceeded stops, headroom continues, missing CSV), level validation (all four levels accepted by config schema)
 - **branch-block.test.ts** -- Integration test: dirty worktree blocks task on branch switch (real git repo), clean worktree proceeds past branch creation
 
 ## Dependencies
