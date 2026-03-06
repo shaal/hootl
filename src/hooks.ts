@@ -102,7 +102,12 @@ const skillRegistry = new Map<string, SkillDefinition>([
         ].join(" "),
         systemPrompt,
         maxTurns: 10,
-        disallowedTools: ["Bash(git add:*)", "Bash(git commit:*)", "Bash(git push:*)"],
+        allowedTools: [
+          "Read", "Edit", "Write", "Glob", "Grep",
+          "Bash(npm test:*)", "Bash(npm run test:*)", "Bash(npm run lint:*)",
+          "Bash(git diff:*)", "Bash(git status:*)", "Bash(git log:*)",
+          "Bash(node:*)", "Bash(cat:*)", "Bash(ls:*)", "Bash(find:*)",
+        ],
       };
     }
 
@@ -132,7 +137,12 @@ const skillRegistry = new Map<string, SkillDefinition>([
         '  - "fixes_applied": string[] (concrete fixes applied)',
       ].join("\n"),
       maxTurns: 10,
-      disallowedTools: ["Bash(git add:*)", "Bash(git commit:*)", "Bash(git push:*)"],
+      allowedTools: [
+        "Read", "Edit", "Write", "Glob", "Grep",
+        "Bash(npm test:*)", "Bash(npm run test:*)", "Bash(npm run lint:*)",
+        "Bash(git diff:*)", "Bash(git status:*)", "Bash(git log:*)",
+        "Bash(node:*)", "Bash(cat:*)", "Bash(ls:*)", "Bash(find:*)",
+      ],
     };
   }],
 ]);
