@@ -20,6 +20,7 @@ npm run test:build  # Build then run tests
 ```
 src/
   index.ts            CLI entry point (commander). Commands: init, plan, run, status, clarify, discuss, prioritize
+  parse-tasks.ts      Robust JSON array extraction from Claude plan responses (bracket-matching)
   dependencies.ts     Post-planning dependency inference and index-to-ID resolution
   selection.ts        Dependency-aware task selection (findRunnableTask)
   discuss.ts          Interactive Claude session launcher (stdio: 'inherit' for full TTY control)
@@ -47,6 +48,7 @@ src/
     invoke.test.ts     Arg building, cost parsing, output extraction
     plan-memory.test.ts  Memory entry generation, append/rotation, pattern loading, metrics computation
     preflight.test.ts    Preflight template existence and content assertions
+    extract-tasks.test.ts JSON array extraction (clean, code-block, bracket-matching, edge cases)
     plan-review.test.ts  Critique prompt building, task parsing, fallback paths
     plan-summary.test.ts Plan summary generation, priority counting, truncation
     invoke-robustness.test.ts  Edge cases for invoke (timeouts, errors, is_error)
@@ -386,6 +388,7 @@ Test coverage:
 - **guided.test.ts** -- Clarification prompt building, question JSON parsing (valid, malformed, capped), constraints formatting, edge cases
 - **plan-memory.test.ts** -- Memory entry generation (success/blocked variants, blocker categorization, truncation), append/rotation (50-entry cap, FIFO), pattern loading (recent count, empty file), metrics computation (averages, completion rate, blocker reasons), prompt formatting
 - **preflight.test.ts** -- Template existence, role declaration, verdict values, JSON output fields, no-implementation constraints, bug reproduction instructions, scope assessment
+- **extract-tasks.test.ts** -- JSON array extraction from Claude plan responses: clean JSON, markdown code blocks (with/without json tag), preamble text, [bracketed] prose after JSON (the original bug), [bracketed] prose before JSON, escaped quotes in descriptions, nested dependsOn arrays, null cases (empty string, no JSON, empty array, non-array)
 - **plan-review.test.ts** -- Critique prompt building (goal inclusion, task JSON, indices, dependsOn), task parsing (valid, markdown-wrapped, missing fields, non-integer deps), fallback on invalid input
 - **plan-summary.test.ts** -- Summary generation (single/multiple/many tasks, truncation), priority counting (mixed, default-to-medium), empty array, priority ordering
 - **hooks.test.ts** -- Trigger filtering (condition evaluation, minConfidence), prompt resolution (inline vs file path, fallback), result parsing (JSON extraction, brace-matching, graceful degradation, new field aliases: passed/fixes_applied/confidence), system prompt construction, runHook integration (pass/fail, cost, context forwarding), runHooks orchestration (blocking short-circuit, advisory continues, cost logging, trigger filtering), validate-simplify template (existence, content markers, variable substitution), buildTestHookContext (synthetic task defaults, parameter passthrough, config forwarding, ISO timestamps, edge confidence values), formatHookLabel (skill/prompt display, truncation, 1-based numbering, skill precedence), validateRemoveIndex (valid/invalid/boundary indices, NaN, empty list, single-hook), saveProjectConfig (hooks splice, last-hook removal, empty config, JSON formatting), hooks add config mutation (append to existing array, create array when absent, conditions with minConfidence, preserve existing config keys), HOOK_TRIGGERS export (values, HookSchema acceptance)
