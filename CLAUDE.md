@@ -37,6 +37,7 @@ src/
   plan-review.ts      Plan critique pass (self-review before task creation)
   plan-summary.ts     TL;DR plan summary with Accept/Revise/Cancel confirmation
   hooks.ts            Hook execution engine (filter, prompt resolution, run, orchestrate)
+  logger.ts           Structured JSONL event logger (phase_start/end, state_change, decision, error, hook_run, budget_check)
   notify.ts           OS notifications (macOS osascript, Linux notify-send) for task events
   status.ts           Status summary writer (grouped by state)
   tasks/
@@ -62,6 +63,7 @@ src/
     sync.test.ts       Review task sync integration tests (real git repo + LocalTaskBackend)
     branch-block.test.ts  Branch-switch failure blocks task (dirty worktree integration test)
     notify.test.ts     OS notification config gating, platform dispatch, error resilience, webhook notifications
+    logger.test.ts     Structured JSONL event logger (all 7 event types, directory creation, session ID, error resilience)
     claim.test.ts      Claim success, conflict (live PID), stale claim cleanup, release, findAndClaimTask
     status.test.ts     readClaimFile, isProcessAlive, getActiveInstances, writeStatusSummary with claim info
 templates/
@@ -495,6 +497,7 @@ Test coverage:
 - **auto.test.ts** -- Auto command task selection loop (empty queue, sequential picks, in_progress preference, dependency skipping), budget gate (exceeded stops, headroom continues, missing CSV), level validation (all four levels accepted by config schema)
 - **branch-block.test.ts** -- Integration test: dirty worktree blocks task on branch switch (real git repo), dirty worktree does NOT block in worktree mode (isolation verification), clean worktree proceeds past branch creation
 - **notify.test.ts** -- OS notification: config gating (osNotify false → no-op), platform detection (darwin → osascript, linux → notify-send, win32 → no-op), error resilience (execa failure swallowed), osascript quote/backslash escaping, linux raw passthrough. Webhook: no-op on null/empty webhook URL, correct POST payload and headers, error resilience (fetch throw, non-2xx), null confidence handling
+- **logger.test.ts** -- LogEvent discriminated union (all 7 event types: phase_start, phase_end, state_change, decision, error, hook_run, budget_check), JSONL append with newline terminator, directory creation (recursive: true), injected timestamp via nowFn, sessionId in entries, error resilience (appendFn and mkdirFn failures never throw), multi-event JSONL format, correct file path (events.jsonl), getSessionId consistency, _setSessionId override
 - **claim.test.ts** -- Claim success (file created, PID correct, state transition to in_progress), conflict (second claim with live PID returns false, state unchanged), stale claim cleanup (dead PID removed, re-claim succeeds), release (removes .claim file), release no-op (unclaimed task), findAndClaimTask (claims first runnable, skips already-claimed, retries on conflict, respects dependencies, returns undefined when all claimed)
 - **status.test.ts** -- readClaimFile (valid file, missing file, corrupt non-JSON, missing pid field, wrong pid type, non-existent directory), isProcessAlive (current process alive, dead PID), getActiveInstances (no claims, live PIDs, dead PIDs, mixed live/dead, pids map keyed by task ID, non-existent directory, corrupt claim files), writeStatusSummary with claim info (Active instances header line, PID annotation for in_progress tasks, no annotation without claim, backward compat without claimInfo, no PID on review-state tasks)
 
