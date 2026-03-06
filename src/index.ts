@@ -5,7 +5,7 @@ import { existsSync } from "node:fs";
 import { writeFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { loadConfig, type Config } from "./config.js";
+import { loadConfig, loadJsonFile, saveProjectConfig, type Config } from "./config.js";
 import { LocalTaskBackend } from "./tasks/local.js";
 import type { TaskBackend, Task, TaskState } from "./tasks/types.js";
 import { writeStatusSummary } from "./status.js";
@@ -908,6 +908,106 @@ hooksCmd
       }
 
       uiInfo(`Cost: $${result.costUsd.toFixed(4)}`);
+    } catch (err: unknown) {
+      uiError(errorMsg(err));
+      process.exitCode = 1;
+    }
+  });
+
+hooksCmd
+  .command("list")
+  .description("List all configured hooks")
+  .action(async () => {
+    try {
+      const { formatHookLabel } = await import("./hooks.js");
+      const config = await loadConfig();
+
+      if (config.hooks.length === 0) {
+        uiInfo("No hooks configured.");
+        return;
+      }
+
+      for (let i = 0; i < config.hooks.length; i++) {
+        const hook = config.hooks[i]!;
+        uiInfo(formatHookLabel(hook, i));
+      }
+    } catch (err: unknown) {
+      uiError(errorMsg(err));
+      process.exitCode = 1;
+    }
+  });
+
+hooksCmd
+  .command("remove [index]")
+  .description("Remove a hook from the project config")
+  .action(async (indexArg?: string) => {
+    try {
+      const { formatHookLabel } = await import("./hooks.js");
+      const config = await loadConfig();
+
+      // Load the raw project config to check which hooks are actually in it
+      const projectPath = join(process.cwd(), ".hootl", "config.json");
+      const rawConfig = await loadJsonFile(projectPath);
+      const rawHooks = Array.isArray(rawConfig["hooks"]) ? rawConfig["hooks"] as unknown[] : [];
+
+      if (config.hooks.length === 0) {
+        uiInfo("No hooks configured.");
+        return;
+      }
+
+      // If the project config has no hooks array but merged config does,
+      // those hooks come from global config and can't be removed here
+      if (rawHooks.length === 0) {
+        uiWarn("All configured hooks come from global config (~/.hootl/config.json).");
+        uiWarn("Edit the global config directly to remove them.");
+        return;
+      }
+
+      let selectedIndex: number;
+
+      if (indexArg !== undefined) {
+        // CLI argument: 1-based index
+        const parsed = parseInt(indexArg, 10);
+        if (Number.isNaN(parsed) || parsed < 1 || parsed > rawHooks.length) {
+          uiError(`Invalid index: ${indexArg}. Must be between 1 and ${rawHooks.length}.`);
+          process.exitCode = 1;
+          return;
+        }
+        selectedIndex = parsed - 1;
+      } else {
+        // Interactive: show numbered hooks and let user pick
+        const labels = rawHooks.map((_, i) => {
+          // Use the parsed config hooks for display (they have Zod defaults applied)
+          const hook = config.hooks[i];
+          return hook !== undefined ? formatHookLabel(hook, i) : `${i + 1}) (unknown hook)`;
+        });
+
+        const choice = await uiChoose("Select hook to remove:", labels);
+        // Extract index from "N) ..." label
+        const match = choice.match(/^(\d+)\)/);
+        if (match === null) {
+          uiError("Could not parse selection.");
+          process.exitCode = 1;
+          return;
+        }
+        selectedIndex = parseInt(match[1]!, 10) - 1;
+      }
+
+      // Show what's being removed
+      const hookToRemove = config.hooks[selectedIndex];
+      if (hookToRemove !== undefined) {
+        uiInfo(`Removing: ${formatHookLabel(hookToRemove, selectedIndex)}`);
+      }
+
+      // Splice the hook from the raw project config and write back
+      await saveProjectConfig((raw) => {
+        const hooks = raw["hooks"];
+        if (Array.isArray(hooks)) {
+          hooks.splice(selectedIndex, 1);
+        }
+      });
+
+      uiSuccess("Hook removed.");
     } catch (err: unknown) {
       uiError(errorMsg(err));
       process.exitCode = 1;

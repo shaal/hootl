@@ -15,12 +15,13 @@ import {
   resolveSkill,
   runSkillHook,
   buildTestHookContext,
+  formatHookLabel,
 } from "../hooks.js";
 import type { HookContext, HookDeps, HookResult } from "../hooks.js";
 import type { Hook } from "../config.js";
 import type { Task } from "../tasks/types.js";
 import type { InvokeResult } from "../invoke.js";
-import { ConfigSchema } from "../config.js";
+import { ConfigSchema, saveProjectConfig, loadJsonFile } from "../config.js";
 
 function makeTask(overrides: Partial<Task> = {}): Task {
   return {
@@ -987,5 +988,168 @@ describe("buildTestHookContext", () => {
 
     const ctx100 = buildTestHookContext(config, "b", "main", 100);
     assert.equal(ctx100.confidence, 100);
+  });
+});
+
+// --- formatHookLabel ---
+
+describe("formatHookLabel", () => {
+  it("formats a skill-based blocking hook", () => {
+    const hook = makeHook({ trigger: "on_confidence_met", skill: "simplify", blocking: true });
+    const label = formatHookLabel(hook, 0);
+    assert.equal(label, "1) on_confidence_met → skill:simplify [blocking]");
+  });
+
+  it("formats a prompt-based advisory hook", () => {
+    const hook = makeHook({ trigger: "on_review_complete", prompt: "Check code", blocking: false });
+    const label = formatHookLabel(hook, 2);
+    assert.equal(label, '3) on_review_complete → prompt:"Check code" [advisory]');
+  });
+
+  it("truncates long prompts at 40 chars", () => {
+    const longPrompt = "This is a very long prompt that exceeds forty characters by quite a bit";
+    const hook = makeHook({ prompt: longPrompt, blocking: false });
+    const label = formatHookLabel(hook, 0);
+    assert.ok(label.includes('prompt:"This is a very long prompt that exc..."'));
+    // The truncated portion should be 37 chars + "..."
+    const match = label.match(/prompt:"(.+?)"/);
+    assert.ok(match !== null);
+    assert.equal(match![1]!.length, 40); // 37 + "..."
+  });
+
+  it("does not truncate prompts at exactly 40 chars", () => {
+    const exactPrompt = "1234567890123456789012345678901234567890"; // 40 chars
+    const hook = makeHook({ prompt: exactPrompt, blocking: false });
+    const label = formatHookLabel(hook, 0);
+    assert.ok(label.includes(`prompt:"${exactPrompt}"`));
+    assert.ok(!label.includes("..."));
+  });
+
+  it("handles hook with skill taking precedence over prompt in display", () => {
+    // When both skill and prompt are set, skill is shown (matches runtime precedence)
+    const hook = makeHook({ skill: "simplify", prompt: "some prompt", blocking: true });
+    const label = formatHookLabel(hook, 0);
+    assert.ok(label.includes("skill:simplify"));
+    assert.ok(!label.includes("prompt:"));
+  });
+
+  it("uses 1-based numbering", () => {
+    const hook = makeHook({ skill: "simplify", blocking: false });
+    assert.ok(formatHookLabel(hook, 0).startsWith("1)"));
+    assert.ok(formatHookLabel(hook, 4).startsWith("5)"));
+    assert.ok(formatHookLabel(hook, 9).startsWith("10)"));
+  });
+});
+
+// --- saveProjectConfig ---
+
+describe("saveProjectConfig", () => {
+  let tmpDir: string;
+
+  it("writes valid JSON and preserves other config keys", async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), "hootl-save-config-"));
+    const hootlDir = join(tmpDir, ".hootl");
+    await import("node:fs/promises").then(fs => fs.mkdir(hootlDir, { recursive: true }));
+
+    // Write initial config with hooks and other keys
+    const initial = {
+      taskBackend: "local",
+      hooks: [
+        { trigger: "on_confidence_met", skill: "simplify", blocking: true },
+        { trigger: "on_review_complete", prompt: "Check code", blocking: false },
+      ],
+    };
+    await writeFile(join(hootlDir, "config.json"), JSON.stringify(initial, null, 2), "utf-8");
+
+    // Remove the first hook via saveProjectConfig
+    await saveProjectConfig((raw) => {
+      const hooks = raw["hooks"];
+      if (Array.isArray(hooks)) {
+        hooks.splice(0, 1);
+      }
+    }, tmpDir);
+
+    // Read back and verify
+    const result = await loadJsonFile(join(hootlDir, "config.json"));
+    assert.equal(result["taskBackend"], "local");
+    assert.ok(Array.isArray(result["hooks"]));
+    const hooks = result["hooks"] as unknown[];
+    assert.equal(hooks.length, 1);
+    const remaining = hooks[0] as Record<string, unknown>;
+    assert.equal(remaining["trigger"], "on_review_complete");
+
+    await rm(tmpDir, { recursive: true });
+  });
+
+  it("removing last hook leaves empty array", async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), "hootl-save-config-"));
+    const hootlDir = join(tmpDir, ".hootl");
+    await import("node:fs/promises").then(fs => fs.mkdir(hootlDir, { recursive: true }));
+
+    const initial = {
+      hooks: [
+        { trigger: "on_blocked", prompt: "Log it", blocking: false },
+      ],
+    };
+    await writeFile(join(hootlDir, "config.json"), JSON.stringify(initial, null, 2), "utf-8");
+
+    await saveProjectConfig((raw) => {
+      const hooks = raw["hooks"];
+      if (Array.isArray(hooks)) {
+        hooks.splice(0, 1);
+      }
+    }, tmpDir);
+
+    const result = await loadJsonFile(join(hootlDir, "config.json"));
+    assert.ok(Array.isArray(result["hooks"]));
+    assert.equal((result["hooks"] as unknown[]).length, 0);
+
+    await rm(tmpDir, { recursive: true });
+  });
+
+  it("creates config from empty file when no prior hooks key exists", async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), "hootl-save-config-"));
+    const hootlDir = join(tmpDir, ".hootl");
+    await import("node:fs/promises").then(fs => fs.mkdir(hootlDir, { recursive: true }));
+
+    // Write empty config (no hooks key)
+    await writeFile(join(hootlDir, "config.json"), "{}", "utf-8");
+
+    await saveProjectConfig((raw) => {
+      // Attempting to splice from non-existent hooks — should be a safe no-op
+      const hooks = raw["hooks"];
+      if (Array.isArray(hooks)) {
+        hooks.splice(0, 1);
+      }
+      // Alternatively, add a hooks key
+      if (!Array.isArray(raw["hooks"])) {
+        raw["hooks"] = [];
+      }
+    }, tmpDir);
+
+    const result = await loadJsonFile(join(hootlDir, "config.json"));
+    assert.ok(Array.isArray(result["hooks"]));
+    assert.equal((result["hooks"] as unknown[]).length, 0);
+
+    await rm(tmpDir, { recursive: true });
+  });
+
+  it("produces properly formatted JSON with trailing newline", async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), "hootl-save-config-"));
+    const hootlDir = join(tmpDir, ".hootl");
+    await import("node:fs/promises").then(fs => fs.mkdir(hootlDir, { recursive: true }));
+
+    await writeFile(join(hootlDir, "config.json"), '{"hooks":[]}', "utf-8");
+
+    await saveProjectConfig((raw) => {
+      raw["hooks"] = [{ trigger: "on_blocked", prompt: "test" }];
+    }, tmpDir);
+
+    const content = await readFile(join(hootlDir, "config.json"), "utf-8");
+    // Should be 2-space indented with trailing newline
+    assert.ok(content.endsWith("\n"));
+    assert.ok(content.includes('  "hooks"'));
+
+    await rm(tmpDir, { recursive: true });
   });
 });

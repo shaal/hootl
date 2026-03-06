@@ -24,6 +24,29 @@ export interface HookResult {
 }
 
 /**
+ * Formats a hook as a human-readable label for display in lists.
+ * Used by `hooks list` and `hooks remove` commands.
+ */
+export function formatHookLabel(hook: Hook, index: number): string {
+  const num = index + 1;
+  const mode = hook.blocking ? "blocking" : "advisory";
+
+  let target: string;
+  if (hook.skill !== undefined) {
+    target = `skill:${hook.skill}`;
+  } else if (hook.prompt !== undefined) {
+    const truncated = hook.prompt.length > 40
+      ? hook.prompt.slice(0, 37) + "..."
+      : hook.prompt;
+    target = `prompt:"${truncated}"`;
+  } else {
+    target = "(no prompt or skill)";
+  }
+
+  return `${num}) ${hook.trigger} → ${target} [${mode}]`;
+}
+
+/**
  * A skill definition maps a hook context to invoke options.
  * Skills are named prompt templates that encapsulate a specific workflow.
  * May be async (e.g. to read template files from disk).

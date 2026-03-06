@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
@@ -195,6 +195,22 @@ const AUTO_LEVEL_TO_ON_CONFIDENCE: Record<string, OnConfidenceMode> = {
   proactive: "merge",
   full: "merge",
 };
+
+/**
+ * Reads the raw project config JSON, applies a mutation via the updater callback,
+ * and writes it back to `.hootl/config.json`. Operates on raw JSON to avoid
+ * clobbering global config defaults or Zod-injected defaults.
+ */
+export async function saveProjectConfig(
+  updater: (raw: Record<string, unknown>) => void,
+  projectDir?: string,
+): Promise<void> {
+  const resolvedProjectDir = projectDir ?? process.cwd();
+  const projectPath = join(resolvedProjectDir, ".hootl", "config.json");
+  const raw = await loadJsonFile(projectPath);
+  updater(raw);
+  await writeFile(projectPath, JSON.stringify(raw, null, 2) + "\n", "utf-8");
+}
 
 export function resolveOnConfidenceMode(
   config: Config,
