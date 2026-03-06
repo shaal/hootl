@@ -56,6 +56,7 @@ src/
     loop.test.ts       Review result parsing, prompt building
     git.test.ts        Slugify, branch naming, commit message generation
     discuss.test.ts    buildDiscussArgs, system prompt construction
+    checkpoint.test.ts Checkpoint read/write/clear, round-trip, error resilience
     prioritize.test.ts userPriority sort, dependency enforcement, schema backward compat
     sync.test.ts       Review task sync integration tests (real git repo + LocalTaskBackend)
     branch-block.test.ts  Branch-switch failure blocks task (dirty worktree integration test)
@@ -94,7 +95,19 @@ The loop continues until:
 - Budget or max attempts exhausted --> task moves to `blocked` state
 - Permanent error --> task stays `in_progress` for later resume
 
-Context bridges between fresh `claude -p` calls via files in `.hootl/tasks/<id>/`: `understanding.md`, `plan.md`, `progress.md`, `test_results.md`, `blockers.md`, `last_confidence.txt`.
+Context bridges between fresh `claude -p` calls via files in `.hootl/tasks/<id>/`: `understanding.md`, `plan.md`, `progress.md`, `test_results.md`, `blockers.md`, `last_confidence.txt`, `checkpoint.json`.
+
+### Crash Recovery
+
+On restart, the loop detects interrupted phases via `checkpoint.json` in the task directory. Before each phase (preflight, plan, execute, review), `writeCheckpoint()` atomically writes the current phase name and attempt number. On resume:
+
+- `readCheckpoint()` detects the interrupted phase and logs a recovery message
+- If the execute phase was interrupted, `hasUncommittedChanges()` checks for leftover changes and auto-commits them with a recovery message (appended to `progress.md`)
+- If a plan exists from an interrupted execute/review phase, the log notes it will skip re-planning
+- The stale checkpoint is cleared before the loop writes fresh ones
+- `clearCheckpoint()` runs on normal exit to clean up
+
+All checkpoint operations are wrapped in try/catch — checkpoint failures never block the loop. Uses the same atomic tmp + rename pattern as `local.ts`.
 
 ### Branch-Switch Safety
 
@@ -394,6 +407,7 @@ Test coverage:
 - **plan-summary.test.ts** -- Summary generation (single/multiple/many tasks, truncation), priority counting (mixed, default-to-medium), empty array, priority ordering
 - **hooks.test.ts** -- Trigger filtering (condition evaluation, minConfidence), prompt resolution (inline vs file path, fallback), result parsing (JSON extraction, brace-matching, graceful degradation, new field aliases: passed/fixes_applied/confidence), system prompt construction, runHook integration (pass/fail, cost, context forwarding), runHooks orchestration (blocking short-circuit, advisory continues, cost logging, trigger filtering), validate-simplify template (existence, content markers, variable substitution), buildTestHookContext (synthetic task defaults, parameter passthrough, config forwarding, ISO timestamps, edge confidence values), formatHookLabel (skill/prompt display, truncation, 1-based numbering, skill precedence), validateRemoveIndex (valid/invalid/boundary indices, NaN, empty list, single-hook), saveProjectConfig (hooks splice, last-hook removal, empty config, JSON formatting), hooks add config mutation (append to existing array, create array when absent, conditions with minConfidence, preserve existing config keys), HOOK_TRIGGERS export (values, HookSchema acceptance)
 - **prioritize.test.ts** -- userPriority schema backward compat, sort order (userPriority before auto), dependency enforcement (findRunnableTask)
+- **checkpoint.test.ts** -- Checkpoint write (valid JSON, atomic overwrite, error resilience), read (valid file, missing file, invalid JSON, missing fields, wrong types), clear (removes file, no-op if missing), round-trip (write+read, clear+read)
 - **branch-block.test.ts** -- Integration test: dirty worktree blocks task on branch switch (real git repo), clean worktree proceeds past branch creation
 
 ## Dependencies
