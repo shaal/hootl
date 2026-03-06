@@ -66,6 +66,7 @@ program
       const choice = await uiChoose("What would you like to do?", [
         "Plan tasks",
         "Run next task",
+        "Auto mode",
         "Prioritize tasks",
         "View status",
         "Resolve blockers",
@@ -79,6 +80,9 @@ program
           break;
         case "Run next task":
           await runCommand();
+          break;
+        case "Auto mode":
+          await autoCommand();
           break;
         case "Prioritize tasks":
           await prioritizeCommand();
@@ -445,6 +449,70 @@ async function selectFromState(state: TaskState, backend: TaskBackend): Promise<
   return task;
 }
 
+export async function autoCommand(
+  cliLevel?: string,
+  cliFlags?: { merge?: boolean; noMerge?: boolean },
+): Promise<void> {
+  await autoInit();
+  const config = await loadConfig();
+  const backend = getBackend(config);
+
+  const level = cliLevel ?? config.auto.defaultLevel;
+  if (level !== "conservative") {
+    uiWarn(
+      `Level "${level}" is not yet implemented — falling back to conservative.`,
+    );
+  }
+
+  const costLogDir = join(process.cwd(), ".hootl", "logs");
+  let tasksCompleted = 0;
+
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    // Sync externally merged branches before each iteration
+    await syncReviewTasks(backend);
+
+    // Check global budget before picking a task
+    const { exceeded, todayCost } = await checkGlobalBudget(
+      costLogDir,
+      config.budgets.global,
+    );
+    if (exceeded) {
+      uiError(
+        `Global daily budget exceeded ($${todayCost.toFixed(2)} >= $${config.budgets.global.toFixed(2)}). Stopping auto mode.`,
+      );
+      break;
+    }
+
+    // Pick next task: prefer in-progress (resume), then ready
+    let targetTask = await selectFromState("in_progress", backend);
+    if (targetTask !== undefined) {
+      uiInfo(`Resuming in-progress task: ${targetTask.id}`);
+    } else {
+      targetTask = await selectFromState("ready", backend);
+    }
+
+    if (targetTask === undefined) {
+      uiSuccess("No more runnable tasks. Auto mode complete.");
+      break;
+    }
+
+    uiInfo(`[auto] Running task ${targetTask.id}: ${targetTask.title}`);
+
+    const { runCompletionLoop } = await import("./loop.js");
+    await runCompletionLoop(
+      targetTask,
+      backend,
+      config,
+      isVerbose(),
+      cliFlags,
+    );
+    tasksCompleted++;
+  }
+
+  uiInfo(`Auto mode finished. Tasks processed: ${tasksCompleted}.`);
+}
+
 async function runCommand(taskId?: string, cliFlags?: { merge?: boolean; noMerge?: boolean }): Promise<void> {
   await autoInit();
   const config = await loadConfig();
@@ -511,6 +579,38 @@ program
       process.exitCode = 1;
     }
   });
+
+program
+  .command("auto")
+  .description(
+    "Autonomous mode — run tasks until queue is empty or budget exhausted",
+  )
+  .option(
+    "--level <level>",
+    "Automation level (conservative|moderate|proactive|full)",
+  )
+  .option("--merge", "Force auto-merge on confidence met")
+  .option("--no-merge", "Disable auto-merge/PR on confidence met")
+  .action(
+    async (options: {
+      level?: string;
+      merge?: boolean;
+      noMerge?: boolean;
+    }) => {
+      try {
+        const cliFlags: { merge?: boolean; noMerge?: boolean } = {};
+        if (options.merge === true) {
+          cliFlags.merge = true;
+        } else if (options.merge === false) {
+          cliFlags.noMerge = true;
+        }
+        await autoCommand(options.level, cliFlags);
+      } catch (err: unknown) {
+        uiError(errorMsg(err));
+        process.exitCode = 1;
+      }
+    },
+  );
 
 async function statusCommand(): Promise<void> {
   await autoInit();
