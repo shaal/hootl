@@ -259,3 +259,264 @@ Error
     at async Test.run (node:internal/test_runner/test:1054:7)
     at async Suite.processPendingSubtests (node:internal/test_runner/test:744:7)
 ---
+2026-03-06T05:08:16.728Z | trigger=on_confidence_met | task=task-001 | state=in_progress | hooks=1 | pid=80977
+Error
+    at runHooks (file:///Users/ofershaal/code/utilities/hootl/dist/hooks.js:345:19)
+    at handleConfidenceMet (file:///Users/ofershaal/code/utilities/hootl/dist/loop.js:368:33)
+    at async TestContext.<anonymous> (file:///Users/ofershaal/code/utilities/hootl/dist/test/loop.test.js:1410:13)
+    at async Test.run (node:internal/test_runner/test:1054:7)
+    at async Suite.processPendingSubtests (node:internal/test_runner/test:744:7)
+---
+2026-03-06T05:08:16.729Z | trigger=on_execute_start | task=task-fh | state=in_progress | hooks=1 | pid=80977
+Error
+    at runHooks (file:///Users/ofershaal/code/utilities/hootl/dist/hooks.js:345:19)
+    at fireHooks (file:///Users/ofershaal/code/utilities/hootl/dist/loop.js:506:19)
+    at TestContext.<anonymous> (file:///Users/ofershaal/code/utilities/hootl/dist/test/loop.test.js:1466:15)
+    at Test.runInAsyncScope (node:async_hooks:214:14)
+    at Test.run (node:internal/test_runner/test:1047:25)
+    at Test.start (node:internal/test_runner/test:944:17)
+    at node:internal/test_runner/test:1440:71
+    at node:internal/per_context/primordials:464:82
+    at new Promise (<anonymous>)
+    at new SafePromise (node:internal/per_context/primordials:433:3)
+---
+2026-03-06T05:08:16.729Z | trigger=on_review_complete | task=task-fh | state=in_progress | hooks=1 | pid=80977
+Error
+    at runHooks (file:///Users/ofershaal/code/utilities/hootl/dist/hooks.js:345:19)
+    at fireHooks (file:///Users/ofershaal/code/utilities/hootl/dist/loop.js:506:19)
+    at TestContext.<anonymous> (file:///Users/ofershaal/code/utilities/hootl/dist/test/loop.test.js:1492:15)
+    at Test.runInAsyncScope (node:async_hooks:214:14)
+    at Test.run (node:internal/test_runner/test:1047:25)
+    at Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+    at Test.postRun (node:internal/test_runner/test:1173:19)
+    at Test.run (node:internal/test_runner/test:1101:12)
+    at async Promise.all (index 0)
+    at async Suite.run (node:internal/test_runner/test:1442:7)
+---
+2026-03-06T05:08:16.730Z | trigger=on_blocked | task=task-fh | state=in_progress | hooks=1 | pid=80977
+Error
+    at runHooks (file:///Users/ofershaal/code/utilities/hootl/dist/hooks.js:345:19)
+    at fireHooks (file:///Users/ofershaal/code/utilities/hootl/dist/loop.js:506:19)
+    at TestContext.<anonymous> (file:///Users/ofershaal/code/utilities/hootl/dist/test/loop.test.js:1518:15)
+    at Test.runInAsyncScope (node:async_hooks:214:14)
+    at Test.run (node:internal/test_runner/test:1047:25)
+    at Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+    at Test.postRun (node:internal/test_runner/test:1173:19)
+    at Test.run (node:internal/test_runner/test:1101:12)
+    at async Suite.processPendingSubtests (node:internal/test_runner/test:744:7)
+---
+2026-03-06T05:08:16.730Z | trigger=on_blocked | task=task-mb | state=in_progress | hooks=1 | pid=80977
+Error
+    at runHooks (file:///Users/ofershaal/code/utilities/hootl/dist/hooks.js:345:19)
+    at fireHooks (file:///Users/ofershaal/code/utilities/hootl/dist/loop.js:506:19)
+    at moveToBlocked (file:///Users/ofershaal/code/utilities/hootl/dist/loop.js:518:11)
+    at TestContext.<anonymous> (file:///Users/ofershaal/code/utilities/hootl/dist/test/loop.test.js:1585:15)
+    at Test.runInAsyncScope (node:async_hooks:214:14)
+    at Test.run (node:internal/test_runner/test:1047:25)
+    at Test.start (node:internal/test_runner/test:944:17)
+    at node:internal/test_runner/test:1440:71
+    at node:internal/per_context/primordials:464:82
+    at new Promise (<anonymous>)
+---
+2026-03-06T05:08:16.731Z | trigger=on_blocked | task=task-mb | state=in_progress | hooks=1 | pid=80977
+Error
+    at runHooks (file:///Users/ofershaal/code/utilities/hootl/dist/hooks.js:345:19)
+    at fireHooks (file:///Users/ofershaal/code/utilities/hootl/dist/loop.js:506:19)
+    at moveToBlocked (file:///Users/ofershaal/code/utilities/hootl/dist/loop.js:518:11)
+    at TestContext.<anonymous> (file:///Users/ofershaal/code/utilities/hootl/dist/test/loop.test.js:1603:30)
+    at Test.runInAsyncScope (node:async_hooks:214:14)
+    at Test.run (node:internal/test_runner/test:1047:25)
+    at Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+    at Test.postRun (node:internal/test_runner/test:1173:19)
+    at Test.run (node:internal/test_runner/test:1101:12)
+    at async Promise.all (index 0)
+---
+2026-03-06T05:08:20.785Z | trigger=on_confidence_met | task=t1 | state=in_progress | hooks=0 | pid=85131
+Error
+    at runHooks (file:///Users/ofershaal/code/utilities/hootl/dist/hooks.js:345:19)
+    at TestContext.<anonymous> (file:///Users/ofershaal/code/utilities/hootl/dist/test/hooks.test.js:498:30)
+    at Test.runInAsyncScope (node:async_hooks:214:14)
+    at Test.run (node:internal/test_runner/test:1047:25)
+    at Test.start (node:internal/test_runner/test:944:17)
+    at node:internal/test_runner/test:1440:71
+    at node:internal/per_context/primordials:464:82
+    at new Promise (<anonymous>)
+    at new SafePromise (node:internal/per_context/primordials:433:3)
+    at node:internal/per_context/primordials:464:9
+---
+2026-03-06T05:08:20.795Z | trigger=on_confidence_met | task=t1 | state=in_progress | hooks=2 | pid=85131
+Error
+    at runHooks (file:///Users/ofershaal/code/utilities/hootl/dist/hooks.js:345:19)
+    at TestContext.<anonymous> (file:///Users/ofershaal/code/utilities/hootl/dist/test/hooks.test.js:523:30)
+    at Test.runInAsyncScope (node:async_hooks:214:14)
+    at Test.run (node:internal/test_runner/test:1047:25)
+    at Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+    at Test.postRun (node:internal/test_runner/test:1173:19)
+    at Test.run (node:internal/test_runner/test:1101:12)
+    at async Promise.all (index 0)
+    at async Suite.run (node:internal/test_runner/test:1442:7)
+    at async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+---
+2026-03-06T05:08:20.798Z | trigger=on_blocked | task=t1 | state=in_progress | hooks=2 | pid=85131
+Error
+    at runHooks (file:///Users/ofershaal/code/utilities/hootl/dist/hooks.js:345:19)
+    at TestContext.<anonymous> (file:///Users/ofershaal/code/utilities/hootl/dist/test/hooks.test.js:556:30)
+    at Test.runInAsyncScope (node:async_hooks:214:14)
+    at Test.run (node:internal/test_runner/test:1047:25)
+    at Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+    at Test.postRun (node:internal/test_runner/test:1173:19)
+    at Test.run (node:internal/test_runner/test:1101:12)
+    at async Suite.processPendingSubtests (node:internal/test_runner/test:744:7)
+---
+2026-03-06T05:08:20.801Z | trigger=on_review_complete | task=task-42 | state=in_progress | hooks=2 | pid=85131
+Error
+    at runHooks (file:///Users/ofershaal/code/utilities/hootl/dist/hooks.js:345:19)
+    at TestContext.<anonymous> (file:///Users/ofershaal/code/utilities/hootl/dist/test/hooks.test.js:572:15)
+    at Test.runInAsyncScope (node:async_hooks:214:14)
+    at Test.run (node:internal/test_runner/test:1047:25)
+    at Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+    at Test.postRun (node:internal/test_runner/test:1173:19)
+    at Test.run (node:internal/test_runner/test:1101:12)
+    at async Suite.processPendingSubtests (node:internal/test_runner/test:744:7)
+---
+2026-03-06T05:08:20.804Z | trigger=on_confidence_met | task=t1 | state=in_progress | hooks=1 | pid=85131
+Error
+    at runHooks (file:///Users/ofershaal/code/utilities/hootl/dist/hooks.js:345:19)
+    at TestContext.<anonymous> (file:///Users/ofershaal/code/utilities/hootl/dist/test/hooks.test.js:589:30)
+    at Test.runInAsyncScope (node:async_hooks:214:14)
+    at Test.run (node:internal/test_runner/test:1047:25)
+    at Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+    at Test.postRun (node:internal/test_runner/test:1173:19)
+    at Test.run (node:internal/test_runner/test:1101:12)
+    at async Suite.processPendingSubtests (node:internal/test_runner/test:744:7)
+---
+2026-03-06T05:08:20.807Z | trigger=on_execute_start | task=t1 | state=in_progress | hooks=2 | pid=85131
+Error
+    at runHooks (file:///Users/ofershaal/code/utilities/hootl/dist/hooks.js:345:19)
+    at TestContext.<anonymous> (file:///Users/ofershaal/code/utilities/hootl/dist/test/hooks.test.js:602:30)
+    at Test.runInAsyncScope (node:async_hooks:214:14)
+    at Test.run (node:internal/test_runner/test:1047:25)
+    at Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+    at Test.postRun (node:internal/test_runner/test:1173:19)
+    at Test.run (node:internal/test_runner/test:1101:12)
+    at async Suite.processPendingSubtests (node:internal/test_runner/test:744:7)
+---
+2026-03-06T05:08:20.809Z | trigger=on_blocked | task=t1 | state=in_progress | hooks=1 | pid=85131
+Error
+    at runHooks (file:///Users/ofershaal/code/utilities/hootl/dist/hooks.js:345:19)
+    at TestContext.<anonymous> (file:///Users/ofershaal/code/utilities/hootl/dist/test/hooks.test.js:622:30)
+    at Test.runInAsyncScope (node:async_hooks:214:14)
+    at Test.run (node:internal/test_runner/test:1047:25)
+    at Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+    at Test.postRun (node:internal/test_runner/test:1173:19)
+    at Test.run (node:internal/test_runner/test:1101:12)
+    at async Suite.processPendingSubtests (node:internal/test_runner/test:744:7)
+---
+2026-03-06T05:08:20.876Z | trigger=on_confidence_met | task=task-001 | state=in_progress | hooks=1 | pid=85135
+Error
+    at runHooks (file:///Users/ofershaal/code/utilities/hootl/dist/hooks.js:345:19)
+    at handleConfidenceMet (file:///Users/ofershaal/code/utilities/hootl/dist/loop.js:306:25)
+    at TestContext.<anonymous> (file:///Users/ofershaal/code/utilities/hootl/dist/test/loop.test.js:440:34)
+    at async Test.run (node:internal/test_runner/test:1054:7)
+    at async Promise.all (index 0)
+    at async Suite.run (node:internal/test_runner/test:1442:7)
+    at async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+---
+2026-03-06T05:08:20.944Z | trigger=on_confidence_met | task=task-001 | state=in_progress | hooks=1 | pid=85135
+Error
+    at runHooks (file:///Users/ofershaal/code/utilities/hootl/dist/hooks.js:345:19)
+    at handleConfidenceMet (file:///Users/ofershaal/code/utilities/hootl/dist/loop.js:306:25)
+    at TestContext.<anonymous> (file:///Users/ofershaal/code/utilities/hootl/dist/test/loop.test.js:455:34)
+    at async Test.run (node:internal/test_runner/test:1054:7)
+    at async Suite.processPendingSubtests (node:internal/test_runner/test:744:7)
+---
+2026-03-06T05:08:21.043Z | trigger=on_confidence_met | task=task-001 | state=in_progress | hooks=1 | pid=85135
+Error
+    at runHooks (file:///Users/ofershaal/code/utilities/hootl/dist/hooks.js:345:19)
+    at handleConfidenceMet (file:///Users/ofershaal/code/utilities/hootl/dist/loop.js:306:25)
+    at TestContext.<anonymous> (file:///Users/ofershaal/code/utilities/hootl/dist/test/loop.test.js:469:34)
+    at async Test.run (node:internal/test_runner/test:1054:7)
+    at async Suite.processPendingSubtests (node:internal/test_runner/test:744:7)
+---
+2026-03-06T05:08:21.097Z | trigger=on_confidence_met | task=task-001 | state=in_progress | hooks=1 | pid=85135
+Error
+    at runHooks (file:///Users/ofershaal/code/utilities/hootl/dist/hooks.js:345:19)
+    at handleConfidenceMet (file:///Users/ofershaal/code/utilities/hootl/dist/loop.js:306:25)
+    at TestContext.<anonymous> (file:///Users/ofershaal/code/utilities/hootl/dist/test/loop.test.js:484:34)
+    at async Test.run (node:internal/test_runner/test:1054:7)
+    at async Suite.processPendingSubtests (node:internal/test_runner/test:744:7)
+---
+2026-03-06T05:08:21.160Z | trigger=on_confidence_met | task=task-001 | state=in_progress | hooks=1 | pid=85135
+Error
+    at runHooks (file:///Users/ofershaal/code/utilities/hootl/dist/hooks.js:345:19)
+    at handleConfidenceMet (file:///Users/ofershaal/code/utilities/hootl/dist/loop.js:306:25)
+    at TestContext.<anonymous> (file:///Users/ofershaal/code/utilities/hootl/dist/test/loop.test.js:499:34)
+    at async Test.run (node:internal/test_runner/test:1054:7)
+    at async Suite.processPendingSubtests (node:internal/test_runner/test:744:7)
+---
+2026-03-06T05:08:21.211Z | trigger=on_confidence_met | task=task-001 | state=in_progress | hooks=1 | pid=85135
+Error
+    at runHooks (file:///Users/ofershaal/code/utilities/hootl/dist/hooks.js:345:19)
+    at handleConfidenceMet (file:///Users/ofershaal/code/utilities/hootl/dist/loop.js:305:25)
+    at TestContext.<anonymous> (file:///Users/ofershaal/code/utilities/hootl/dist/test/loop.test.js:528:34)
+    at async Test.run (node:internal/test_runner/test:1054:7)
+    at async Suite.processPendingSubtests (node:internal/test_runner/test:744:7)
+---
+2026-03-06T05:08:21.213Z | trigger=on_confidence_met | task=task-001 | state=in_progress | hooks=1 | pid=85135
+Error
+    at runHooks (file:///Users/ofershaal/code/utilities/hootl/dist/hooks.js:345:19)
+    at handleConfidenceMet (file:///Users/ofershaal/code/utilities/hootl/dist/loop.js:305:25)
+    at TestContext.<anonymous> (file:///Users/ofershaal/code/utilities/hootl/dist/test/loop.test.js:558:34)
+    at async Test.run (node:internal/test_runner/test:1054:7)
+    at async Suite.processPendingSubtests (node:internal/test_runner/test:744:7)
+---
+2026-03-06T05:08:21.215Z | trigger=on_confidence_met | task=task-001 | state=in_progress | hooks=1 | pid=85135
+Error
+    at runHooks (file:///Users/ofershaal/code/utilities/hootl/dist/hooks.js:345:19)
+    at handleConfidenceMet (file:///Users/ofershaal/code/utilities/hootl/dist/loop.js:305:25)
+    at TestContext.<anonymous> (file:///Users/ofershaal/code/utilities/hootl/dist/test/loop.test.js:583:34)
+    at async Test.run (node:internal/test_runner/test:1054:7)
+    at async Suite.processPendingSubtests (node:internal/test_runner/test:744:7)
+---
+2026-03-06T05:08:21.217Z | trigger=on_confidence_met | task=task-001 | state=in_progress | hooks=1 | pid=85135
+Error
+    at runHooks (file:///Users/ofershaal/code/utilities/hootl/dist/hooks.js:345:19)
+    at handleConfidenceMet (file:///Users/ofershaal/code/utilities/hootl/dist/loop.js:305:25)
+    at TestContext.<anonymous> (file:///Users/ofershaal/code/utilities/hootl/dist/test/loop.test.js:603:34)
+    at async Test.run (node:internal/test_runner/test:1054:7)
+    at async Suite.processPendingSubtests (node:internal/test_runner/test:744:7)
+---
+2026-03-06T05:08:21.227Z | trigger=on_confidence_met | task=task-001 | state=in_progress | hooks=1 | pid=85135
+Error
+    at runHooks (file:///Users/ofershaal/code/utilities/hootl/dist/hooks.js:345:19)
+    at handleConfidenceMet (file:///Users/ofershaal/code/utilities/hootl/dist/loop.js:305:25)
+    at TestContext.<anonymous> (file:///Users/ofershaal/code/utilities/hootl/dist/test/loop.test.js:1063:34)
+    at async Test.run (node:internal/test_runner/test:1054:7)
+    at async Promise.all (index 0)
+    at async Suite.run (node:internal/test_runner/test:1442:7)
+    at async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+---
+2026-03-06T05:08:21.228Z | trigger=on_confidence_met | task=task-001 | state=in_progress | hooks=1 | pid=85135
+Error
+    at runHooks (file:///Users/ofershaal/code/utilities/hootl/dist/hooks.js:345:19)
+    at handleConfidenceMet (file:///Users/ofershaal/code/utilities/hootl/dist/loop.js:305:25)
+    at TestContext.<anonymous> (file:///Users/ofershaal/code/utilities/hootl/dist/test/loop.test.js:1099:19)
+    at async Test.run (node:internal/test_runner/test:1054:7)
+    at async Suite.processPendingSubtests (node:internal/test_runner/test:744:7)
+---
+2026-03-06T05:08:21.228Z | trigger=on_confidence_met | task=task-001 | state=in_progress | hooks=1 | pid=85135
+Error
+    at runHooks (file:///Users/ofershaal/code/utilities/hootl/dist/hooks.js:345:19)
+    at handleConfidenceMet (file:///Users/ofershaal/code/utilities/hootl/dist/loop.js:305:25)
+    at TestContext.<anonymous> (file:///Users/ofershaal/code/utilities/hootl/dist/test/loop.test.js:1129:19)
+    at async Test.run (node:internal/test_runner/test:1054:7)
+    at async Suite.processPendingSubtests (node:internal/test_runner/test:744:7)
+---
+2026-03-06T05:08:21.229Z | trigger=on_confidence_met | task=task-001 | state=in_progress | hooks=1 | pid=85135
+Error
+    at runHooks (file:///Users/ofershaal/code/utilities/hootl/dist/hooks.js:345:19)
+    at handleConfidenceMet (file:///Users/ofershaal/code/utilities/hootl/dist/loop.js:305:25)
+    at TestContext.<anonymous> (file:///Users/ofershaal/code/utilities/hootl/dist/test/loop.test.js:1181:34)
+    at async Test.run (node:internal/test_runner/test:1054:7)
+    at async Suite.processPendingSubtests (node:internal/test_runner/test:744:7)
+---
