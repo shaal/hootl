@@ -1,4 +1,5 @@
 import { execa } from "execa";
+import { appendFile } from "node:fs/promises";
 import { uiInfo, uiWarn, errorMsg } from "./ui.js";
 import { invokeClaude } from "./invoke.js";
 import type { InvokeResult } from "./invoke.js";
@@ -39,8 +40,13 @@ export async function generateCommitMessage(
     });
 
     const rawMessage = result.output.trim();
+
+    // Diagnostic: log commit message generation results to a file
+    const diagLine = `${new Date().toISOString()} | exit=${result.exitCode} | cost=${result.costUsd} | dur=${result.durationMs}ms | output=${JSON.stringify(rawMessage.slice(0, 200))}\n`;
+    await appendFile(".hootl/commit-msg-debug.log", diagLine).catch(() => {});
+
     if (!rawMessage) {
-      uiWarn(`Commit message generation returned empty (exit=${result.exitCode}), using fallback`);
+      uiWarn(`Commit message generation returned empty (exit=${result.exitCode}, dur=${result.durationMs}ms), using fallback`);
       return fallback;
     }
 
@@ -51,6 +57,7 @@ export async function generateCommitMessage(
     return `[${taskId}] ${capped}`;
   } catch (err: unknown) {
     uiWarn(`Commit message generation failed, using fallback: ${errorMsg(err)}`);
+    await appendFile(".hootl/commit-msg-debug.log", `${new Date().toISOString()} | CATCH: ${errorMsg(err)}\n`).catch(() => {});
     return fallback;
   }
 }
