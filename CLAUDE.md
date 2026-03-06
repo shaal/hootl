@@ -51,7 +51,7 @@ src/
     extract-tasks.test.ts JSON array extraction (clean, code-block, bracket-matching, edge cases)
     plan-review.test.ts  Critique prompt building, task parsing, fallback paths
     plan-summary.test.ts Plan summary generation, priority counting, truncation
-    invoke-robustness.test.ts  Edge cases for invoke (timeouts, errors, is_error)
+    invoke-robustness.test.ts  Edge cases for invoke (timeouts, errors, is_error, transient retry)
     local-backend.test.ts      CRUD operations on local task backend
     loop.test.ts       Review result parsing, prompt building
     git.test.ts        Slugify, branch naming, commit message generation
@@ -353,6 +353,7 @@ All `claude -p` calls go through `invokeClaude()` in `src/invoke.ts`. Critical d
 - Must pass `stdin: "ignore"` to execa (otherwise subprocess hangs)
 - Timeout: 5 minutes per call (exit code 124 on timeout)
 - `is_error: true` in JSON response is treated as exit code 1
+- **Transient error retry**: Timeouts (exit code 124), rate limits (429/"rate limit"), and network errors (ECONNREFUSED, ENOTFOUND, ETIMEDOUT, ECONNRESET) are retried with exponential backoff (1s, 2s, 4s) up to 3 times inside `invokeClaude()`. Cost is accumulated across retries for accurate budget tracking. The `sleep` function is injectable via `InvokeClaudeDeps` for testability. The loop in `src/loop.ts` still handles transient errors as a fallback if all invoke-level retries are exhausted.
 
 ### UI / gum Integration
 
@@ -392,7 +393,7 @@ Test coverage:
 - **config.test.ts** -- Config loading, 3-layer merging, env variable overrides, coercion
 - **context.test.ts** -- Context formatting, section inclusion/omission based on null/empty fields, ordering
 - **invoke.test.ts** -- Arg building, cost parsing (`total_cost_usd` / `cost_usd`), text extraction from JSON
-- **invoke-robustness.test.ts** -- Timeout handling, `is_error` detection, edge cases
+- **invoke-robustness.test.ts** -- Timeout handling, `is_error` detection, edge cases, `isTransientError` detection (timeout exit code, rate limit, 429, ECONNREFUSED, ENOTFOUND, ETIMEDOUT, ECONNRESET, success bypass, non-transient bypass, case insensitivity), retry constants and backoff pattern verification
 - **local-backend.test.ts** -- Task CRUD, filtering, atomic writes
 - **loop.test.ts** -- Review JSON parsing (inline, code-block, nested, remediationPlan), prompt building, preflight integration (understanding.md in execute prompt), confidence regression detection, global budget integration, preflight subtask priority parsing, too_broad subtask auto-creation (priority inheritance, ready state, parent ready with dependencies, understanding.md cleanup, dependency accumulation), handleConfidenceMet hook integration (blocking failure returns in_progress without state update, context forwarding, cost logging with trigger label, re-verification on fixes_applied with above-target confidence, re-verify confidence drop returns in_progress with remediation plan, re-verification capped at MAX_REVERIFICATIONS, no re-verification when no fixes_applied, re-verify auto-commits hook changes, re-verify cost logged with re-verify phase label), fireHooks (context propagation, no-op on empty hooks, error swallowing), moveToBlocked (on_blocked hook firing, error resilience, blocker forwarding)
 - **git.test.ts** -- Slugify edge cases, branch name construction, getHeadSha, resetToSha rollback, getMergedOrGoneBranches (gone, merged, unmerged, mixed batch, empty input), generateCommitMessage (Claude-generated with prefix, whitespace stripping, fallback on throw/empty, diff truncation, multi-line enforcement, 120-char cap, stat summary in prompt, phase in fallback), commitTaskChanges (DI-based diff capture, fallback on failure, no-op on clean, explicit message bypass)
