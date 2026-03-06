@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   parseCostFromOutput,
+  parseContextWindowPercent,
   extractTextOutput,
   buildArgs,
   getClaudeEnv,
@@ -64,6 +65,46 @@ describe("parseCostFromOutput", () => {
 
   it("returns 0 for JSON primitive", () => {
     assert.equal(parseCostFromOutput('"hello"'), 0);
+  });
+});
+
+describe("parseContextWindowPercent", () => {
+  it("returns context_window_percent when present", () => {
+    const raw = JSON.stringify({ context_window_percent: 42, result: "hello" });
+    assert.equal(parseContextWindowPercent(raw), 42);
+  });
+
+  it("returns 0 when context_window_percent is missing", () => {
+    const raw = JSON.stringify({ result: "some output" });
+    assert.equal(parseContextWindowPercent(raw), 0);
+  });
+
+  it("returns 0 for invalid JSON", () => {
+    assert.equal(parseContextWindowPercent("not json at all"), 0);
+  });
+
+  it("returns 0 for empty string", () => {
+    assert.equal(parseContextWindowPercent(""), 0);
+  });
+
+  it("returns 0 when value is null", () => {
+    const raw = JSON.stringify({ context_window_percent: null });
+    assert.equal(parseContextWindowPercent(raw), 0);
+  });
+
+  it("returns 0 when value is NaN-producing string", () => {
+    const raw = JSON.stringify({ context_window_percent: "not-a-number" });
+    assert.equal(parseContextWindowPercent(raw), 0);
+  });
+
+  it("handles zero percent correctly", () => {
+    const raw = JSON.stringify({ context_window_percent: 0 });
+    assert.equal(parseContextWindowPercent(raw), 0);
+  });
+
+  it("handles decimal percentages", () => {
+    const raw = JSON.stringify({ context_window_percent: 55.7 });
+    assert.equal(parseContextWindowPercent(raw), 55.7);
   });
 });
 

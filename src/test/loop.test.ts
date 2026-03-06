@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { parseReviewResult, isSessionBudgetExceeded, applySessionBudgetExceeded, buildPlanPrompt, isConfidenceRegression, handleConfidenceMet, parsePreflightResult, handleTooBroad, fireHooks, moveToBlocked, MAX_REVERIFICATIONS } from "../loop.js";
+import { parseReviewResult, isContextWindowExceeded, applyContextWindowExceeded, buildPlanPrompt, isConfidenceRegression, handleConfidenceMet, parsePreflightResult, handleTooBroad, fireHooks, moveToBlocked, MAX_REVERIFICATIONS } from "../loop.js";
 import { checkGlobalBudget } from "../budget.js";
 import { ConfigSchema } from "../config.js";
 import type { TaskBackend, CreateTaskInput } from "../tasks/types.js";
@@ -287,25 +287,25 @@ describe("buildPlanPrompt", () => {
   });
 });
 
-describe("isSessionBudgetExceeded", () => {
-  it("returns true when cost equals budget", () => {
-    assert.equal(isSessionBudgetExceeded(0.50, 0.50), true);
+describe("isContextWindowExceeded", () => {
+  it("returns true when usage equals limit", () => {
+    assert.equal(isContextWindowExceeded(60, 60), true);
   });
 
-  it("returns true when cost exceeds budget", () => {
-    assert.equal(isSessionBudgetExceeded(0.75, 0.50), true);
+  it("returns true when usage exceeds limit", () => {
+    assert.equal(isContextWindowExceeded(75, 60), true);
   });
 
-  it("returns false when cost is under budget", () => {
-    assert.equal(isSessionBudgetExceeded(0.30, 0.50), false);
+  it("returns false when usage is under limit", () => {
+    assert.equal(isContextWindowExceeded(40, 60), false);
   });
 
-  it("returns false when cost is 0", () => {
-    assert.equal(isSessionBudgetExceeded(0, 0.50), false);
+  it("returns false when usage is 0", () => {
+    assert.equal(isContextWindowExceeded(0, 60), false);
   });
 });
 
-describe("applySessionBudgetExceeded", () => {
+describe("applyContextWindowExceeded", () => {
   const makeTask = (overrides: Partial<Task> = {}): Task => ({
     id: "task-001",
     title: "Test task",
@@ -328,18 +328,18 @@ describe("applySessionBudgetExceeded", () => {
     ...overrides,
   });
 
-  it("returns null when budget is not exceeded", async () => {
+  it("returns null when context window is not exceeded", async () => {
     const mockBackend: Pick<TaskBackend, "updateTask"> = {
       updateTask: async () => { throw new Error("should not be called"); },
     };
     const task = makeTask({ totalCost: 0.10 });
-    const result = await applySessionBudgetExceeded(
-      mockBackend as TaskBackend, "task-001", task, 0.30, 0.50,
+    const result = await applyContextWindowExceeded(
+      mockBackend as TaskBackend, "task-001", task, 0.30, 40, 60,
     );
     assert.equal(result, null);
   });
 
-  it("returns updated task when budget is exceeded", async () => {
+  it("returns updated task when context window is exceeded", async () => {
     const task = makeTask({ totalCost: 0.10 });
     let capturedUpdates: Partial<Task> | undefined;
     const mockBackend: Pick<TaskBackend, "updateTask"> = {
@@ -348,22 +348,22 @@ describe("applySessionBudgetExceeded", () => {
         return { ...task, ...updates } as Task;
       },
     };
-    const result = await applySessionBudgetExceeded(
-      mockBackend as TaskBackend, "task-001", task, 0.55, 0.50,
+    const result = await applyContextWindowExceeded(
+      mockBackend as TaskBackend, "task-001", task, 0.55, 75, 60,
     );
     assert.notEqual(result, null);
     assert.equal(capturedUpdates?.totalCost, 0.65); // 0.10 + 0.55
   });
 
-  it("returns updated task when cost exactly equals budget", async () => {
+  it("returns updated task when usage exactly equals limit", async () => {
     const task = makeTask({ totalCost: 0.00 });
     const mockBackend: Pick<TaskBackend, "updateTask"> = {
       updateTask: async (_id: string, updates: Partial<Task>) => {
         return { ...task, ...updates } as Task;
       },
     };
-    const result = await applySessionBudgetExceeded(
-      mockBackend as TaskBackend, "task-001", task, 0.50, 0.50,
+    const result = await applyContextWindowExceeded(
+      mockBackend as TaskBackend, "task-001", task, 0.50, 60, 60,
     );
     assert.notEqual(result, null);
     assert.equal(result?.totalCost, 0.50);

@@ -185,6 +185,7 @@ function makeResult(overrides: Partial<InvokeResult>): InvokeResult {
     costUsd: 0,
     exitCode: 1,
     durationMs: 100,
+    contextWindowPercent: 0,
     ...overrides,
   };
 }

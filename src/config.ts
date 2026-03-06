@@ -4,11 +4,11 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 
 const BudgetSchema = z.object({
-  perSession: z.number().default(0.50),
   perTask: z.number().default(5.00),
   global: z.number().default(50.00),
   maxAttemptsPerTask: z.number().default(10),
-});
+  contextWindowLimit: z.number().default(60),
+}).passthrough();
 
 const ConfidenceSchema = z.object({
   target: z.number().default(95),
@@ -91,7 +91,7 @@ export async function loadJsonFile(path: string): Promise<Record<string, unknown
 
 const ENV_MAP: Record<string, string[]> = {
   HOOTL_TASK_BACKEND: ["taskBackend"],
-  HOOTL_BUDGET_PER_SESSION: ["budgets", "perSession"],
+  HOOTL_BUDGET_CONTEXT_WINDOW_LIMIT: ["budgets", "contextWindowLimit"],
   HOOTL_BUDGET_PER_TASK: ["budgets", "perTask"],
   HOOTL_BUDGET_GLOBAL: ["budgets", "global"],
   HOOTL_BUDGET_MAX_ATTEMPTS: ["budgets", "maxAttemptsPerTask"],

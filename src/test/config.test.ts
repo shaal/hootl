@@ -29,10 +29,10 @@ describe("ConfigSchema", () => {
     assert.equal(config.taskBackend, "local");
     assert.equal(config.permissionMode, "default");
 
-    assert.equal(config.budgets.perSession, 0.5);
     assert.equal(config.budgets.perTask, 5.0);
     assert.equal(config.budgets.global, 50.0);
     assert.equal(config.budgets.maxAttemptsPerTask, 10);
+    assert.equal(config.budgets.contextWindowLimit, 60);
 
     assert.equal(config.confidence.target, 95);
     assert.equal(config.confidence.requireTests, true);
@@ -55,7 +55,7 @@ describe("ConfigSchema", () => {
 
     assert.equal(config.taskBackend, "github");
     // Other fields remain defaults
-    assert.equal(config.budgets.perSession, 0.5);
+    assert.equal(config.budgets.contextWindowLimit, 60);
     assert.equal(config.confidence.target, 95);
   });
 
@@ -100,7 +100,7 @@ describe("applyEnvOverrides", () => {
   const savedEnv: Record<string, string | undefined> = {};
   const envKeys = [
     "HOOTL_TASK_BACKEND",
-    "HOOTL_BUDGET_PER_SESSION",
+    "HOOTL_BUDGET_CONTEXT_WINDOW_LIMIT",
     "HOOTL_CONFIDENCE_REQUIRE_TESTS",
   ];
 
@@ -127,11 +127,11 @@ describe("applyEnvOverrides", () => {
     assert.equal(result.taskBackend, "github");
   });
 
-  it("HOOTL_BUDGET_PER_SESSION overrides budgets.perSession with number coercion", () => {
-    process.env.HOOTL_BUDGET_PER_SESSION = "1.25";
+  it("HOOTL_BUDGET_CONTEXT_WINDOW_LIMIT overrides budgets.contextWindowLimit with number coercion", () => {
+    process.env.HOOTL_BUDGET_CONTEXT_WINDOW_LIMIT = "80";
     const result = applyEnvOverrides({});
     const budgets = result.budgets as Record<string, unknown>;
-    assert.equal(budgets.perSession, 1.25);
+    assert.equal(budgets.contextWindowLimit, 80);
   });
 
   it("HOOTL_CONFIDENCE_REQUIRE_TESTS=false overrides to boolean false", () => {
@@ -142,16 +142,16 @@ describe("applyEnvOverrides", () => {
   });
 
   it("no env vars set returns config unchanged", () => {
-    const input = { taskBackend: "local", budgets: { perSession: 0.5 } };
+    const input = { taskBackend: "local", budgets: { contextWindowLimit: 60 } };
     const result = applyEnvOverrides(input);
     assert.deepEqual(result, input);
   });
 
   it("creates nested objects if they don't exist", () => {
-    process.env.HOOTL_BUDGET_PER_SESSION = "2.0";
+    process.env.HOOTL_BUDGET_CONTEXT_WINDOW_LIMIT = "75";
     const result = applyEnvOverrides({});
     const budgets = result.budgets as Record<string, unknown>;
-    assert.equal(budgets.perSession, 2.0);
+    assert.equal(budgets.contextWindowLimit, 75);
   });
 });
 
@@ -170,7 +170,7 @@ describe("loadConfig", () => {
     const config = await loadConfig(tmpDir);
 
     assert.equal(config.taskBackend, "local");
-    assert.equal(config.budgets.perSession, 0.5);
+    assert.equal(config.budgets.contextWindowLimit, 60);
     assert.equal(config.confidence.target, 95);
   });
 
@@ -180,13 +180,13 @@ describe("loadConfig", () => {
     await mkdir(hootlDir, { recursive: true });
     await writeFile(
       join(hootlDir, "config.json"),
-      JSON.stringify({ taskBackend: "beads", budgets: { perSession: 2.0 } }),
+      JSON.stringify({ taskBackend: "beads", budgets: { contextWindowLimit: 80 } }),
     );
 
     const config = await loadConfig(projectDir);
 
     assert.equal(config.taskBackend, "beads");
-    assert.equal(config.budgets.perSession, 2.0);
+    assert.equal(config.budgets.contextWindowLimit, 80);
     // Non-overridden defaults remain
     assert.equal(config.budgets.perTask, 5.0);
     assert.equal(config.confidence.target, 95);
@@ -433,9 +433,9 @@ describe("setNestedValue", () => {
   });
 
   it("preserves existing sibling keys", () => {
-    const obj: Record<string, unknown> = { budgets: { perSession: 0.5 } };
+    const obj: Record<string, unknown> = { budgets: { contextWindowLimit: 60 } };
     setNestedValue(obj, "budgets.perTask", 10);
-    assert.deepEqual(obj, { budgets: { perSession: 0.5, perTask: 10 } });
+    assert.deepEqual(obj, { budgets: { contextWindowLimit: 60, perTask: 10 } });
   });
 
   it("creates intermediate objects for deep paths", () => {
@@ -514,7 +514,7 @@ describe("saveGlobalConfig", () => {
     await mkdir(hootlDir, { recursive: true });
     await writeFile(
       join(hootlDir, "config.json"),
-      JSON.stringify({ budgets: { perSession: 0.5 }, taskBackend: "local" }),
+      JSON.stringify({ budgets: { contextWindowLimit: 60 }, taskBackend: "local" }),
     );
 
     await saveProjectConfig((raw) => {
@@ -523,7 +523,7 @@ describe("saveGlobalConfig", () => {
 
     const content = JSON.parse(await readFile(join(hootlDir, "config.json"), "utf-8")) as Record<string, unknown>;
     const budgets = content["budgets"] as Record<string, unknown>;
-    assert.equal(budgets["perSession"], 0.5);
+    assert.equal(budgets["contextWindowLimit"], 60);
     assert.equal(budgets["perTask"], 10);
     assert.equal(content["taskBackend"], "local");
   });
