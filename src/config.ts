@@ -37,19 +37,21 @@ const NotificationsSchema = z.object({
   webhook: z.string().nullable().default(null),
 });
 
-const HookTriggerSchema = z.enum([
+export const HOOK_TRIGGERS = [
   "on_confidence_met",
   "on_review_complete",
   "on_blocked",
   "on_execute_start",
-]);
+] as const;
+
+const HookTriggerSchema = z.enum(HOOK_TRIGGERS);
 export type HookTrigger = z.infer<typeof HookTriggerSchema>;
 
 const HookConditionSchema = z.object({
   minConfidence: z.number().optional(),
 });
 
-const HookSchema = z.object({
+export const HookSchema = z.object({
   trigger: HookTriggerSchema,
   prompt: z.string().optional(),
   skill: z.string().optional(),

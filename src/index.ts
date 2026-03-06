@@ -5,7 +5,7 @@ import { existsSync } from "node:fs";
 import { writeFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { loadConfig, loadJsonFile, saveProjectConfig, type Config } from "./config.js";
+import { loadConfig, loadJsonFile, saveProjectConfig, HOOK_TRIGGERS, HookSchema, type Config } from "./config.js";
 import { LocalTaskBackend } from "./tasks/local.js";
 import type { TaskBackend, Task, TaskState } from "./tasks/types.js";
 import { writeStatusSummary } from "./status.js";
@@ -908,6 +908,85 @@ hooksCmd
       }
 
       uiInfo(`Cost: $${result.costUsd.toFixed(4)}`);
+    } catch (err: unknown) {
+      uiError(errorMsg(err));
+      process.exitCode = 1;
+    }
+  });
+
+hooksCmd
+  .command("add")
+  .description("Interactively add a new hook to the project config")
+  .action(async () => {
+    try {
+      const { formatHookLabel } = await import("./hooks.js");
+
+      // 1. Prompt for trigger
+      const trigger = await uiChoose("Trigger point:", [...HOOK_TRIGGERS]);
+
+      // 2. Prompt for skill vs prompt
+      const hookType = await uiChoose("Hook type:", ["skill", "prompt"]);
+      let skill: string | undefined;
+      let prompt: string | undefined;
+      if (hookType === "skill") {
+        skill = await uiInput("Skill name:");
+        if (skill.trim() === "") {
+          uiError("Skill name cannot be empty.");
+          process.exitCode = 1;
+          return;
+        }
+      } else {
+        prompt = await uiInput("Prompt text or file path:");
+        if (prompt.trim() === "") {
+          uiError("Prompt cannot be empty.");
+          process.exitCode = 1;
+          return;
+        }
+      }
+
+      // 3. Prompt for blocking mode
+      const modeChoice = await uiChoose("Mode:", ["blocking", "advisory"]);
+      const blocking = modeChoice === "blocking";
+
+      // 4. Prompt for optional minConfidence
+      const minConfInput = await uiInput("Min confidence (leave empty to skip):");
+      let conditions: { minConfidence: number } | undefined;
+      if (minConfInput.trim() !== "") {
+        const minConf = parseInt(minConfInput.trim(), 10);
+        if (Number.isNaN(minConf) || minConf < 0 || minConf > 100) {
+          uiError("Min confidence must be a number between 0 and 100.");
+          process.exitCode = 1;
+          return;
+        }
+        conditions = { minConfidence: minConf };
+      }
+
+      // 5. Assemble and validate
+      const hookObj = { trigger, skill, prompt, blocking, conditions };
+      const parsed = HookSchema.parse(hookObj);
+
+      // 6. Append to project config
+      await saveProjectConfig((raw) => {
+        if (!Array.isArray(raw["hooks"])) {
+          raw["hooks"] = [];
+        }
+        // Write the raw object (without Zod defaults bloating it)
+        const entry: Record<string, unknown> = { trigger: parsed.trigger, blocking: parsed.blocking };
+        if (parsed.skill !== undefined) entry["skill"] = parsed.skill;
+        if (parsed.prompt !== undefined) entry["prompt"] = parsed.prompt;
+        if (parsed.conditions !== undefined) entry["conditions"] = parsed.conditions;
+        (raw["hooks"] as unknown[]).push(entry);
+      });
+
+      // 7. Confirm
+      const config = await loadConfig();
+      const addedIndex = config.hooks.length - 1;
+      const addedHook = config.hooks[addedIndex];
+      if (addedHook !== undefined) {
+        uiSuccess(`Hook added: ${formatHookLabel(addedHook, addedIndex)}`);
+      } else {
+        uiSuccess("Hook added.");
+      }
     } catch (err: unknown) {
       uiError(errorMsg(err));
       process.exitCode = 1;

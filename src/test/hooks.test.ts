@@ -22,7 +22,7 @@ import type { HookContext, HookDeps, HookResult } from "../hooks.js";
 import type { Hook } from "../config.js";
 import type { Task } from "../tasks/types.js";
 import type { InvokeResult } from "../invoke.js";
-import { ConfigSchema, saveProjectConfig, loadJsonFile } from "../config.js";
+import { ConfigSchema, saveProjectConfig, loadJsonFile, HOOK_TRIGGERS, HookSchema } from "../config.js";
 
 function makeTask(overrides: Partial<Task> = {}): Task {
   return {
@@ -1184,5 +1184,171 @@ describe("saveProjectConfig", () => {
     assert.ok(content.includes('  "hooks"'));
 
     await rm(tmpDir, { recursive: true });
+  });
+});
+
+// --- hooks add config mutation ---
+
+describe("hooks add config mutation", () => {
+  let tmpDir: string;
+
+  it("appends hook to existing hooks array and preserves other keys", async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), "hootl-hooks-add-"));
+    const hootlDir = join(tmpDir, ".hootl");
+    await import("node:fs/promises").then(fs => fs.mkdir(hootlDir, { recursive: true }));
+
+    const initial = {
+      taskBackend: "local",
+      budgets: { perTask: 10 },
+      hooks: [
+        { trigger: "on_confidence_met", skill: "simplify", blocking: true },
+      ],
+    };
+    await writeFile(join(hootlDir, "config.json"), JSON.stringify(initial, null, 2), "utf-8");
+
+    // Simulate the add command's updater logic
+    const newHook = { trigger: "on_blocked" as const, prompt: "Log the blocker", blocking: false };
+    HookSchema.parse(newHook); // validate before writing
+
+    await saveProjectConfig((raw) => {
+      if (!Array.isArray(raw["hooks"])) {
+        raw["hooks"] = [];
+      }
+      (raw["hooks"] as unknown[]).push(newHook);
+    }, tmpDir);
+
+    const result = await loadJsonFile(join(hootlDir, "config.json"));
+    // Other keys preserved
+    assert.equal(result["taskBackend"], "local");
+    assert.deepStrictEqual((result["budgets"] as Record<string, unknown>)["perTask"], 10);
+    // Hooks array has both entries
+    const hooks = result["hooks"] as unknown[];
+    assert.equal(hooks.length, 2);
+    assert.equal((hooks[0] as Record<string, unknown>)["skill"], "simplify");
+    assert.equal((hooks[1] as Record<string, unknown>)["prompt"], "Log the blocker");
+    assert.equal((hooks[1] as Record<string, unknown>)["trigger"], "on_blocked");
+
+    await rm(tmpDir, { recursive: true });
+  });
+
+  it("creates hooks array when absent", async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), "hootl-hooks-add-"));
+    const hootlDir = join(tmpDir, ".hootl");
+    await import("node:fs/promises").then(fs => fs.mkdir(hootlDir, { recursive: true }));
+
+    // Config with no hooks key at all
+    await writeFile(join(hootlDir, "config.json"), '{"taskBackend":"local"}', "utf-8");
+
+    const newHook = { trigger: "on_execute_start" as const, skill: "simplify", blocking: true };
+    HookSchema.parse(newHook);
+
+    await saveProjectConfig((raw) => {
+      if (!Array.isArray(raw["hooks"])) {
+        raw["hooks"] = [];
+      }
+      (raw["hooks"] as unknown[]).push(newHook);
+    }, tmpDir);
+
+    const result = await loadJsonFile(join(hootlDir, "config.json"));
+    assert.equal(result["taskBackend"], "local");
+    const hooks = result["hooks"] as unknown[];
+    assert.equal(hooks.length, 1);
+    assert.equal((hooks[0] as Record<string, unknown>)["trigger"], "on_execute_start");
+    assert.equal((hooks[0] as Record<string, unknown>)["skill"], "simplify");
+
+    await rm(tmpDir, { recursive: true });
+  });
+
+  it("appends hook with conditions.minConfidence", async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), "hootl-hooks-add-"));
+    const hootlDir = join(tmpDir, ".hootl");
+    await import("node:fs/promises").then(fs => fs.mkdir(hootlDir, { recursive: true }));
+
+    await writeFile(join(hootlDir, "config.json"), '{"hooks":[]}', "utf-8");
+
+    const newHook = {
+      trigger: "on_review_complete" as const,
+      prompt: "Check coverage",
+      blocking: false,
+      conditions: { minConfidence: 80 },
+    };
+    HookSchema.parse(newHook);
+
+    await saveProjectConfig((raw) => {
+      if (!Array.isArray(raw["hooks"])) {
+        raw["hooks"] = [];
+      }
+      (raw["hooks"] as unknown[]).push(newHook);
+    }, tmpDir);
+
+    const result = await loadJsonFile(join(hootlDir, "config.json"));
+    const hooks = result["hooks"] as unknown[];
+    assert.equal(hooks.length, 1);
+    const added = hooks[0] as Record<string, unknown>;
+    assert.equal(added["trigger"], "on_review_complete");
+    assert.equal(added["prompt"], "Check coverage");
+    const conditions = added["conditions"] as Record<string, unknown>;
+    assert.equal(conditions["minConfidence"], 80);
+
+    await rm(tmpDir, { recursive: true });
+  });
+
+  it("preserves all existing config keys when adding first hook", async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), "hootl-hooks-add-"));
+    const hootlDir = join(tmpDir, ".hootl");
+    await import("node:fs/promises").then(fs => fs.mkdir(hootlDir, { recursive: true }));
+
+    const initial = {
+      taskBackend: "local",
+      budgets: { perSession: 1, perTask: 5, global: 50 },
+      confidence: { target: 90 },
+      git: { branchPrefix: "custom/" },
+      permissionMode: "lenient",
+    };
+    await writeFile(join(hootlDir, "config.json"), JSON.stringify(initial, null, 2), "utf-8");
+
+    const newHook = { trigger: "on_confidence_met" as const, skill: "simplify", blocking: true };
+    HookSchema.parse(newHook);
+
+    await saveProjectConfig((raw) => {
+      if (!Array.isArray(raw["hooks"])) {
+        raw["hooks"] = [];
+      }
+      (raw["hooks"] as unknown[]).push(newHook);
+    }, tmpDir);
+
+    const result = await loadJsonFile(join(hootlDir, "config.json"));
+    // All original keys intact
+    assert.equal(result["taskBackend"], "local");
+    assert.deepStrictEqual(result["budgets"], { perSession: 1, perTask: 5, global: 50 });
+    assert.deepStrictEqual(result["confidence"], { target: 90 });
+    assert.deepStrictEqual(result["git"], { branchPrefix: "custom/" });
+    assert.equal(result["permissionMode"], "lenient");
+    // New hooks array added
+    const hooks = result["hooks"] as unknown[];
+    assert.equal(hooks.length, 1);
+    assert.equal((hooks[0] as Record<string, unknown>)["skill"], "simplify");
+
+    await rm(tmpDir, { recursive: true });
+  });
+});
+
+// --- HOOK_TRIGGERS export ---
+
+describe("HOOK_TRIGGERS", () => {
+  it("contains all expected trigger values", () => {
+    assert.deepStrictEqual([...HOOK_TRIGGERS], [
+      "on_confidence_met",
+      "on_review_complete",
+      "on_blocked",
+      "on_execute_start",
+    ]);
+  });
+
+  it("values are accepted by HookSchema", () => {
+    for (const trigger of HOOK_TRIGGERS) {
+      const result = HookSchema.safeParse({ trigger, prompt: "test", blocking: false });
+      assert.ok(result.success, `Trigger "${trigger}" should be valid`);
+    }
   });
 });
