@@ -6,7 +6,7 @@ import { invokeClaude, logCost } from "./invoke.js";
 import { type Config, type OnConfidenceMode, getProjectDir, resolveOnConfidenceMode } from "./config.js";
 import { type Task, type TaskBackend, type TaskPriority, type TaskType, TaskPriority as TaskPriorityEnum, TaskType as TaskTypeEnum } from "./tasks/types.js";
 import { uiInfo, uiWarn, uiError, uiSuccess, uiSpinner, errorMsg } from "./ui.js";
-import { isGitRepo, createTaskBranch, commitTaskChanges, switchBranch, getBaseBranch, getHeadSha, resetToSha, mergeBranch, deleteBranch, pushBranch, createDraftPR, hasUncommittedChanges, slugify, createWorktree, removeWorktree } from "./git.js";
+import { isGitRepo, createTaskBranch, commitTaskChanges, switchBranch, getBaseBranch, getHeadSha, resetToSha, mergeBranch, deleteBranch, pushBranch, createDraftPR, hasUncommittedChanges, slugify, createWorktree, removeWorktree, getDirtyFiles } from "./git.js";
 import { checkGlobalBudget } from "./budget.js";
 import { notify, notifyWebhook } from "./notify.js";
 import { generateMemoryEntry, appendMemoryEntry } from "./plan-memory.js";
@@ -472,6 +472,8 @@ export async function handleConfidenceMet(
         if (taskBranch !== null) {
           try {
             const commitFn = hookDeps?.commit ?? commitTaskChanges;
+            // Hook re-verification commits should stage all hook changes — don't filter by preExistingDirty
+            // since the hook's fixes are new work that must be committed regardless of pre-execute state.
             await commitFn(task.id, `hook-fix-${reverifyCount}`, `[${task.id}] Apply code quality fixes (re-verify ${reverifyCount})`, undefined, worktreePath);
           } catch (err: unknown) {
             uiWarn(`Could not auto-commit hook fixes: ${errorMsg(err)}`);
@@ -860,6 +862,11 @@ export async function runCompletionLoop(
     }
   }
 
+  // Snapshot pre-existing dirty files before any execute phase runs.
+  // In non-worktree mode, the developer may have uncommitted edits that shouldn't be staged.
+  // In worktree mode, the worktree is isolated so we don't need to exclude anything.
+  const preExistingDirty = useWorktrees ? undefined : await getDirtyFiles();
+
   let hasRemediationPlan = false;
 
   // Load previous confidence from persistence file (supports cross-run rollback detection)
@@ -1128,7 +1135,7 @@ export async function runCompletionLoop(
       // Auto-commit after execute phase
       if (taskBranch !== null) {
         try {
-          await commitTaskChanges(task.id, `attempt-${attempt}`, undefined, undefined, worktreePath);
+          await commitTaskChanges(task.id, `attempt-${attempt}`, undefined, undefined, worktreePath, preExistingDirty);
         } catch (err: unknown) {
           uiWarn(`Could not auto-commit: ${errorMsg(err)}`);
         }

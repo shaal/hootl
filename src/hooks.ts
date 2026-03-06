@@ -3,6 +3,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { invokeClaude, logCost } from "./invoke.js";
 import type { InvokeOptions } from "./invoke.js";
+import type { CommitMessageDeps } from "./git.js";
 import type { Config, Hook, HookTrigger } from "./config.js";
 import type { Task } from "./tasks/types.js";
 import { uiWarn } from "./ui.js";
@@ -260,55 +261,84 @@ export function parseHookResult(output: string): {
 
   if (output.trim() === "") return defaultResult;
 
-  // Try brace-matching to extract JSON
-  const firstBrace = output.indexOf("{");
-  if (firstBrace === -1) return defaultResult;
+  // Multi-candidate extraction strategy (same pattern as parseReviewResult in loop.ts).
+  // Hooks (especially simplify) produce lots of prose/code with curly braces before
+  // the actual JSON result at the end, so forward brace-matching grabs the wrong thing.
+  const candidates: string[] = [];
 
-  let depth = 0;
-  let lastBrace = -1;
-  for (let i = firstBrace; i < output.length; i++) {
-    if (output[i] === "{") depth++;
-    else if (output[i] === "}") {
-      depth--;
-      if (depth === 0) {
-        lastBrace = i;
-        break;
+  // Candidate 1: code-block extraction (```json ... ```)
+  const codeBlockMatch = /```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/.exec(output);
+  if (codeBlockMatch?.[1]) {
+    candidates.push(codeBlockMatch[1].trim());
+  }
+
+  // Candidate 2: reverse brace-matching — find last }, walk backwards to matching {
+  const lastClose = output.lastIndexOf("}");
+  if (lastClose !== -1) {
+    let depth = 0;
+    for (let i = lastClose; i >= 0; i--) {
+      if (output[i] === "}") depth++;
+      else if (output[i] === "{") {
+        depth--;
+        if (depth === 0) {
+          candidates.push(output.slice(i, lastClose + 1));
+          break;
+        }
       }
     }
   }
 
-  if (lastBrace === -1) return defaultResult;
+  // Candidate 3: forward brace-matching (original behavior, fallback)
+  const firstBrace = output.indexOf("{");
+  if (firstBrace !== -1) {
+    let depth = 0;
+    for (let i = firstBrace; i < output.length; i++) {
+      if (output[i] === "{") depth++;
+      else if (output[i] === "}") {
+        depth--;
+        if (depth === 0) {
+          candidates.push(output.slice(firstBrace, i + 1));
+          break;
+        }
+      }
+    }
+  }
 
-  try {
-    const parsed: unknown = JSON.parse(output.slice(firstBrace, lastBrace + 1));
-    if (typeof parsed !== "object" || parsed === null) return defaultResult;
+  // Try each candidate, return the first that parses as a valid JSON object
+  for (const candidate of candidates) {
+    try {
+      const parsed: unknown = JSON.parse(candidate);
+      if (typeof parsed !== "object" || parsed === null) continue;
 
-    const record = parsed as Record<string, unknown>;
+      const record = parsed as Record<string, unknown>;
 
-    // "passed" (new) takes precedence over "pass" (old)
-    const pass = typeof record["passed"] === "boolean"
-      ? record["passed"]
-      : typeof record["pass"] === "boolean"
-        ? record["pass"]
-        : false;
+      // "passed" (new) takes precedence over "pass" (old)
+      const pass = typeof record["passed"] === "boolean"
+        ? record["passed"]
+        : typeof record["pass"] === "boolean"
+          ? record["pass"]
+          : false;
 
-    const issues = Array.isArray(record["issues"])
-      ? (record["issues"] as unknown[]).filter((x): x is string => typeof x === "string")
-      : [];
-
-    // "fixes_applied" (new) takes precedence over "remediationActions" (old)
-    const remediationActions = Array.isArray(record["fixes_applied"])
-      ? (record["fixes_applied"] as unknown[]).filter((x): x is string => typeof x === "string")
-      : Array.isArray(record["remediationActions"])
-        ? (record["remediationActions"] as unknown[]).filter((x): x is string => typeof x === "string")
+      const issues = Array.isArray(record["issues"])
+        ? (record["issues"] as unknown[]).filter((x): x is string => typeof x === "string")
         : [];
 
-    const confidence = typeof record["confidence"] === "number" ? record["confidence"] : null;
+      // "fixes_applied" (new) takes precedence over "remediationActions" (old)
+      const remediationActions = Array.isArray(record["fixes_applied"])
+        ? (record["fixes_applied"] as unknown[]).filter((x): x is string => typeof x === "string")
+        : Array.isArray(record["remediationActions"])
+          ? (record["remediationActions"] as unknown[]).filter((x): x is string => typeof x === "string")
+          : [];
 
-    return { pass, issues, remediationActions, confidence };
-  } catch {
-    return defaultResult;
+      const confidence = typeof record["confidence"] === "number" ? record["confidence"] : null;
+
+      return { pass, issues, remediationActions, confidence };
+    } catch {
+      // This candidate didn't parse — try next
+    }
   }
+
+  return defaultResult;
 }
 
 /** Dependencies that can be injected for testing. */
@@ -316,7 +346,7 @@ export interface HookDeps {
   invoke: typeof invokeClaude;
   log: typeof logCost;
   warn: typeof uiWarn;
-  commit?: (taskId: string, phase: string, message?: string) => Promise<boolean>;
+  commit?: (taskId: string, phase: string, message?: string, deps?: CommitMessageDeps, cwd?: string, excludeFiles?: Set<string>) => Promise<boolean>;
 }
 
 const defaultDeps: HookDeps = {

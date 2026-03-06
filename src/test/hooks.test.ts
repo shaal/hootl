@@ -376,6 +376,45 @@ That's my assessment.`;
     assert.deepEqual(result.issues, ["minor: could extract shared helper"]);
     assert.deepEqual(result.remediationActions, ["extracted formatDate helper to utils.ts"]);
   });
+
+  it("extracts JSON when prose with curly braces precedes it", () => {
+    const input = [
+      "I reviewed the code and made some fixes.",
+      "",
+      "Here's what I changed:",
+      "```typescript",
+      "if (x) { doThing(); }",
+      "function foo() { return { bar: 1 }; }",
+      "```",
+      "",
+      "The code looks good now.",
+      "",
+      JSON.stringify({ passed: true, confidence: 95, issues: [], fixes_applied: ["refactored helper"] }),
+    ].join("\n");
+    const result = parseHookResult(input);
+    assert.equal(result.pass, true);
+    assert.equal(result.confidence, 95);
+    assert.deepEqual(result.remediationActions, ["refactored helper"]);
+  });
+
+  it("extracts JSON from code block over forward brace match", () => {
+    const input = [
+      "Some prose with { curly } braces.",
+      "",
+      "```json",
+      '{"passed": true, "issues": [], "fixes_applied": []}',
+      "```",
+    ].join("\n");
+    const result = parseHookResult(input);
+    assert.equal(result.pass, true);
+  });
+
+  it("falls back to forward match when reverse match fails to parse", () => {
+    // JSON at the start, junk braces at the end
+    const input = '{"pass": true, "issues": []} some text } }';
+    const result = parseHookResult(input);
+    assert.equal(result.pass, true);
+  });
 });
 
 // --- Blocking vs Advisory behavior ---

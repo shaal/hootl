@@ -104,7 +104,37 @@ export async function createTaskBranch(taskId: string, taskTitle: string, prefix
   return branchName;
 }
 
-export async function commitTaskChanges(taskId: string, phase: string, message?: string, deps?: CommitMessageDeps, cwd?: string): Promise<boolean> {
+/**
+ * Parses `git status --porcelain` output into a set of file paths.
+ * Handles rename format ("R  old -> new" — includes both paths).
+ */
+export function parseDirtyFiles(porcelainOutput: string): Set<string> {
+  const files = new Set<string>();
+  for (const line of porcelainOutput.split("\n")) {
+    if (line.length < 4) continue; // porcelain format: "XY filename" (2 chars + space + path)
+    const rest = line.slice(3);
+    // Rename format: "R  old -> new"
+    const arrowIdx = rest.indexOf(" -> ");
+    if (arrowIdx !== -1) {
+      files.add(rest.slice(0, arrowIdx));
+      files.add(rest.slice(arrowIdx + 4));
+    } else {
+      files.add(rest);
+    }
+  }
+  return files;
+}
+
+/**
+ * Returns the set of dirty (modified, untracked, renamed) file paths in the working tree.
+ * Used to snapshot pre-existing changes before execute phase so they can be excluded from staging.
+ */
+export async function getDirtyFiles(cwd?: string): Promise<Set<string>> {
+  const result = await execa("git", ["status", "--porcelain"], cwd ? { cwd } : {});
+  return parseDirtyFiles(result.stdout);
+}
+
+export async function commitTaskChanges(taskId: string, phase: string, message?: string, deps?: CommitMessageDeps, cwd?: string, excludeFiles?: Set<string>): Promise<boolean> {
   const execOpts = cwd ? { cwd } : {};
 
   // Check if there are any changes to commit
@@ -113,8 +143,24 @@ export async function commitTaskChanges(taskId: string, phase: string, message?:
     return false; // Nothing to commit
   }
 
-  // Stage all changes
-  await execa("git", ["add", "-A"], execOpts);
+  if (excludeFiles !== undefined && excludeFiles.size > 0) {
+    // Targeted staging: only stage files that weren't dirty before the execute phase.
+    // Reuse the status output we already have instead of spawning another subprocess.
+    const currentDirty = parseDirtyFiles(status.stdout);
+    const newFiles: string[] = [];
+    for (const file of currentDirty) {
+      if (!excludeFiles.has(file)) {
+        newFiles.push(file);
+      }
+    }
+    if (newFiles.length === 0) {
+      return false; // All changes are pre-existing
+    }
+    await execa("git", ["add", "--", ...newFiles], execOpts);
+  } else {
+    // Stage all changes (worktree mode or recovery — safe to capture everything)
+    await execa("git", ["add", "-A"], execOpts);
+  }
 
   let commitMessage: string;
   if (message) {

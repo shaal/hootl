@@ -22,6 +22,7 @@ import {
   createWorktree,
   removeWorktree,
   worktreeExists,
+  getDirtyFiles,
 } from "../git.js";
 import type { CommitMessageDeps } from "../git.js";
 import type { InvokeResult } from "../invoke.js";
@@ -891,6 +892,110 @@ describe("git integration", () => {
         // Clean up
         await execa("git", ["worktree", "remove", wtPath, "--force"], { cwd: tmpDir });
         await execa("git", ["branch", "-D", "wt-sha-cwd-branch"], { cwd: tmpDir });
+      } finally {
+        process.chdir(originalCwd);
+      }
+    });
+  });
+
+  describe("getDirtyFiles", () => {
+    it("returns modified and untracked files", async () => {
+      const originalCwd = process.cwd();
+      try {
+        process.chdir(tmpDir);
+        await execa("git", ["checkout", "main"], { cwd: tmpDir });
+
+        // Create an untracked file
+        await writeFile(join(tmpDir, "untracked.txt"), "untracked");
+        // Modify a tracked file (README exists from initial commit)
+        await writeFile(join(tmpDir, "README"), "modified content");
+
+        const dirty = await getDirtyFiles(tmpDir);
+        assert.ok(dirty.has("untracked.txt"));
+        assert.ok(dirty.has("README"));
+
+        // Clean up
+        await execa("git", ["checkout", "--", "README"], { cwd: tmpDir });
+        const { rm: rmFs } = await import("node:fs/promises");
+        await rmFs(join(tmpDir, "untracked.txt"), { force: true });
+      } finally {
+        process.chdir(originalCwd);
+      }
+    });
+
+    it("returns empty set for clean working tree", async () => {
+      const originalCwd = process.cwd();
+      try {
+        process.chdir(tmpDir);
+        await execa("git", ["checkout", "main"], { cwd: tmpDir });
+
+        const dirty = await getDirtyFiles(tmpDir);
+        assert.equal(dirty.size, 0);
+      } finally {
+        process.chdir(originalCwd);
+      }
+    });
+  });
+
+  describe("commitTaskChanges with excludeFiles", () => {
+    it("only stages new files, excludes pre-existing dirty files", async () => {
+      const originalCwd = process.cwd();
+      try {
+        process.chdir(tmpDir);
+        await execa("git", ["checkout", "-b", "exclude-test"], { cwd: tmpDir });
+
+        // Pre-existing dirty file
+        await writeFile(join(tmpDir, "developer-wip.txt"), "work in progress");
+        const preExisting = await getDirtyFiles(tmpDir);
+        assert.ok(preExisting.has("developer-wip.txt"));
+
+        // New task file
+        await writeFile(join(tmpDir, "task-change.txt"), "task output");
+
+        const mockDeps: CommitMessageDeps = {
+          invoke: async () => makeInvokeResult("targeted commit"),
+        };
+
+        const committed = await commitTaskChanges("T-excl", "execute", undefined, mockDeps, tmpDir, preExisting);
+        assert.equal(committed, true);
+
+        // Verify only task-change.txt was committed
+        const log = await execa("git", ["show", "--name-only", "--format=", "HEAD"], { cwd: tmpDir });
+        assert.ok(log.stdout.includes("task-change.txt"), "task-change.txt should be committed");
+        assert.ok(!log.stdout.includes("developer-wip.txt"), "developer-wip.txt should NOT be committed");
+
+        // developer-wip.txt should still be dirty
+        const stillDirty = await getDirtyFiles(tmpDir);
+        assert.ok(stillDirty.has("developer-wip.txt"));
+
+        // Clean up
+        const { rm: rmFs } = await import("node:fs/promises");
+        await rmFs(join(tmpDir, "developer-wip.txt"), { force: true });
+        await execa("git", ["checkout", "main"], { cwd: tmpDir });
+        await execa("git", ["branch", "-D", "exclude-test"], { cwd: tmpDir });
+      } finally {
+        process.chdir(originalCwd);
+      }
+    });
+
+    it("returns false when all changes are pre-existing", async () => {
+      const originalCwd = process.cwd();
+      try {
+        process.chdir(tmpDir);
+        await execa("git", ["checkout", "-b", "exclude-all-test"], { cwd: tmpDir });
+
+        // Only pre-existing dirty files
+        await writeFile(join(tmpDir, "only-wip.txt"), "only wip");
+        const preExisting = await getDirtyFiles(tmpDir);
+
+        const committed = await commitTaskChanges("T-excl2", "execute", undefined, undefined, tmpDir, preExisting);
+        assert.equal(committed, false);
+
+        // Clean up
+        const { rm: rmFs } = await import("node:fs/promises");
+        await rmFs(join(tmpDir, "only-wip.txt"), { force: true });
+        await execa("git", ["checkout", "main"], { cwd: tmpDir });
+        await execa("git", ["branch", "-D", "exclude-all-test"], { cwd: tmpDir });
       } finally {
         process.chdir(originalCwd);
       }
