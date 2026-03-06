@@ -18,7 +18,10 @@ import {
   pushBranch,
   createDraftPR,
   getMergedOrGoneBranches,
+  generateCommitMessage,
 } from "../git.js";
+import type { CommitMessageDeps } from "../git.js";
+import type { InvokeResult } from "../invoke.js";
 
 // ---------------------------------------------------------------------------
 // Unit tests: slugify
@@ -56,6 +59,111 @@ describe("slugify", () => {
 
   it("handles numbers", () => {
     assert.equal(slugify("Task 42 Done"), "task-42-done");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Unit tests: generateCommitMessage
+// ---------------------------------------------------------------------------
+
+function makeInvokeResult(output: string): InvokeResult {
+  return { output, costUsd: 0.001, exitCode: 0, durationMs: 100 };
+}
+
+describe("generateCommitMessage", () => {
+  it("returns Claude-generated message with task ID prefix", async () => {
+    const deps: CommitMessageDeps = {
+      invoke: async () => makeInvokeResult("refactor auth middleware for clarity"),
+    };
+    const result = await generateCommitMessage("T-1", "execute", "diff content", deps);
+    assert.equal(result, "[T-1] refactor auth middleware for clarity");
+  });
+
+  it("strips surrounding whitespace and newlines from Claude output", async () => {
+    const deps: CommitMessageDeps = {
+      invoke: async () => makeInvokeResult("\n  add validation logic  \n"),
+    };
+    const result = await generateCommitMessage("T-1", "execute", "diff content", deps);
+    assert.equal(result, "[T-1] add validation logic");
+  });
+
+  it("falls back to static message when invoke throws", async () => {
+    const deps: CommitMessageDeps = {
+      invoke: async () => { throw new Error("Claude unavailable"); },
+    };
+    const result = await generateCommitMessage("T-1", "execute", "diff content", deps);
+    assert.equal(result, "[T-1] execute: automated changes");
+  });
+
+  it("falls back to static message when invoke returns empty string", async () => {
+    const deps: CommitMessageDeps = {
+      invoke: async () => makeInvokeResult(""),
+    };
+    const result = await generateCommitMessage("T-1", "execute", "diff content", deps);
+    assert.equal(result, "[T-1] execute: automated changes");
+  });
+
+  it("falls back to static message when invoke returns only whitespace", async () => {
+    const deps: CommitMessageDeps = {
+      invoke: async () => makeInvokeResult("   \n  "),
+    };
+    const result = await generateCommitMessage("T-1", "execute", "diff content", deps);
+    assert.equal(result, "[T-1] execute: automated changes");
+  });
+
+  it("truncates large diffs to the configured limit before sending to Claude", async () => {
+    let capturedPrompt = "";
+    const deps: CommitMessageDeps = {
+      invoke: async (options) => {
+        capturedPrompt = options.prompt;
+        return makeInvokeResult("fix large file");
+      },
+    };
+    const largeDiff = "x".repeat(20_000);
+    await generateCommitMessage("T-1", "execute", largeDiff, deps, 5_000);
+
+    // The prompt should contain the truncated diff (5000 chars), not the full 20000
+    assert.ok(capturedPrompt.length < 20_000, "prompt should not contain the full 20k diff");
+    assert.ok(capturedPrompt.includes("x".repeat(5_000)), "prompt should contain exactly 5000 x chars");
+    assert.ok(!capturedPrompt.includes("x".repeat(5_001)), "prompt should not contain 5001 x chars");
+  });
+
+  it("uses the full diff when under the truncation limit", async () => {
+    let capturedPrompt = "";
+    const deps: CommitMessageDeps = {
+      invoke: async (options) => {
+        capturedPrompt = options.prompt;
+        return makeInvokeResult("small change");
+      },
+    };
+    const smallDiff = "abc".repeat(30); // 90 chars
+    await generateCommitMessage("T-1", "execute", smallDiff, deps, 5_000);
+
+    assert.ok(capturedPrompt.includes(smallDiff), "prompt should contain the full diff");
+  });
+
+  it("prepends task ID prefix correctly for various task IDs", async () => {
+    const deps: CommitMessageDeps = {
+      invoke: async () => makeInvokeResult("update config handling"),
+    };
+
+    const r1 = await generateCommitMessage("task-abc-123", "execute", "diff", deps);
+    assert.equal(r1, "[task-abc-123] update config handling");
+
+    const r2 = await generateCommitMessage("T-42", "plan", "diff", deps);
+    assert.equal(r2, "[T-42] update config handling");
+  });
+
+  it("uses correct phase in fallback message", async () => {
+    const deps: CommitMessageDeps = {
+      invoke: async () => { throw new Error("fail"); },
+    };
+
+    const r1 = await generateCommitMessage("T-1", "plan", "diff", deps);
+    assert.equal(r1, "[T-1] plan: automated changes");
+
+    const r2 = await generateCommitMessage("T-1", "review", "diff", deps);
+    assert.equal(r2, "[T-1] review: automated changes");
   });
 });
 

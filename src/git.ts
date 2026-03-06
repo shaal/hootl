@@ -1,5 +1,46 @@
 import { execa } from "execa";
 import { uiInfo, uiWarn, errorMsg } from "./ui.js";
+import { invokeClaude } from "./invoke.js";
+import type { InvokeResult } from "./invoke.js";
+
+/** Dependency injection interface for generateCommitMessage (testability). */
+export interface CommitMessageDeps {
+  invoke: (options: { prompt: string; systemPrompt?: string; maxTurns?: number }) => Promise<InvokeResult>;
+}
+
+const DEFAULT_MAX_DIFF_LENGTH = 8000;
+
+/**
+ * Generate a commit message for task changes using Claude.
+ * Falls back to a static message if Claude invocation fails or returns empty.
+ */
+export async function generateCommitMessage(
+  taskId: string,
+  phase: string,
+  diff: string,
+  deps?: CommitMessageDeps,
+  maxDiffLength?: number,
+): Promise<string> {
+  const fallback = `[${taskId}] ${phase}: automated changes`;
+  const limit = maxDiffLength ?? DEFAULT_MAX_DIFF_LENGTH;
+
+  try {
+    const truncatedDiff = diff.length > limit ? diff.slice(0, limit) : diff;
+    const invoke = deps?.invoke ?? invokeClaude;
+    const result = await invoke({
+      prompt: `Write a concise git commit message (one line, no prefix, no quotes) summarizing these changes:\n\n${truncatedDiff}`,
+      systemPrompt: "You are a commit message generator. Output ONLY the commit message text, nothing else. No quotes, no explanation.",
+      maxTurns: 1,
+    });
+
+    const message = result.output.trim();
+    if (!message) return fallback;
+
+    return `[${taskId}] ${message}`;
+  } catch {
+    return fallback;
+  }
+}
 
 export function slugify(text: string): string {
   return text
