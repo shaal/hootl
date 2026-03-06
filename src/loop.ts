@@ -527,7 +527,8 @@ export async function handleConfidenceMet(
         uiWarn(`Max re-verifications (${MAX_REVERIFICATIONS}) reached — hook keeps applying fixes. Proceeding with merge/PR/none.`);
       }
     } catch (err: unknown) {
-      uiWarn(`Hook execution error: ${errorMsg(err)} — proceeding anyway`);
+      uiWarn(`Hook execution error: ${errorMsg(err)} — keeping task in_progress.`);
+      return { state: "in_progress", mergedSuccessfully: false };
     }
   }
 

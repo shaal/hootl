@@ -640,10 +640,10 @@ describe("handleConfidenceMet", () => {
     }
   });
 
-  it("hook error is caught gracefully and proceeds normally", async () => {
+  it("hook execution error blocks merge and returns in_progress", async () => {
     const dir = await mkdtemp(join(tmpdir(), "hootl-hcm-"));
     try {
-      const { backend } = makeMockBackend();
+      const { backend, state: mockState } = makeMockBackend();
       const config = ConfigSchema.parse({
         git: { onConfidence: "none" },
         hooks: [
@@ -658,9 +658,10 @@ describe("handleConfidenceMet", () => {
       const result = await handleConfidenceMet(
         makeTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
       );
-      // Hook threw but was caught — proceeds to normal behavior
-      assert.equal(result.state, "review");
+      // Hook threw — blocks merge, keeps task in_progress for retry
+      assert.equal(result.state, "in_progress");
       assert.equal(result.mergedSuccessfully, false);
+      assert.equal(mockState.lastUpdate, null);
     } finally {
       await rm(dir, { recursive: true });
     }
@@ -1562,6 +1563,35 @@ describe("handleConfidenceMet hook integration", () => {
       const reVerifyCalls = logCalls.filter((c) => c.phase === "re-verify");
       assert.equal(reVerifyCalls.length, 1);
       assert.equal(reVerifyCalls[0]?.cost, 0.04);
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+
+  it("hook execution error returns in_progress instead of proceeding to merge", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hootl-hcm-"));
+    try {
+      const { backend, updates } = makeMockBackend();
+      const config = ConfigSchema.parse({
+        git: { onConfidence: "merge" },
+        hooks: [
+          { trigger: "on_confidence_met", skill: "simplify", blocking: true },
+        ],
+      });
+      const hookDeps: HookDeps = {
+        invoke: async () => {
+          throw new Error("Claude invocation failed");
+        },
+        log: async () => {},
+        warn: () => {},
+      };
+      const result = await handleConfidenceMet(
+        makeTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
+      );
+      assert.equal(result.state, "in_progress");
+      assert.equal(result.mergedSuccessfully, false);
+      // Task state should NOT have been updated — no merge or state transition
+      assert.equal(updates.length, 0);
     } finally {
       await rm(dir, { recursive: true });
     }
