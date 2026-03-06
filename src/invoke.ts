@@ -86,7 +86,10 @@ export function extractTextOutput(raw: string, format: "text" | "json"): string 
 
 export function getClaudeEnv(): Record<string, string | undefined> {
   const env = { ...process.env };
+  // Remove all env vars that Claude Code uses to detect nested sessions
   delete env["CLAUDECODE"];
+  delete env["CLAUDE_CODE_ENTRYPOINT"];
+  delete env["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"];
   return env;
 }
 

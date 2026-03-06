@@ -39,7 +39,10 @@ export async function generateCommitMessage(
     });
 
     const rawMessage = result.output.trim();
-    if (!rawMessage) return fallback;
+    if (!rawMessage) {
+      uiWarn(`Commit message generation returned empty (exit=${result.exitCode}), using fallback`);
+      return fallback;
+    }
 
     // Enforce single-line output and cap at 120 characters
     const firstLine = rawMessage.split("\n")[0] ?? rawMessage;
