@@ -789,4 +789,129 @@ program
     }
   });
 
+// --- hooks command group ---
+
+const hooksCmd = program
+  .command("hooks")
+  .description("Hook management commands");
+
+hooksCmd
+  .command("test")
+  .description("Test a hook against the current branch")
+  .option("--skill <name>", "Skill name to test (e.g. simplify)")
+  .option("--prompt <text>", "Inline prompt or file path")
+  .option("--confidence <n>", "Confidence value for hook context", "95")
+  .option("--dry-run", "Show resolved prompt without invoking Claude")
+  .action(async (options: { skill?: string; prompt?: string; confidence: string; dryRun?: boolean }) => {
+    try {
+      const { getCurrentBranch, getBaseBranch } = await import("./git.js");
+      const {
+        buildTestHookContext,
+        runHook,
+        resolveSkill,
+        buildHookPrompt,
+        buildHookSystemPrompt,
+      } = await import("./hooks.js");
+
+      // Validate: exactly one of --skill or --prompt
+      if (options.skill !== undefined && options.prompt !== undefined) {
+        uiError("Specify either --skill or --prompt, not both.");
+        process.exitCode = 1;
+        return;
+      }
+      if (options.skill === undefined && options.prompt === undefined) {
+        uiError("Specify --skill <name> or --prompt <text>.");
+        process.exitCode = 1;
+        return;
+      }
+
+      const confidence = parseInt(options.confidence, 10);
+      if (Number.isNaN(confidence) || confidence < 0 || confidence > 100) {
+        uiError("--confidence must be a number between 0 and 100.");
+        process.exitCode = 1;
+        return;
+      }
+
+      let branchName: string;
+      let baseBranch: string;
+      try {
+        branchName = await getCurrentBranch();
+        baseBranch = await getBaseBranch();
+      } catch {
+        uiError("Must be in a git repository to test hooks.");
+        process.exitCode = 1;
+        return;
+      }
+
+      const config = await loadConfig();
+      const context = buildTestHookContext(config, branchName, baseBranch, confidence);
+
+      const hook: import("./config.js").Hook = {
+        trigger: "on_confidence_met",
+        skill: options.skill,
+        prompt: options.prompt,
+        blocking: true,
+      };
+
+      if (options.dryRun) {
+        // Dry-run: resolve the prompt and display it without invoking Claude
+        if (options.skill !== undefined) {
+          const skill = resolveSkill(options.skill);
+          if (skill === undefined) {
+            uiError(`Unknown skill: "${options.skill}"`);
+            process.exitCode = 1;
+            return;
+          }
+          const invokeOpts = await skill(context);
+          uiInfo("=== System Prompt ===");
+          uiInfo(invokeOpts.systemPrompt ?? "(none)");
+          uiInfo("\n=== Prompt ===");
+          uiInfo(invokeOpts.prompt);
+        } else {
+          const prompt = await buildHookPrompt(hook);
+          const systemPrompt = buildHookSystemPrompt(context);
+          uiInfo("=== System Prompt ===");
+          uiInfo(systemPrompt);
+          uiInfo("\n=== Prompt ===");
+          uiInfo(prompt);
+        }
+        uiSuccess("Dry run complete — no Claude invocation.");
+        return;
+      }
+
+      // Real invocation
+      uiWarn("This will invoke Claude and incur API costs.");
+      uiInfo(`Testing hook with confidence=${confidence}, branch=${branchName}, base=${baseBranch}`);
+
+      const result = await runHook(hook, context);
+
+      // Display result
+      uiInfo("\n=== Hook Result ===");
+      if (result.success) {
+        uiSuccess("Result: PASS");
+      } else {
+        uiError("Result: FAIL");
+      }
+
+      if (result.issues.length > 0) {
+        uiInfo("Issues:");
+        for (const issue of result.issues) {
+          uiInfo(`  - ${issue}`);
+        }
+      }
+
+      if (result.remediationActions.length > 0) {
+        uiInfo("Remediation actions:");
+        for (const action of result.remediationActions) {
+          uiInfo(`  - ${action}`);
+        }
+      }
+
+      uiInfo(`Cost: $${result.costUsd.toFixed(4)}`);
+    } catch (err: unknown) {
+      uiError(errorMsg(err));
+      process.exitCode = 1;
+    }
+  });
+
 program.parse();

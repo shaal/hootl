@@ -14,6 +14,7 @@ import {
   runHooks,
   resolveSkill,
   runSkillHook,
+  buildTestHookContext,
 } from "../hooks.js";
 import type { HookContext, HookDeps, HookResult } from "../hooks.js";
 import type { Hook } from "../config.js";
@@ -923,5 +924,68 @@ describe("validate-simplify template", () => {
     assert.ok(opts.systemPrompt?.includes("develop"), "system prompt should contain substituted base branch");
     // Should NOT have raw template variables
     assert.ok(!opts.systemPrompt?.includes("{{"), "system prompt should not contain unsubstituted template variables");
+  });
+});
+
+// --- buildTestHookContext ---
+
+describe("buildTestHookContext", () => {
+  it("returns a valid HookContext with synthetic task defaults", () => {
+    const config = ConfigSchema.parse({});
+    const ctx = buildTestHookContext(config, "feature/test", "main", 90);
+
+    assert.equal(ctx.task.id, "test");
+    assert.equal(ctx.task.title, "Hook test");
+    assert.equal(ctx.task.description, "Manual hook test run");
+    assert.equal(ctx.task.state, "in_progress");
+    assert.equal(ctx.task.priority, "medium");
+    assert.equal(ctx.task.type, "feature");
+    assert.deepEqual(ctx.task.dependencies, []);
+    assert.equal(ctx.task.confidence, 0);
+    assert.equal(ctx.task.attempts, 0);
+    assert.equal(ctx.task.totalCost, 0);
+    assert.equal(ctx.task.branch, "feature/test");
+    assert.equal(ctx.task.worktree, null);
+    assert.equal(ctx.task.userPriority, null);
+    assert.deepEqual(ctx.task.blockers, []);
+  });
+
+  it("passes branch name, base branch, and confidence through", () => {
+    const config = ConfigSchema.parse({});
+    const ctx = buildTestHookContext(config, "hootl/t5-my-feature", "develop", 42);
+
+    assert.equal(ctx.branchName, "hootl/t5-my-feature");
+    assert.equal(ctx.baseBranch, "develop");
+    assert.equal(ctx.confidence, 42);
+  });
+
+  it("passes the config object through", () => {
+    const config = ConfigSchema.parse({ budgets: { global: 100 } });
+    const ctx = buildTestHookContext(config, "main", "main", 95);
+
+    assert.equal(ctx.config.budgets.global, 100);
+  });
+
+  it("sets valid ISO timestamps on the synthetic task", () => {
+    const config = ConfigSchema.parse({});
+    const before = new Date().toISOString();
+    const ctx = buildTestHookContext(config, "branch", "main", 50);
+    const after = new Date().toISOString();
+
+    // Timestamps should be parseable and between before/after
+    assert.ok(!Number.isNaN(Date.parse(ctx.task.createdAt)), "createdAt should be valid ISO date");
+    assert.ok(!Number.isNaN(Date.parse(ctx.task.updatedAt)), "updatedAt should be valid ISO date");
+    assert.ok(ctx.task.createdAt >= before, "createdAt should be >= test start time");
+    assert.ok(ctx.task.createdAt <= after, "createdAt should be <= test end time");
+  });
+
+  it("works with edge confidence values", () => {
+    const config = ConfigSchema.parse({});
+
+    const ctx0 = buildTestHookContext(config, "b", "main", 0);
+    assert.equal(ctx0.confidence, 0);
+
+    const ctx100 = buildTestHookContext(config, "b", "main", 100);
+    assert.equal(ctx100.confidence, 100);
   });
 });

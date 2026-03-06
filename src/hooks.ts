@@ -333,6 +333,47 @@ export async function runHook(
  * - Blocking hooks that fail cause immediate short-circuit (allPassed: false)
  * - Advisory hooks that fail log a warning but continue
  */
+/**
+ * Builds a HookContext with a synthetic minimal task for testing hooks
+ * outside the completion loop. Used by `hootl hooks test`.
+ */
+export function buildTestHookContext(
+  config: Config,
+  branchName: string,
+  baseBranch: string,
+  confidence: number,
+): HookContext {
+  const now = new Date().toISOString();
+  const syntheticTask: Task = {
+    id: "test",
+    title: "Hook test",
+    description: "Manual hook test run",
+    priority: "medium",
+    type: "feature",
+    state: "in_progress",
+    dependencies: [],
+    backend: "local",
+    backendRef: null,
+    confidence: 0,
+    attempts: 0,
+    totalCost: 0,
+    branch: branchName,
+    worktree: null,
+    userPriority: null,
+    blockers: [],
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  return {
+    task: syntheticTask,
+    branchName,
+    baseBranch,
+    confidence,
+    config,
+  };
+}
+
 export async function runHooks(
   triggerPoint: HookTrigger,
   context: HookContext,
