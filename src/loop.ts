@@ -1061,12 +1061,6 @@ export async function runCompletionLoop(
     let phaseCost = 0;
 
     try {
-      // Check abort before starting phases — exit quietly on graceful stop
-      if (abortSignal?.aborted) {
-        uiInfo("Task interrupted — will resume on next run.");
-        break;
-      }
-
       // Phase 1: PLAN (skipped when the previous review wrote a remediation plan)
       if (hasRemediationPlan) {
         uiInfo(`Phase 1: PLAN [SKIPPED — using remediation plan from previous review]`);

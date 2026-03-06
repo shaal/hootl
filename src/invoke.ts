@@ -124,6 +124,7 @@ async function invokeClaudeStandard(
     timeout: 300_000,
     env: getClaudeEnv(),
     stdin: "ignore",
+    detached: true,
     ...(cwd ? { cwd } : {}),
   });
   const stdout = result.stdout;
@@ -173,6 +174,7 @@ async function invokeClaudeVerbose(
     timeout: 300_000,
     env: getClaudeEnv(),
     stdin: "ignore",
+    detached: true,
     ...(options.cwd ? { cwd: options.cwd } : {}),
   });
 
