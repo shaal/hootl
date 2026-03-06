@@ -1,4 +1,5 @@
 import { execa } from "execa";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 import { LocalTaskBackend } from "./tasks/local.js";
@@ -9,12 +10,18 @@ import { uiInfo, uiWarn } from "./ui.js";
 export interface DiscussTaskContext {
   title: string;
   description: string;
+  state: string;
+  taskBlockers: string[];
   plan?: string;
   progress?: string;
+  testResults?: string;
   blockers?: string;
 }
 
-export function buildDiscussArgs(taskContext?: DiscussTaskContext): string[] {
+export function buildDiscussArgs(
+  taskContext?: DiscussTaskContext,
+  claudeMdPath?: string,
+): string[] {
   const args: string[] = ["--dangerously-skip-permissions"];
 
   if (taskContext !== undefined) {
@@ -23,6 +30,9 @@ export function buildDiscussArgs(taskContext?: DiscussTaskContext): string[] {
       "",
       `## Description`,
       taskContext.description,
+      "",
+      `## State`,
+      taskContext.state,
     ];
 
     if (taskContext.plan !== undefined && taskContext.plan.trim() !== "") {
@@ -33,10 +43,40 @@ export function buildDiscussArgs(taskContext?: DiscussTaskContext): string[] {
       sections.push("", "## Progress So Far", taskContext.progress.trim());
     }
 
+    if (
+      taskContext.testResults !== undefined &&
+      taskContext.testResults.trim() !== ""
+    ) {
+      sections.push("", "## Test Results", taskContext.testResults.trim());
+    }
+
     if (taskContext.blockers !== undefined && taskContext.blockers.trim() !== "") {
       sections.push("", "## Blockers", taskContext.blockers.trim());
     }
 
+    if (taskContext.taskBlockers.length > 0) {
+      sections.push(
+        "",
+        "## Task Blockers",
+        ...taskContext.taskBlockers.map((b) => `- ${b}`),
+      );
+    }
+
+    if (claudeMdPath !== undefined) {
+      sections.push(
+        "",
+        "## Project Context",
+        `Read ${claudeMdPath} for codebase context and project conventions.`,
+      );
+    }
+
+    args.push("--system-prompt", sections.join("\n"));
+  } else if (claudeMdPath !== undefined) {
+    const sections: string[] = [
+      "# Project Context",
+      "",
+      `Read ${claudeMdPath} for codebase context and project conventions.`,
+    ];
     args.push("--system-prompt", sections.join("\n"));
   }
 
@@ -45,6 +85,9 @@ export function buildDiscussArgs(taskContext?: DiscussTaskContext): string[] {
 
 export async function discussCommand(taskId?: string): Promise<void> {
   let taskContext: DiscussTaskContext | undefined;
+
+  const claudeMdFile = join(process.cwd(), "CLAUDE.md");
+  const claudeMdPath = existsSync(claudeMdFile) ? claudeMdFile : undefined;
 
   if (taskId !== undefined) {
     const tasksDir = join(process.cwd(), ".hootl", "tasks");
@@ -57,17 +100,21 @@ export async function discussCommand(taskId?: string): Promise<void> {
     }
 
     const taskDir = join(tasksDir, taskId);
-    const [plan, progress, blockers] = await Promise.all([
+    const [plan, progress, testResults, blockers] = await Promise.all([
       readFileOrEmpty(join(taskDir, "plan.md")),
       readFileOrEmpty(join(taskDir, "progress.md")),
+      readFileOrEmpty(join(taskDir, "test_results.md")),
       readFileOrEmpty(join(taskDir, "blockers.md")),
     ]);
 
     taskContext = {
       title: task.title,
       description: task.description,
+      state: task.state,
+      taskBlockers: task.blockers,
       plan,
       progress,
+      testResults,
       blockers,
     };
 
@@ -76,7 +123,7 @@ export async function discussCommand(taskId?: string): Promise<void> {
     uiInfo("Launching interactive Claude session...");
   }
 
-  const args = buildDiscussArgs(taskContext);
+  const args = buildDiscussArgs(taskContext, claudeMdPath);
 
   const result = await execa("claude", args, {
     stdio: "inherit",
