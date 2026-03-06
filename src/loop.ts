@@ -12,7 +12,7 @@ import { notify, notifyWebhook } from "./notify.js";
 import { generateMemoryEntry, appendMemoryEntry } from "./plan-memory.js";
 import { inferDependencies, resolveIndicesToIds } from "./dependencies.js";
 import { runHooks } from "./hooks.js";
-import type { HookContext, HookDeps } from "./hooks.js";
+import type { HookContext, HookDeps, HookResult } from "./hooks.js";
 
 export async function readFileOrEmpty(path: string): Promise<string> {
   try {
@@ -397,6 +397,30 @@ export interface CliFlags {
 
 export const MAX_REVERIFICATIONS = 2;
 
+async function handleBlockingHookFailure(
+  results: HookResult[],
+  contextLabel: string,
+  backend: TaskBackend,
+  task: Task,
+  taskBranch: string | null,
+  baseBranch: string | null,
+  confidence: number,
+  config: Config,
+  hookDeps?: HookDeps,
+  worktreePath?: string,
+): Promise<{ state: "in_progress" | "blocked"; mergedSuccessfully: false }> {
+  const hasFixes = results.some((r) => r.remediationActions.length > 0);
+  if (hasFixes) {
+    uiWarn(`Blocking hook failed${contextLabel} but applied fixes — keeping task in_progress for another attempt.`);
+    return { state: "in_progress", mergedSuccessfully: false };
+  }
+  const issues = results.flatMap((r) => r.issues);
+  const blocker = `Blocking hook validation failed${contextLabel}: ${issues.join("; ") || "no details provided"}`;
+  uiWarn(`${blocker} — moving task to blocked.`);
+  await moveToBlocked(backend, task, [blocker], taskBranch, baseBranch, confidence, config, hookDeps, worktreePath);
+  return { state: "blocked", mergedSuccessfully: false };
+}
+
 export async function handleConfidenceMet(
   task: Task,
   config: Config,
@@ -408,7 +432,7 @@ export async function handleConfidenceMet(
   hookDeps?: HookDeps,
   verbose = false,
   worktreePath?: string,
-): Promise<{ state: "done" | "review" | "in_progress"; mergedSuccessfully: boolean }> {
+): Promise<{ state: "done" | "review" | "in_progress" | "blocked"; mergedSuccessfully: boolean }> {
   // Run on_confidence_met hooks before proceeding with merge/PR/none.
   // If no hooks are configured, inject the default simplify hook as a blocking validator.
   const effectiveHooks = config.hooks.length > 0
@@ -417,6 +441,7 @@ export async function handleConfidenceMet(
   const hasConfidenceHooks = effectiveHooks.some((h) => h.trigger === "on_confidence_met");
 
   if (hasConfidenceHooks) {
+    let currentTask = task;
     try {
       const hookContext: HookContext = {
         task,
@@ -431,14 +456,12 @@ export async function handleConfidenceMet(
         ? await runHooks("on_confidence_met", hookContext, effectiveConfig, hookDeps)
         : await runHooks("on_confidence_met", hookContext, effectiveConfig);
       if (!hookResult.allPassed) {
-        uiWarn("Blocking hook failed — keeping task in_progress for another attempt.");
-        return { state: "in_progress", mergedSuccessfully: false };
+        return handleBlockingHookFailure(hookResult.results, "", backend, task, taskBranch, baseBranch, task.confidence, config, hookDeps, worktreePath);
       }
 
       // Re-verification loop: if hooks applied fixes, commit and re-review to verify
       const costLogDir = join(getProjectDir(), "logs");
       let reverifyCount = 0;
-      let currentTask = task;
       let anyFixesApplied = hookResult.results.some((r) => r.remediationActions.length > 0);
 
       while (anyFixesApplied && reverifyCount < MAX_REVERIFICATIONS) {
@@ -507,8 +530,7 @@ export async function handleConfidenceMet(
             : await runHooks("on_confidence_met", reHookContext, effectiveConfig);
 
           if (!reHookResult.allPassed) {
-            uiWarn("Blocking hook failed during re-verification — keeping task in_progress.");
-            return { state: "in_progress", mergedSuccessfully: false };
+            return handleBlockingHookFailure(reHookResult.results, " during re-verification", backend, currentTask, taskBranch, baseBranch, review.confidence, config, hookDeps, worktreePath);
           }
 
           anyFixesApplied = reHookResult.results.some((r) => r.remediationActions.length > 0);
@@ -527,8 +549,10 @@ export async function handleConfidenceMet(
         uiWarn(`Max re-verifications (${MAX_REVERIFICATIONS}) reached — hook keeps applying fixes. Proceeding with merge/PR/none.`);
       }
     } catch (err: unknown) {
-      uiWarn(`Hook execution error: ${errorMsg(err)} — keeping task in_progress.`);
-      return { state: "in_progress", mergedSuccessfully: false };
+      const blocker = `Hook execution error: ${errorMsg(err)}`;
+      uiWarn(`${blocker} — moving task to blocked.`);
+      await moveToBlocked(backend, currentTask, [blocker], taskBranch, baseBranch, currentTask.confidence, config, hookDeps, worktreePath);
+      return { state: "blocked", mergedSuccessfully: false };
     }
   }
 
@@ -1207,9 +1231,15 @@ export async function runCompletionLoop(
           currentTask, config, backend, taskBranch, baseBranch, taskDir, cliFlags, hookDeps, verbose, worktreePath,
         );
         if (result.state === "in_progress") {
-          // Blocking hook failed — keep looping for another attempt
-          uiInfo("Blocking hook prevented confidence-met transition — retrying.");
+          // Blocking hook failed but applied fixes — retry with the new code
+          uiInfo("Blocking hook applied fixes — retrying.");
           continue;
+        }
+        if (result.state === "blocked") {
+          // Blocking hook failed with no fixes — retrying won't help
+          const blockedTask = await backend.getTask(task.id);
+          await recordMemory(blockedTask, getProjectDir());
+          break;
         }
         // Record success in planning memory
         const doneTask = await backend.getTask(task.id);

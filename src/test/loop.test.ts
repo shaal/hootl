@@ -640,7 +640,7 @@ describe("handleConfidenceMet", () => {
     }
   });
 
-  it("hook execution error blocks merge and returns in_progress", async () => {
+  it("hook execution error moves task to blocked", async () => {
     const dir = await mkdtemp(join(tmpdir(), "hootl-hcm-"));
     try {
       const { backend, state: mockState } = makeMockBackend();
@@ -658,10 +658,11 @@ describe("handleConfidenceMet", () => {
       const result = await handleConfidenceMet(
         makeTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
       );
-      // Hook threw — blocks merge, keeps task in_progress for retry
-      assert.equal(result.state, "in_progress");
+      // Hook threw — moves task to blocked (retrying won't fix an error)
+      assert.equal(result.state, "blocked");
       assert.equal(result.mergedSuccessfully, false);
-      assert.equal(mockState.lastUpdate, null);
+      assert.notEqual(mockState.lastUpdate, null);
+      assert.equal(mockState.lastUpdate?.updates.state, "blocked");
     } finally {
       await rm(dir, { recursive: true });
     }
@@ -1168,7 +1169,7 @@ describe("handleConfidenceMet hook integration", () => {
     return { backend, updates };
   }
 
-  it("blocking hook failure does not call backend.updateTask", async () => {
+  it("blocking hook failure without fixes moves task to blocked", async () => {
     const dir = await mkdtemp(join(tmpdir(), "hootl-hcm-hook-"));
     try {
       const { backend, updates } = makeMockBackend();
@@ -1191,9 +1192,10 @@ describe("handleConfidenceMet hook integration", () => {
       const result = await handleConfidenceMet(
         makeTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
       );
-      assert.equal(result.state, "in_progress");
-      // No state transition should have been persisted
-      assert.equal(updates.length, 0);
+      // No fixes applied — retrying won't help, task moves to blocked
+      assert.equal(result.state, "blocked");
+      assert.ok(updates.length > 0);
+      assert.equal(updates[updates.length - 1]?.updates.state, "blocked");
     } finally {
       await rm(dir, { recursive: true });
     }
@@ -1568,7 +1570,7 @@ describe("handleConfidenceMet hook integration", () => {
     }
   });
 
-  it("hook execution error returns in_progress instead of proceeding to merge", async () => {
+  it("hook execution error moves task to blocked instead of proceeding to merge", async () => {
     const dir = await mkdtemp(join(tmpdir(), "hootl-hcm-"));
     try {
       const { backend, updates } = makeMockBackend();
@@ -1588,10 +1590,11 @@ describe("handleConfidenceMet hook integration", () => {
       const result = await handleConfidenceMet(
         makeTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
       );
-      assert.equal(result.state, "in_progress");
+      assert.equal(result.state, "blocked");
       assert.equal(result.mergedSuccessfully, false);
-      // Task state should NOT have been updated — no merge or state transition
-      assert.equal(updates.length, 0);
+      // Task state should be updated to blocked by moveToBlocked
+      assert.ok(updates.length > 0);
+      assert.equal(updates[updates.length - 1]?.updates.state, "blocked");
     } finally {
       await rm(dir, { recursive: true });
     }
