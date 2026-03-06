@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import { LocalTaskBackend } from "../tasks/local.js";
 import { checkGlobalBudget } from "../budget.js";
 import { findRunnableTask } from "../selection.js";
+import { ConfigSchema } from "../config.js";
 
 function makeTmpDir(): string {
   return join(tmpdir(), `hootl-auto-test-${randomUUID()}`);
@@ -148,14 +149,11 @@ describe("auto command — budget gate", () => {
 
 describe("auto command — level validation", () => {
   it("conservative is a valid auto.defaultLevel", () => {
-    // Verify the config schema accepts "conservative"
-    const { ConfigSchema } = require("../config.js") as typeof import("../config.js");
     const config = ConfigSchema.parse({ auto: { defaultLevel: "conservative" } });
     assert.equal(config.auto.defaultLevel, "conservative");
   });
 
   it("all four levels are valid", () => {
-    const { ConfigSchema } = require("../config.js") as typeof import("../config.js");
     for (const level of ["conservative", "moderate", "proactive", "full"]) {
       const config = ConfigSchema.parse({ auto: { defaultLevel: level } });
       assert.equal(config.auto.defaultLevel, level);
