@@ -63,6 +63,7 @@ src/
     branch-block.test.ts  Branch-switch failure blocks task (dirty worktree integration test)
     notify.test.ts     OS notification config gating, platform dispatch, error resilience, webhook notifications
     claim.test.ts      Claim success, conflict (live PID), stale claim cleanup, release, findAndClaimTask
+    status.test.ts     readClaimFile, isProcessAlive, getActiveInstances, writeStatusSummary with claim info
 templates/
   preflight.md         System prompt for preflight validation phase (Phase 0)
   plan.md              System prompt for planning phase
@@ -495,6 +496,7 @@ Test coverage:
 - **branch-block.test.ts** -- Integration test: dirty worktree blocks task on branch switch (real git repo), dirty worktree does NOT block in worktree mode (isolation verification), clean worktree proceeds past branch creation
 - **notify.test.ts** -- OS notification: config gating (osNotify false → no-op), platform detection (darwin → osascript, linux → notify-send, win32 → no-op), error resilience (execa failure swallowed), osascript quote/backslash escaping, linux raw passthrough. Webhook: no-op on null/empty webhook URL, correct POST payload and headers, error resilience (fetch throw, non-2xx), null confidence handling
 - **claim.test.ts** -- Claim success (file created, PID correct, state transition to in_progress), conflict (second claim with live PID returns false, state unchanged), stale claim cleanup (dead PID removed, re-claim succeeds), release (removes .claim file), release no-op (unclaimed task), findAndClaimTask (claims first runnable, skips already-claimed, retries on conflict, respects dependencies, returns undefined when all claimed)
+- **status.test.ts** -- readClaimFile (valid file, missing file, corrupt non-JSON, missing pid field, wrong pid type, non-existent directory), isProcessAlive (current process alive, dead PID), getActiveInstances (no claims, live PIDs, dead PIDs, mixed live/dead, pids map keyed by task ID, non-existent directory, corrupt claim files), writeStatusSummary with claim info (Active instances header line, PID annotation for in_progress tasks, no annotation without claim, backward compat without claimInfo, no PID on review-state tasks)
 
 ## Dependencies
 

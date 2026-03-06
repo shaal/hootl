@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { loadConfig, loadJsonFile, saveProjectConfig, saveGlobalConfig, setNestedValue, coerceEnvValue, HOOK_TRIGGERS, HookSchema, type Config } from "./config.js";
 import { LocalTaskBackend } from "./tasks/local.js";
 import type { TaskBackend, Task, TaskState } from "./tasks/types.js";
-import { writeStatusSummary } from "./status.js";
+import { writeStatusSummary, getActiveInstances } from "./status.js";
 import { invokeClaude } from "./invoke.js";
 import {
   uiChoose,
@@ -669,6 +669,10 @@ async function statusCommand(): Promise<void> {
     return;
   }
 
+  // Gather claim info for active instance display
+  const tasksDir = join(process.cwd(), ".hootl", "tasks");
+  const claimInfo = await getActiveInstances(tasksDir);
+
   const grouped = new Map<TaskState, Task[]>();
   for (const task of allTasks) {
     const existing = grouped.get(task.state);
@@ -691,6 +695,10 @@ async function statusCommand(): Promise<void> {
   const lines: string[] = [];
   lines.push("# Task Status\n");
 
+  const instanceLine = `Active instances: ${claimInfo.count}`;
+  lines.push(instanceLine + "\n");
+  uiInfo(instanceLine);
+
   for (const state of stateOrder) {
     const tasks = grouped.get(state);
     if (tasks === undefined || tasks.length === 0) continue;
@@ -701,9 +709,12 @@ async function statusCommand(): Promise<void> {
 
     for (const task of tasks) {
       const upTag = task.userPriority !== null ? ` [#${task.userPriority}]` : "";
-      const line =
+      let line =
         `  ${task.id}: ${task.title} [${task.priority}]${upTag} ` +
         `[confidence: ${task.confidence}, attempts: ${task.attempts}]`;
+      if (task.state === "in_progress" && claimInfo.pids.has(task.id)) {
+        line += ` (PID: ${claimInfo.pids.get(task.id)})`;
+      }
       lines.push(line);
       uiInfo(line);
     }
@@ -713,8 +724,8 @@ async function statusCommand(): Promise<void> {
   }
 
   if (config.notifications.summaryFile) {
-    const summaryPath = join(process.cwd(), ".hootl", "status.md");
-    await writeFile(summaryPath, lines.join("\n") + "\n", "utf-8");
+    const hootlDir = join(process.cwd(), ".hootl");
+    await writeStatusSummary(hootlDir, allTasks, claimInfo);
     uiInfo(`Summary written to .hootl/status.md`);
   }
 }
