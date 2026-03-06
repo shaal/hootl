@@ -62,6 +62,7 @@ src/
     prioritize.test.ts userPriority sort, dependency enforcement, schema backward compat
     sync.test.ts       Review task sync integration tests (real git repo + LocalTaskBackend)
     branch-block.test.ts  Branch-switch failure blocks task (dirty worktree integration test)
+    loop-context-window.test.ts  Review runs after high context window execute (fake claude, real git repo)
     notify.test.ts     OS notification config gating, platform dispatch, error resilience, webhook notifications
     logger.test.ts     Structured JSONL event logger (all 7 event types, directory creation, session ID, error resilience)
     claim.test.ts      Claim success, conflict (live PID), stale claim cleanup, release, findAndClaimTask
@@ -100,6 +101,8 @@ The loop continues until:
 - Blockers detected --> task moves to `blocked` state
 - Budget or max attempts exhausted --> task moves to `blocked` state
 - Permanent error --> task stays `in_progress` for later resume
+
+**Context window exceeded**: After the plan phase, if `contextWindowPercent >= budgets.contextWindowLimit` (default 60%), the attempt restarts (plan is already saved to disk, so no work lost). There is intentionally **no** context window check after the execute phase — the review must always run. Each phase is a separate `claude -p` call with a fresh context window, so execute's usage doesn't affect review quality. Skipping review would create a plan→execute loop with no confidence evaluation, where the task can only exit via budget exhaustion.
 
 Context bridges between fresh `claude -p` calls via files in `.hootl/tasks/<id>/`: `understanding.md`, `plan.md`, `progress.md`, `test_results.md`, `blockers.md`, `last_confidence.txt`, `checkpoint.json`.
 
@@ -496,6 +499,7 @@ Test coverage:
 - **auto-init.test.ts** -- Init directory creation, no-op on existing, config defaults, interactive hook prompt (accept/decline), hooks-example.json content, template presets (web-app lower confidence + agent-browser hook, cli-tool standard defaults, library higher confidence + more attempts), unknown template rejection, template hook prompt skipping, TEMPLATE_NAMES export
 - **auto.test.ts** -- Auto command task selection loop (empty queue, sequential picks, in_progress preference, dependency skipping), budget gate (exceeded stops, headroom continues, missing CSV), level validation (all four levels accepted by config schema)
 - **branch-block.test.ts** -- Integration test: dirty worktree blocks task on branch switch (real git repo), dirty worktree does NOT block in worktree mode (isolation verification), clean worktree proceeds past branch creation
+- **loop-context-window.test.ts** -- Integration test: review phase runs even when execute reports high contextWindowPercent above the configured limit (fake claude executable, real git repo, full runCompletionLoop flow)
 - **notify.test.ts** -- OS notification: config gating (osNotify false → no-op), platform detection (darwin → osascript, linux → notify-send, win32 → no-op), error resilience (execa failure swallowed), osascript quote/backslash escaping, linux raw passthrough. Webhook: no-op on null/empty webhook URL, correct POST payload and headers, error resilience (fetch throw, non-2xx), null confidence handling
 - **logger.test.ts** -- LogEvent discriminated union (all 7 event types: phase_start, phase_end, state_change, decision, error, hook_run, budget_check), JSONL append with newline terminator, directory creation (recursive: true), injected timestamp via nowFn, sessionId in entries, error resilience (appendFn and mkdirFn failures never throw), multi-event JSONL format, correct file path (events.jsonl), getSessionId consistency, _setSessionId override
 - **claim.test.ts** -- Claim success (file created, PID correct, state transition to in_progress), conflict (second claim with live PID returns false, state unchanged), stale claim cleanup (dead PID removed, re-claim succeeds), release (removes .claim file), release no-op (unclaimed task), findAndClaimTask (claims first runnable, skips already-claimed, retries on conflict, respects dependencies, returns undefined when all claimed)

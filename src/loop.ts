@@ -1169,14 +1169,10 @@ export async function runCompletionLoop(
         }
       }
 
-      // Check context window usage after execute phase
-      // Note: hasRemediationPlan was already consumed/reset before this point (at Phase 1), so no explicit reset is needed here.
-      const execCtxResult = await applyContextWindowExceeded(backend, task.id, currentTask, phaseCost, executeResult.contextWindowPercent, config.budgets.contextWindowLimit);
-      if (execCtxResult) {
-        currentTask = execCtxResult;
-        // phaseCost resets at loop top (let phaseCost = 0); totalCost persisted in backend
-        continue;
-      }
+      // Note: no context window check after execute. Each phase is a separate `claude -p` call
+      // with a fresh context window, so execute's usage doesn't affect review quality. Skipping
+      // review here would create a plan→execute loop with no confidence evaluation — the task
+      // can only exit via budget/attempt exhaustion, wasting both.
 
       // Phase 3: REVIEW
       await writeCheckpoint(taskDir, "review", attempt);
