@@ -8,6 +8,7 @@ import { type Task, type TaskBackend, type TaskPriority, type TaskType, TaskPrio
 import { uiInfo, uiWarn, uiError, uiSuccess, uiSpinner, errorMsg } from "./ui.js";
 import { isGitRepo, createTaskBranch, commitTaskChanges, switchBranch, getBaseBranch, getHeadSha, resetToSha, mergeBranch, deleteBranch, pushBranch, createDraftPR, hasUncommittedChanges } from "./git.js";
 import { checkGlobalBudget } from "./budget.js";
+import { notify } from "./notify.js";
 import { generateMemoryEntry, appendMemoryEntry } from "./plan-memory.js";
 import { inferDependencies, resolveIndicesToIds } from "./dependencies.js";
 import { runHooks } from "./hooks.js";
@@ -531,11 +532,13 @@ export async function handleConfidenceMet(
       await deleteBranch(taskBranch);
       await backend.updateTask(task.id, { state: "done" });
       uiSuccess(`Task ${task.id} merged into ${baseBranch} and moved to done.`);
+      await notify("Task Complete", `${task.id}: ${task.title}`, config);
       return { state: "done", mergedSuccessfully: true };
     }
     // Merge failed — fall through to 'none' behavior
     uiWarn("Merge failed — falling back to review state.");
     await backend.updateTask(task.id, { state: "review" });
+    await notify("Task Ready for Review", `${task.id}: ${task.title}`, config);
     return { state: "review", mergedSuccessfully: false };
   }
 
@@ -558,11 +561,13 @@ export async function handleConfidenceMet(
     }
     await backend.updateTask(task.id, { state: "review" });
     uiSuccess(`Task ${task.id} pushed and moved to review.`);
+    await notify("Task Ready for Review", `${task.id}: ${task.title}`, config);
     return { state: "review", mergedSuccessfully: false };
   }
 
   // 'none' mode or no branch available
   await backend.updateTask(task.id, { state: "review" });
+  await notify("Task Ready for Review", `${task.id}: ${task.title}`, config);
   return { state: "review", mergedSuccessfully: false };
 }
 
@@ -670,7 +675,9 @@ export async function moveToBlocked(
   hookDeps?: HookDeps,
 ): Promise<Task> {
   await fireHooks("on_blocked", task, taskBranch, baseBranch, confidence, config, hookDeps);
-  return backend.updateTask(task.id, { state: "blocked", blockers });
+  const updated = await backend.updateTask(task.id, { state: "blocked", blockers });
+  await notify("Task Blocked", `${task.id}: ${blockers[0] ?? "unknown reason"}`, config);
+  return updated;
 }
 
 export async function runCompletionLoop(
@@ -850,6 +857,8 @@ export async function runCompletionLoop(
     }
   }
 
+  let budgetWarningFired = false;
+
   while (true) {
     // Check budget
     if (currentTask.totalCost >= config.budgets.perTask) {
@@ -876,6 +885,16 @@ export async function runCompletionLoop(
       );
       await recordMemory(updatedGlobalTask, getProjectDir());
       break;
+    }
+
+    // Budget 80% warning (fire once per runCompletionLoop invocation)
+    if (!budgetWarningFired && !globalBudgetCheck.exceeded) {
+      const threshold = 0.8 * config.budgets.global;
+      if (globalBudgetCheck.todayCost >= threshold) {
+        budgetWarningFired = true;
+        uiWarn(`Daily budget 80% used ($${globalBudgetCheck.todayCost.toFixed(2)}/$${config.budgets.global.toFixed(2)})`);
+        await notify("Budget Warning", `Daily budget 80% used ($${globalBudgetCheck.todayCost.toFixed(2)}/$${config.budgets.global.toFixed(2)})`, config);
+      }
     }
 
     // Check attempts
