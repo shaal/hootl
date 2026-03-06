@@ -520,3 +520,19 @@ Error
     at async Test.run (node:internal/test_runner/test:1054:7)
     at async Suite.processPendingSubtests (node:internal/test_runner/test:744:7)
 ---
+2026-03-06T05:08:21.271Z | trigger=on_confidence_met | task=task-001 | state=in_progress | hooks=1 | pid=85135
+Error
+    at runHooks (file:///Users/ofershaal/code/utilities/hootl/dist/hooks.js:345:19)
+    at handleConfidenceMet (file:///Users/ofershaal/code/utilities/hootl/dist/loop.js:368:33)
+    at async TestContext.<anonymous> (file:///Users/ofershaal/code/utilities/hootl/dist/test/loop.test.js:1181:28)
+    at async Test.run (node:internal/test_runner/test:1054:7)
+    at async Suite.processPendingSubtests (node:internal/test_runner/test:744:7)
+---
+2026-03-06T05:08:21.272Z | trigger=on_confidence_met | task=task-001 | state=in_progress | hooks=1 | pid=85135
+Error
+    at runHooks (file:///Users/ofershaal/code/utilities/hootl/dist/hooks.js:345:19)
+    at handleConfidenceMet (file:///Users/ofershaal/code/utilities/hootl/dist/loop.js:305:25)
+    at TestContext.<anonymous> (file:///Users/ofershaal/code/utilities/hootl/dist/test/loop.test.js:1226:34)
+    at async Test.run (node:internal/test_runner/test:1054:7)
+    at async Suite.processPendingSubtests (node:internal/test_runner/test:744:7)
+---
