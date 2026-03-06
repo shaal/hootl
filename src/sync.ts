@@ -1,6 +1,6 @@
 import type { TaskBackend } from "./tasks/types.js";
 import type { Config } from "./config.js";
-import { isGitRepo, getBaseBranch, getMergedOrGoneBranches } from "./git.js";
+import { isGitRepo, getBaseBranch, getMergedOrGoneBranches, removeWorktree } from "./git.js";
 import { uiSuccess } from "./ui.js";
 import { notifyWebhook } from "./notify.js";
 
@@ -36,6 +36,14 @@ export async function syncReviewTasks(backend: TaskBackend, config?: Config): Pr
     if (task.branch === null) continue;
     if (merged.has(task.branch)) {
       await backend.updateTask(task.id, { state: "done" });
+      if (task.worktree) {
+        try {
+          await removeWorktree(task.worktree);
+          await backend.updateTask(task.id, { worktree: null });
+        } catch {
+          // Best-effort: worktree cleanup should never block state transitions
+        }
+      }
       uiSuccess(`Task ${task.id} branch merged — moved to done.`);
       if (config) {
         void notifyWebhook({
@@ -50,6 +58,14 @@ export async function syncReviewTasks(backend: TaskBackend, config?: Config): Pr
       promoted++;
     } else if (gone.has(task.branch)) {
       await backend.updateTask(task.id, { state: "done" });
+      if (task.worktree) {
+        try {
+          await removeWorktree(task.worktree);
+          await backend.updateTask(task.id, { worktree: null });
+        } catch {
+          // Best-effort: worktree cleanup should never block state transitions
+        }
+      }
       uiSuccess(`Task ${task.id} branch removed — moved to done.`);
       if (config) {
         void notifyWebhook({
