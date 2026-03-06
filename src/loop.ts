@@ -565,10 +565,14 @@ export async function handleConfidenceMet(
     const merged = await mergeBranch(taskBranch, baseBranch);
     if (merged) {
       await deleteBranch(taskBranch);
-      // Clean up worktree after successful merge
+      // Clean up worktree after successful merge (best-effort)
       if (worktreePath) {
-        await removeWorktree(worktreePath);
-        await backend.updateTask(task.id, { worktree: null });
+        try {
+          await removeWorktree(worktreePath);
+          await backend.updateTask(task.id, { worktree: null });
+        } catch {
+          // Best-effort: worktree cleanup should never block state transitions
+        }
       }
       await backend.updateTask(task.id, { state: "done" });
       uiSuccess(`Task ${task.id} merged into ${baseBranch} and moved to done.`);
