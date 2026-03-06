@@ -258,6 +258,10 @@ hootl run [id] --no-merge      Disable auto-merge/PR on confidence met (override
 hootl status                   View tasks grouped by state
 hootl clarify                  Resolve blockers on blocked tasks
 hootl discuss [taskId]         Launch interactive Claude session, optionally with task context
+hootl hooks test --skill <name>  Test a hook against the current branch (real Claude invocation)
+hootl hooks test --prompt <text> Test a hook with an inline prompt or file path
+hootl hooks test ... --confidence <n>  Set confidence value for hook context (default: 95)
+hootl hooks test ... --dry-run   Show resolved prompt without invoking Claude
 hootl prioritize               Interactive: select and order tasks via gum multi-select
 hootl prioritize t1 t2 t3      Set userPriority by argument order (t1=#1, t2=#2, t3=#3)
 hootl prioritize --clear       Remove all userPriority overrides
@@ -381,7 +385,7 @@ Test coverage:
 - **preflight.test.ts** -- Template existence, role declaration, verdict values, JSON output fields, no-implementation constraints, bug reproduction instructions, scope assessment
 - **plan-review.test.ts** -- Critique prompt building (goal inclusion, task JSON, indices, dependsOn), task parsing (valid, markdown-wrapped, missing fields, non-integer deps), fallback on invalid input
 - **plan-summary.test.ts** -- Summary generation (single/multiple/many tasks, truncation), priority counting (mixed, default-to-medium), empty array, priority ordering
-- **hooks.test.ts** -- Trigger filtering (condition evaluation, minConfidence), prompt resolution (inline vs file path, fallback), result parsing (JSON extraction, brace-matching, graceful degradation, new field aliases: passed/fixes_applied/confidence), system prompt construction, runHook integration (pass/fail, cost, context forwarding), runHooks orchestration (blocking short-circuit, advisory continues, cost logging, trigger filtering), validate-simplify template (existence, content markers, variable substitution)
+- **hooks.test.ts** -- Trigger filtering (condition evaluation, minConfidence), prompt resolution (inline vs file path, fallback), result parsing (JSON extraction, brace-matching, graceful degradation, new field aliases: passed/fixes_applied/confidence), system prompt construction, runHook integration (pass/fail, cost, context forwarding), runHooks orchestration (blocking short-circuit, advisory continues, cost logging, trigger filtering), validate-simplify template (existence, content markers, variable substitution), buildTestHookContext (synthetic task defaults, parameter passthrough, config forwarding, ISO timestamps, edge confidence values)
 - **prioritize.test.ts** -- userPriority schema backward compat, sort order (userPriority before auto), dependency enforcement (findRunnableTask)
 - **branch-block.test.ts** -- Integration test: dirty worktree blocks task on branch switch (real git repo), clean worktree proceeds past branch creation
 
