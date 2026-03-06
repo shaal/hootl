@@ -273,6 +273,7 @@ When `hootl run` selects the next task, it enforces dependencies: a task is skip
 ```
 hootl                          Interactive TUI menu (gum-powered)
 hootl init                     Initialize .hootl/ directory
+hootl init --template <name>   Initialize with preset config (web-app, cli-tool, library)
 hootl plan                     Plan tasks (interactive mode selector)
 hootl plan --from-spec         Auto-detect spec gaps and create tasks
 hootl plan --goal "..."        Break down a specific goal into tasks
@@ -427,6 +428,7 @@ Test coverage:
 - **hooks.test.ts** -- Trigger filtering (condition evaluation, minConfidence), prompt resolution (inline vs file path, fallback), result parsing (JSON extraction, brace-matching, graceful degradation, new field aliases: passed/fixes_applied/confidence), system prompt construction, runHook integration (pass/fail, cost, context forwarding), runHooks orchestration (blocking short-circuit, advisory continues, cost logging, trigger filtering), validate-simplify template (existence, content markers, variable substitution), buildTestHookContext (synthetic task defaults, parameter passthrough, config forwarding, ISO timestamps, edge confidence values), formatHookLabel (skill/prompt display, truncation, 1-based numbering, skill precedence), validateRemoveIndex (valid/invalid/boundary indices, NaN, empty list, single-hook), saveProjectConfig (hooks splice, last-hook removal, empty config, JSON formatting), hooks add config mutation (append to existing array, create array when absent, conditions with minConfidence, preserve existing config keys), HOOK_TRIGGERS export (values, HookSchema acceptance)
 - **prioritize.test.ts** -- userPriority schema backward compat, sort order (userPriority before auto), dependency enforcement (findRunnableTask)
 - **checkpoint.test.ts** -- Checkpoint write (valid JSON, atomic overwrite, error resilience), read (valid file, missing file, invalid JSON, missing fields, wrong types), clear (removes file, no-op if missing), round-trip (write+read, clear+read)
+- **auto-init.test.ts** -- Init directory creation, no-op on existing, config defaults, interactive hook prompt (accept/decline), hooks-example.json content, template presets (web-app lower confidence + agent-browser hook, cli-tool standard defaults, library higher confidence + more attempts), unknown template rejection, template hook prompt skipping, TEMPLATE_NAMES export
 - **auto.test.ts** -- Auto command task selection loop (empty queue, sequential picks, in_progress preference, dependency skipping), budget gate (exceeded stops, headroom continues, missing CSV), level validation (all four levels accepted by config schema)
 - **branch-block.test.ts** -- Integration test: dirty worktree blocks task on branch switch (real git repo), clean worktree proceeds past branch creation
 
