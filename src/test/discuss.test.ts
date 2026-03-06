@@ -1,7 +1,13 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { buildDiscussArgs, type DiscussTaskContext } from "../discuss.js";
+import {
+  buildDiscussArgs,
+  formatTaskChoice,
+  parseTaskIdFromChoice,
+  type DiscussTaskContext,
+} from "../discuss.js";
+import type { Task } from "../tasks/types.js";
 
 function makeCtx(overrides: Partial<DiscussTaskContext> = {}): DiscussTaskContext {
   return {
@@ -229,5 +235,99 @@ describe("buildDiscussArgs", () => {
     assert.ok(testIdx < blockerIdx, "Test Results before Blockers");
     assert.ok(blockerIdx < taskBlockerIdx, "Blockers before Task Blockers");
     assert.ok(taskBlockerIdx < projectIdx, "Task Blockers before Project Context");
+  });
+});
+
+function makeTask(overrides: Partial<Task> = {}): Task {
+  return {
+    id: "task-abc",
+    title: "Fix login bug",
+    description: "The login form crashes",
+    priority: "medium",
+    type: "feature",
+    state: "in_progress",
+    dependencies: [],
+    backend: "local",
+    backendRef: null,
+    confidence: 75,
+    attempts: 2,
+    totalCost: 1.5,
+    branch: null,
+    worktree: null,
+    userPriority: null,
+    blockers: [],
+    createdAt: "2024-01-01T00:00:00.000Z",
+    updatedAt: "2024-01-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+describe("formatTaskChoice", () => {
+  it("includes task id, title, state, and confidence", () => {
+    const task = makeTask({ id: "task-abc", title: "Fix login bug", state: "in_progress", confidence: 75 });
+    const result = formatTaskChoice(task);
+    assert.strictEqual(result, "[task-abc] Fix login bug (in_progress, 75%)");
+  });
+
+  it("handles 0% confidence", () => {
+    const task = makeTask({ confidence: 0 });
+    const result = formatTaskChoice(task);
+    assert.ok(result.includes("0%"));
+  });
+
+  it("handles 100% confidence", () => {
+    const task = makeTask({ confidence: 100 });
+    const result = formatTaskChoice(task);
+    assert.ok(result.includes("100%"));
+  });
+
+  it("handles long titles", () => {
+    const longTitle = "A".repeat(200);
+    const task = makeTask({ title: longTitle });
+    const result = formatTaskChoice(task);
+    assert.ok(result.includes(longTitle));
+    assert.ok(result.startsWith("[task-abc]"));
+  });
+
+  it("handles all task states", () => {
+    for (const state of ["proposed", "ready", "in_progress", "review", "blocked", "done"] as const) {
+      const task = makeTask({ state });
+      const result = formatTaskChoice(task);
+      assert.ok(result.includes(`(${state},`), `Should include state ${state}`);
+    }
+  });
+});
+
+describe("parseTaskIdFromChoice", () => {
+  it("extracts task ID from formatted choice string", () => {
+    const result = parseTaskIdFromChoice("[task-abc] Fix login bug (in_progress, 75%)");
+    assert.strictEqual(result, "task-abc");
+  });
+
+  it("extracts ID with different format", () => {
+    const result = parseTaskIdFromChoice("[task-xyz123] Some title (done, 100%)");
+    assert.strictEqual(result, "task-xyz123");
+  });
+
+  it("returns undefined for string without brackets", () => {
+    const result = parseTaskIdFromChoice("General discussion (no task context)");
+    assert.strictEqual(result, undefined);
+  });
+
+  it("returns undefined for empty string", () => {
+    const result = parseTaskIdFromChoice("");
+    assert.strictEqual(result, undefined);
+  });
+
+  it("handles bracket not at start", () => {
+    const result = parseTaskIdFromChoice("prefix [task-abc] title");
+    assert.strictEqual(result, undefined);
+  });
+
+  it("round-trips with formatTaskChoice", () => {
+    const task = makeTask({ id: "task-round-trip" });
+    const choice = formatTaskChoice(task);
+    const parsed = parseTaskIdFromChoice(choice);
+    assert.strictEqual(parsed, "task-round-trip");
   });
 });
