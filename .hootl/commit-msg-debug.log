@@ -13,3 +13,4 @@
 2026-03-06T03:37:40.182Z | CATCH: fail
 2026-03-06T03:37:40.183Z | CATCH: fail
 2026-03-06T03:37:40.741Z | exit=1 | cost=0 | dur=48ms | output=""
+2026-03-06T03:37:40.841Z | exit=1 | cost=0 | dur=50ms | output=""
