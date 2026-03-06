@@ -1,6 +1,6 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, mkdir, access } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execa } from "execa";
@@ -128,5 +128,92 @@ describe("syncReviewTasks", () => {
 
     const updated = await backend.getTask(task.id);
     assert.equal(updated.state, "ready");
+  });
+
+  it("clears worktree field when promoting a review task with a worktree to done", async () => {
+    // Create a task branch, commit, merge, and delete it
+    await execa("git", ["checkout", "-b", "hootl/task-906-worktree-cleanup"], { cwd: tmpDir });
+    await writeFile(join(tmpDir, "worktree-cleanup.txt"), "done");
+    await execa("git", ["add", "-A"], { cwd: tmpDir });
+    await execa("git", ["commit", "-m", "worktree cleanup feature"], { cwd: tmpDir });
+    await execa("git", ["checkout", "main"], { cwd: tmpDir });
+    await execa("git", ["merge", "hootl/task-906-worktree-cleanup"], { cwd: tmpDir });
+    await execa("git", ["branch", "-d", "hootl/task-906-worktree-cleanup"], { cwd: tmpDir });
+
+    // Create a fake worktree directory (not a real git worktree — removeWorktree will fail silently)
+    const worktreePath = join(tmpDir, ".hootl", "worktrees", "task-906");
+    await mkdir(worktreePath, { recursive: true });
+
+    const task = await backend.createTask({ title: "Worktree Cleanup", description: "desc" });
+    await backend.updateTask(task.id, {
+      state: "review",
+      branch: "hootl/task-906-worktree-cleanup",
+      confidence: 97,
+      worktree: worktreePath,
+    });
+
+    const promoted = await syncReviewTasks(backend);
+    assert.equal(promoted, 1);
+
+    const updated = await backend.getTask(task.id);
+    assert.equal(updated.state, "done");
+    // Worktree field should be nulled out even though removeWorktree failed on the fake directory
+    assert.equal(updated.worktree, null);
+  });
+
+  it("clears worktree field when promoting a gone (force-deleted) branch task to done", async () => {
+    // Create a branch with a commit that is NOT merged, then force-delete it
+    await execa("git", ["checkout", "-b", "hootl/task-908-gone-worktree"], { cwd: tmpDir });
+    await writeFile(join(tmpDir, "gone-worktree.txt"), "gone");
+    await execa("git", ["add", "-A"], { cwd: tmpDir });
+    await execa("git", ["commit", "-m", "gone worktree feature"], { cwd: tmpDir });
+    await execa("git", ["checkout", "main"], { cwd: tmpDir });
+    // Force-delete without merging — branch goes into the "gone" set
+    await execa("git", ["branch", "-D", "hootl/task-908-gone-worktree"], { cwd: tmpDir });
+
+    // Create a fake worktree directory
+    const worktreePath = join(tmpDir, ".hootl", "worktrees", "task-908");
+    await mkdir(worktreePath, { recursive: true });
+
+    const task = await backend.createTask({ title: "Gone Worktree", description: "desc" });
+    await backend.updateTask(task.id, {
+      state: "review",
+      branch: "hootl/task-908-gone-worktree",
+      confidence: 92,
+      worktree: worktreePath,
+    });
+
+    const promoted = await syncReviewTasks(backend);
+    assert.equal(promoted, 1);
+
+    const updated = await backend.getTask(task.id);
+    assert.equal(updated.state, "done");
+    assert.equal(updated.worktree, null);
+  });
+
+  it("promotes normally when task has no worktree", async () => {
+    // Create a task branch, commit, merge, and delete it
+    await execa("git", ["checkout", "-b", "hootl/task-907-no-worktree"], { cwd: tmpDir });
+    await writeFile(join(tmpDir, "no-worktree.txt"), "done");
+    await execa("git", ["add", "-A"], { cwd: tmpDir });
+    await execa("git", ["commit", "-m", "no worktree feature"], { cwd: tmpDir });
+    await execa("git", ["checkout", "main"], { cwd: tmpDir });
+    await execa("git", ["merge", "hootl/task-907-no-worktree"], { cwd: tmpDir });
+    await execa("git", ["branch", "-d", "hootl/task-907-no-worktree"], { cwd: tmpDir });
+
+    const task = await backend.createTask({ title: "No Worktree", description: "desc" });
+    await backend.updateTask(task.id, {
+      state: "review",
+      branch: "hootl/task-907-no-worktree",
+      confidence: 96,
+      // worktree is null by default
+    });
+
+    const promoted = await syncReviewTasks(backend);
+    assert.equal(promoted, 1);
+
+    const updated = await backend.getTask(task.id);
+    assert.equal(updated.state, "done");
+    assert.equal(updated.worktree, null);
   });
 });
