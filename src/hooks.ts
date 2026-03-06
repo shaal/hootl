@@ -47,6 +47,17 @@ export function formatHookLabel(hook: Hook, index: number): string {
 }
 
 /**
+ * Validates a 1-based index argument for hook removal.
+ * Returns the 0-based index on success, or null if invalid.
+ */
+export function validateRemoveIndex(indexArg: string, hookCount: number): number | null {
+  if (hookCount === 0) return null;
+  const parsed = parseInt(indexArg, 10);
+  if (Number.isNaN(parsed) || parsed < 1 || parsed > hookCount) return null;
+  return parsed - 1;
+}
+
+/**
  * A skill definition maps a hook context to invoke options.
  * Skills are named prompt templates that encapsulate a specific workflow.
  * May be async (e.g. to read template files from disk).

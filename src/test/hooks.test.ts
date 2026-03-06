@@ -16,6 +16,7 @@ import {
   runSkillHook,
   buildTestHookContext,
   formatHookLabel,
+  validateRemoveIndex,
 } from "../hooks.js";
 import type { HookContext, HookDeps, HookResult } from "../hooks.js";
 import type { Hook } from "../config.js";
@@ -1038,6 +1039,38 @@ describe("formatHookLabel", () => {
     assert.ok(formatHookLabel(hook, 0).startsWith("1)"));
     assert.ok(formatHookLabel(hook, 4).startsWith("5)"));
     assert.ok(formatHookLabel(hook, 9).startsWith("10)"));
+  });
+});
+
+// --- validateRemoveIndex ---
+
+describe("validateRemoveIndex", () => {
+  it("returns 0-based index for valid 1-based input", () => {
+    assert.equal(validateRemoveIndex("1", 3), 0);
+    assert.equal(validateRemoveIndex("2", 3), 1);
+    assert.equal(validateRemoveIndex("3", 3), 2);
+  });
+
+  it("returns null for index below range", () => {
+    assert.equal(validateRemoveIndex("0", 3), null);
+  });
+
+  it("returns null for index above range", () => {
+    assert.equal(validateRemoveIndex("4", 3), null);
+  });
+
+  it("returns null for non-numeric input", () => {
+    assert.equal(validateRemoveIndex("abc", 3), null);
+    assert.equal(validateRemoveIndex("", 3), null);
+  });
+
+  it("returns null when hookCount is 0", () => {
+    assert.equal(validateRemoveIndex("1", 0), null);
+  });
+
+  it("handles single-hook list", () => {
+    assert.equal(validateRemoveIndex("1", 1), 0);
+    assert.equal(validateRemoveIndex("2", 1), null);
   });
 });
 

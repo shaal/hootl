@@ -942,7 +942,7 @@ hooksCmd
   .description("Remove a hook from the project config")
   .action(async (indexArg?: string) => {
     try {
-      const { formatHookLabel } = await import("./hooks.js");
+      const { formatHookLabel, validateRemoveIndex } = await import("./hooks.js");
       const config = await loadConfig();
 
       // Load the raw project config to check which hooks are actually in it
@@ -967,13 +967,13 @@ hooksCmd
 
       if (indexArg !== undefined) {
         // CLI argument: 1-based index
-        const parsed = parseInt(indexArg, 10);
-        if (Number.isNaN(parsed) || parsed < 1 || parsed > rawHooks.length) {
+        const validated = validateRemoveIndex(indexArg, rawHooks.length);
+        if (validated === null) {
           uiError(`Invalid index: ${indexArg}. Must be between 1 and ${rawHooks.length}.`);
           process.exitCode = 1;
           return;
         }
-        selectedIndex = parsed - 1;
+        selectedIndex = validated;
       } else {
         // Interactive: show numbered hooks and let user pick
         const labels = rawHooks.map((_, i) => {
