@@ -771,6 +771,7 @@ export async function runCompletionLoop(
   verbose = false,
   cliFlags: CliFlags = {},
   hookDeps?: HookDeps,
+  abortSignal?: AbortSignal,
 ): Promise<void> {
   const taskDir = join(getProjectDir(), "tasks", task.id);
   const costLogDir = join(getProjectDir(), "logs");
@@ -1322,6 +1323,12 @@ export async function runCompletionLoop(
         `Confidence ${review.confidence}% < ${config.confidence.target}%. Looping for another attempt.`,
       );
     } catch (error: unknown) {
+      // If abort was signalled (e.g. Ctrl+C graceful stop), exit quietly
+      if (abortSignal?.aborted) {
+        uiInfo("Task interrupted — will resume on next run.");
+        break;
+      }
+
       const message =
         error instanceof Error ? error.message : String(error);
       uiError(`Error during attempt ${attempt}: ${message}`);

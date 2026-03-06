@@ -493,6 +493,7 @@ export async function autoCommand(
   // Graceful stop: first Ctrl+C sets flag to stop after current task,
   // second Ctrl+C force-quits (default behavior restored).
   let stopRequested = false;
+  const abortController = new AbortController();
   const originalSigint = process.listeners("SIGINT");
   process.removeAllListeners("SIGINT");
   process.on("SIGINT", () => {
@@ -502,6 +503,7 @@ export async function autoCommand(
       process.exit(130);
     }
     stopRequested = true;
+    abortController.abort();
     uiWarn("\nCtrl+C received — will stop after current task finishes. Press Ctrl+C again to force quit.");
   });
 
@@ -554,6 +556,8 @@ export async function autoCommand(
       config,
       isVerbose(),
       cliFlags,
+      undefined,
+      abortController.signal,
     );
     tasksCompleted++;
 
