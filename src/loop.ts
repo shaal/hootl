@@ -1061,6 +1061,12 @@ export async function runCompletionLoop(
     let phaseCost = 0;
 
     try {
+      // Check abort before starting phases — exit quietly on graceful stop
+      if (abortSignal?.aborted) {
+        uiInfo("Task interrupted — will resume on next run.");
+        break;
+      }
+
       // Phase 1: PLAN (skipped when the previous review wrote a remediation plan)
       if (hasRemediationPlan) {
         uiInfo(`Phase 1: PLAN [SKIPPED — using remediation plan from previous review]`);
@@ -1084,12 +1090,12 @@ export async function runCompletionLoop(
         await guardBranch();
 
         if (planResult.exitCode !== 0) {
-          uiError(`Plan phase failed (exit code ${planResult.exitCode})`);
+          if (!abortSignal?.aborted) uiError(`Plan phase failed (exit code ${planResult.exitCode})`);
           throw new Error(`Plan phase failed: ${planResult.output}`);
         }
 
         if (planResult.output.trim() === "") {
-          uiWarn("Plan phase returned empty output — retrying");
+          if (!abortSignal?.aborted) uiWarn("Plan phase returned empty output — retrying");
           throw new Error("Plan phase returned empty output");
         }
 
@@ -1138,12 +1144,12 @@ export async function runCompletionLoop(
       );
 
       if (executeResult.exitCode !== 0) {
-        uiError(`Execute phase failed (exit code ${executeResult.exitCode})`);
+        if (!abortSignal?.aborted) uiError(`Execute phase failed (exit code ${executeResult.exitCode})`);
         throw new Error(`Execute phase failed: ${executeResult.output}`);
       }
 
       if (executeResult.output.trim() === "") {
-        uiWarn("Execute phase returned empty output — retrying");
+        if (!abortSignal?.aborted) uiWarn("Execute phase returned empty output — retrying");
         throw new Error("Execute phase returned empty output");
       }
 
@@ -1197,12 +1203,12 @@ export async function runCompletionLoop(
       await guardBranch();
 
       if (reviewResult.exitCode !== 0) {
-        uiError(`Review phase failed (exit code ${reviewResult.exitCode})`);
+        if (!abortSignal?.aborted) uiError(`Review phase failed (exit code ${reviewResult.exitCode})`);
         throw new Error(`Review phase failed: ${reviewResult.output}`);
       }
 
       if (reviewResult.output.trim() === "") {
-        uiWarn("Review phase returned empty output — retrying");
+        if (!abortSignal?.aborted) uiWarn("Review phase returned empty output — retrying");
         throw new Error("Review phase returned empty output");
       }
 

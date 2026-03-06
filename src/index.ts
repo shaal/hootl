@@ -559,12 +559,11 @@ export async function autoCommand(
       undefined,
       abortController.signal,
     );
-    tasksCompleted++;
-
     if (stopRequested) {
-      uiInfo("Stopping auto mode (Ctrl+C received). Current task finished cleanly.");
+      uiInfo("Stopping auto mode (Ctrl+C received).");
       break;
     }
+    tasksCompleted++;
   }
 
   // Restore original SIGINT handlers
