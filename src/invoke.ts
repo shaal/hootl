@@ -11,6 +11,7 @@ export interface InvokeOptions {
   outputFormat?: "text" | "json";
   permissionMode?: string;
   allowedTools?: string[];
+  disallowedTools?: string[];
   verbose?: boolean;
 }
 
@@ -41,6 +42,10 @@ export function buildArgs(options: InvokeOptions): string[] {
 
   if (options.allowedTools !== undefined && options.allowedTools.length > 0) {
     args.push("--allowedTools", options.allowedTools.join(","));
+  }
+
+  if (options.disallowedTools !== undefined && options.disallowedTools.length > 0) {
+    args.push("--disallowedTools", options.disallowedTools.join(","));
   }
 
   return args;
@@ -139,6 +144,9 @@ async function invokeClaudeVerbose(
   }
   if (options.allowedTools !== undefined && options.allowedTools.length > 0) {
     args.push("--allowedTools", options.allowedTools.join(","));
+  }
+  if (options.disallowedTools !== undefined && options.disallowedTools.length > 0) {
+    args.push("--disallowedTools", options.disallowedTools.join(","));
   }
 
   const child = execa("claude", args, {

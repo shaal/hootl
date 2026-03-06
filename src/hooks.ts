@@ -102,6 +102,7 @@ const skillRegistry = new Map<string, SkillDefinition>([
         ].join(" "),
         systemPrompt,
         maxTurns: 10,
+        disallowedTools: ["Bash(git add:*)", "Bash(git commit:*)", "Bash(git push:*)"],
       };
     }
 
@@ -131,6 +132,7 @@ const skillRegistry = new Map<string, SkillDefinition>([
         '  - "fixes_applied": string[] (concrete fixes applied)',
       ].join("\n"),
       maxTurns: 10,
+      disallowedTools: ["Bash(git add:*)", "Bash(git commit:*)", "Bash(git push:*)"],
     };
   }],
 ]);
