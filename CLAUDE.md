@@ -152,13 +152,23 @@ When `config.git.useWorktrees` is `true`, tasks run in isolated git worktrees in
 
 **Config:** `git.useWorktrees: true` (default: `false`). Env var: `HOOTL_GIT_USE_WORKTREES`.
 
-**Git functions with `cwd` support:** `commitTaskChanges`, `getHeadSha`, `resetToSha`, `hasUncommittedChanges`, `pushBranch`, `mergeBranch`, `deleteBranch`, `generateCommitMessage`. All default to `undefined` (current directory) for backward compatibility.
+**Git functions with `cwd` support:** `commitTaskChanges`, `getHeadSha`, `resetToSha`, `hasUncommittedChanges`, `pushBranch`, `mergeBranch`, `deleteBranch`, `generateCommitMessage`, `getCurrentBranch`, `ensureBranch`. All default to `undefined` (current directory) for backward compatibility.
 
 **Targeted staging:** `commitTaskChanges` accepts an optional `excludeFiles?: Set<string>` parameter. When provided, only files NOT in the set are staged (via `git add -- file1 file2 ...`). When omitted, existing `git add -A` behavior is preserved (backward compatible, safe for worktree mode). The `getDirtyFiles(cwd?)` helper in `src/git.ts` returns the set of dirty file paths from `git status --porcelain`, handling rename format (`R  old -> new`). In the completion loop, `preExistingDirty` is captured once after branch creation (non-worktree mode only) and passed to all `commitTaskChanges` calls except crash recovery (which should capture everything).
 
 ### Branch-Switch Safety (non-worktree mode only)
 
 Before the loop begins, `runCompletionLoop` creates or switches to the task branch. If the branch switch fails (e.g., uncommitted changes would be overwritten), the task moves to `blocked` with a descriptive message and the loop returns immediately — no phases run on the wrong branch. The blocker message distinguishes dirty-worktree errors ("Commit or stash your changes") from other git failures. The user can resolve the issue and re-run. In worktree mode, this safety check is unnecessary since the main working tree is never modified.
+
+### Branch Drift Guard (non-worktree mode only)
+
+`claude -p` with `--dangerously-skip-permissions` can run `git checkout main` during execution, leaving the working tree on the wrong branch. Without correction, subsequent `commitTaskChanges` would commit directly to main — bypassing the review, hook, and merge gates entirely.
+
+**Fix:** `ensureBranch(expected, cwd?)` in `src/git.ts` checks the current branch and switches back if drifted. In `runCompletionLoop`, a `guardBranch()` closure wraps this with error handling and is called after every `invokeClaude`/`runHooks` call in non-worktree mode. If drift is detected, it logs a warning and restores the task branch.
+
+**Guard points (6):** after preflight, after plan, after on_execute_start hooks, before auto-commit (critical), after review, after on_review_complete hooks.
+
+**Known gap:** Hooks inside `handleConfidenceMet` (the `on_confidence_met` simplify hook) invoke Claude but are not guarded — `guardBranch()` is a closure in `runCompletionLoop` and isn't passed into `handleConfidenceMet`. Worktree mode is immune to all branch drift since `cwd` isolates the worktree.
 
 ### Rollback Safety (confidence regression)
 
@@ -280,7 +290,7 @@ Built-in skills: `simplify` (runs `git diff <baseBranch>..HEAD`, reviews changed
 
 **Default simplify hook**: When no hooks are configured (`config.hooks` is empty), `handleConfidenceMet()` injects a default `{ trigger: "on_confidence_met", skill: "simplify", blocking: true }` hook. This ensures every task that reaches confidence target gets a code quality review before merging. To disable, configure an explicit hook list (even an empty one won't work — use a no-op advisory hook or set a custom `on_confidence_met` hook).
 
-**Hook result JSON schema**: Hooks can output either the old format (`pass`, `remediationActions`) or the new format (`passed`, `confidence`, `fixes_applied`). `parseHookResult` accepts both, with new field names taking precedence when both are present. Uses a multi-candidate extraction strategy: (1) code-block regex, (2) reverse brace-matching from last `}`, (3) forward brace-matching from first `{`. The first candidate that parses as valid JSON wins. Reverse matching is critical because hooks (especially simplify) produce prose/code with curly braces before the result JSON at the end.
+**Hook result JSON schema**: Hooks can output either the old format (`pass`, `remediationActions`) or the new format (`passed`, `confidence`, `fixes_applied`). `parseHookResult` accepts both, with new field names taking precedence when both are present. Uses a multi-candidate extraction strategy: (1) code-block regex, (2) reverse brace-matching from last `}`, (3) forward brace-matching from first `{`. The first candidate that parses as valid JSON wins. Reverse matching is critical because hooks (especially simplify) produce prose/code with curly braces before the result JSON at the end. When no candidates parse successfully, defaults to `pass: false` (fail-closed). **Diagnostic logging**: `runSkillHook` logs a warning with the output length and last 300 chars when parsing fails with no issues or remediation — this surfaces what Claude actually said instead of the opaque "no details provided" blocker.
 
 Optional fields: `conditions.minConfidence` (number), `prompt` (inline string or file path, used if no `skill`).
 

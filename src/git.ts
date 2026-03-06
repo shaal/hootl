@@ -75,9 +75,21 @@ export async function isGitRepo(): Promise<boolean> {
   }
 }
 
-export async function getCurrentBranch(): Promise<string> {
-  const result = await execa("git", ["branch", "--show-current"]);
+export async function getCurrentBranch(cwd?: string): Promise<string> {
+  const result = await execa("git", ["branch", "--show-current"], cwd ? { cwd } : {});
   return result.stdout.trim();
+}
+
+/**
+ * Verifies the working tree is on the expected branch. If claude -p drifted
+ * to another branch (e.g. `git checkout main`), switches back and logs a warning.
+ * Returns true if a correction was needed.
+ */
+export async function ensureBranch(expected: string, cwd?: string): Promise<boolean> {
+  const current = await getCurrentBranch(cwd);
+  if (current === expected) return false;
+  await execa("git", ["checkout", expected], cwd ? { cwd } : {});
+  return true;
 }
 
 export async function branchExists(branchName: string): Promise<boolean> {

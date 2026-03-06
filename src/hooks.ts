@@ -186,6 +186,15 @@ export async function runSkillHook(
   const result = await deps.invoke(invokeOptions);
   const parsed = parseHookResult(result.output);
 
+  // Log diagnostic info when parsing fails — helps diagnose "no details provided" blocks
+  if (!parsed.pass && parsed.issues.length === 0 && parsed.remediationActions.length === 0) {
+    const outputLen = result.output.length;
+    const tail = outputLen > 300 ? result.output.slice(-300) : result.output;
+    deps.warn(
+      `Hook "${skillName}" output could not be parsed as JSON (${outputLen} chars). Last 300 chars: ${tail}`,
+    );
+  }
+
   return {
     success: parsed.pass,
     output: result.output,

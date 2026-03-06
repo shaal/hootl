@@ -6,7 +6,7 @@ import { invokeClaude, logCost } from "./invoke.js";
 import { type Config, type OnConfidenceMode, getProjectDir, resolveOnConfidenceMode } from "./config.js";
 import { type Task, type TaskBackend, type TaskPriority, type TaskType, TaskPriority as TaskPriorityEnum, TaskType as TaskTypeEnum } from "./tasks/types.js";
 import { uiInfo, uiWarn, uiError, uiSuccess, uiSpinner, errorMsg } from "./ui.js";
-import { isGitRepo, createTaskBranch, commitTaskChanges, switchBranch, getBaseBranch, getHeadSha, resetToSha, mergeBranch, deleteBranch, pushBranch, createDraftPR, hasUncommittedChanges, slugify, createWorktree, removeWorktree, getDirtyFiles } from "./git.js";
+import { isGitRepo, createTaskBranch, commitTaskChanges, switchBranch, getBaseBranch, getHeadSha, resetToSha, mergeBranch, deleteBranch, pushBranch, createDraftPR, hasUncommittedChanges, slugify, createWorktree, removeWorktree, getDirtyFiles, ensureBranch } from "./git.js";
 import { checkGlobalBudget } from "./budget.js";
 import { notify, notifyWebhook } from "./notify.js";
 import { generateMemoryEntry, appendMemoryEntry } from "./plan-memory.js";
@@ -868,6 +868,21 @@ export async function runCompletionLoop(
   // In worktree mode, the worktree is isolated so we don't need to exclude anything.
   const preExistingDirty = useWorktrees ? undefined : await getDirtyFiles();
 
+  // Branch drift guard: after every invokeClaude/runHooks call in non-worktree mode,
+  // verify we're still on the task branch. Claude -p can run `git checkout main` internally,
+  // which would cause subsequent commits to land on main instead of the task branch.
+  async function guardBranch(): Promise<void> {
+    if (useWorktrees || taskBranch === null) return;
+    try {
+      const drifted = await ensureBranch(taskBranch);
+      if (drifted) {
+        uiWarn(`Branch drift detected — claude switched away from ${taskBranch}. Restored.`);
+      }
+    } catch (err: unknown) {
+      uiWarn(`Could not verify branch: ${errorMsg(err)}`);
+    }
+  }
+
   let hasRemediationPlan = false;
 
   // Load previous confidence from persistence file (supports cross-run rollback detection)
@@ -906,6 +921,8 @@ export async function runCompletionLoop(
           ...(worktreePath ? { cwd: worktreePath } : {}),
         }),
       );
+
+      await guardBranch();
 
       // Log cost immediately — even if parsing fails, spend is captured
       await logCost(costLogDir, task.id, "preflight", preflightResult.costUsd);
@@ -1063,6 +1080,8 @@ export async function runCompletionLoop(
           }),
         );
 
+        await guardBranch();
+
         if (planResult.exitCode !== 0) {
           uiError(`Plan phase failed (exit code ${planResult.exitCode})`);
           throw new Error(`Plan phase failed: ${planResult.output}`);
@@ -1099,6 +1118,7 @@ export async function runCompletionLoop(
 
       // Run on_execute_start hooks before Phase 2
       await fireHooks("on_execute_start", currentTask, taskBranch, baseBranch, previousConfidence ?? 0, config, hookDeps, worktreePath);
+      await guardBranch();
 
       // Phase 2: EXECUTE
       await writeCheckpoint(taskDir, "execute", attempt);
@@ -1136,6 +1156,9 @@ export async function runCompletionLoop(
       await logCost(costLogDir, task.id, "execute", executeResult.costUsd);
       phaseCost += executeResult.costUsd;
 
+      // Guard against branch drift before committing — ensures changes land on the task branch
+      await guardBranch();
+
       // Auto-commit after execute phase
       if (taskBranch !== null) {
         try {
@@ -1169,6 +1192,8 @@ export async function runCompletionLoop(
           ...(worktreePath ? { cwd: worktreePath } : {}),
         }),
       );
+
+      await guardBranch();
 
       if (reviewResult.exitCode !== 0) {
         uiError(`Review phase failed (exit code ${reviewResult.exitCode})`);
@@ -1206,6 +1231,7 @@ export async function runCompletionLoop(
 
       // Run on_review_complete hooks after review parsing
       await fireHooks("on_review_complete", currentTask, taskBranch, baseBranch, review.confidence, config, hookDeps, worktreePath);
+      await guardBranch();
 
       // Rollback safety: detect confidence regression
       if (isConfidenceRegression(review.confidence, previousConfidence) && preExecuteSha !== null) {
