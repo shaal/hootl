@@ -234,6 +234,16 @@ export async function getMergedOrGoneBranches(branchNames: string[], baseBranch:
   return { merged, gone };
 }
 
+/** Check if the working tree has uncommitted changes (staged or unstaged). */
+export async function hasUncommittedChanges(): Promise<boolean> {
+  try {
+    const result = await execa("git", ["status", "--porcelain"]);
+    return result.stdout.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
 async function isGhAvailable(): Promise<boolean> {
   try {
     await execa("gh", ["--version"]);

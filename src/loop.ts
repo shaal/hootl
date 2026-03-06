@@ -1,4 +1,4 @@
-import { readFile, writeFile, appendFile, mkdir, unlink } from "node:fs/promises";
+import { readFile, writeFile, appendFile, mkdir, unlink, rename } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,7 +6,7 @@ import { invokeClaude, logCost } from "./invoke.js";
 import { type Config, type OnConfidenceMode, getProjectDir, resolveOnConfidenceMode } from "./config.js";
 import { type Task, type TaskBackend, type TaskPriority, type TaskType, TaskPriority as TaskPriorityEnum, TaskType as TaskTypeEnum } from "./tasks/types.js";
 import { uiInfo, uiWarn, uiError, uiSuccess, uiSpinner, errorMsg } from "./ui.js";
-import { isGitRepo, createTaskBranch, commitTaskChanges, switchBranch, getBaseBranch, getHeadSha, resetToSha, mergeBranch, deleteBranch, pushBranch, createDraftPR } from "./git.js";
+import { isGitRepo, createTaskBranch, commitTaskChanges, switchBranch, getBaseBranch, getHeadSha, resetToSha, mergeBranch, deleteBranch, pushBranch, createDraftPR, hasUncommittedChanges } from "./git.js";
 import { checkGlobalBudget } from "./budget.js";
 import { generateMemoryEntry, appendMemoryEntry } from "./plan-memory.js";
 import { inferDependencies, resolveIndicesToIds } from "./dependencies.js";
@@ -25,6 +25,50 @@ export async function readFileOrEmpty(path: string): Promise<string> {
       return "";
     }
     throw err;
+  }
+}
+
+export interface Checkpoint {
+  phase: string;
+  attempt: number;
+  timestamp: string;
+}
+
+/** Write a checkpoint file atomically (tmp + rename) before each phase. */
+export async function writeCheckpoint(taskDir: string, phase: string, attempt: number): Promise<void> {
+  try {
+    const data: Checkpoint = { phase, attempt, timestamp: new Date().toISOString() };
+    const filePath = join(taskDir, "checkpoint.json");
+    const tmpPath = `${filePath}.tmp`;
+    await writeFile(tmpPath, JSON.stringify(data, null, 2) + "\n", "utf-8");
+    await rename(tmpPath, filePath);
+  } catch {
+    // Checkpoint is advisory — never block the loop
+  }
+}
+
+/** Read checkpoint file, returning null if missing or invalid. */
+export async function readCheckpoint(taskDir: string): Promise<Checkpoint | null> {
+  try {
+    const raw = await readFile(join(taskDir, "checkpoint.json"), "utf-8");
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const record = parsed as Record<string, unknown>;
+    if (typeof record["phase"] !== "string" || typeof record["attempt"] !== "number" || typeof record["timestamp"] !== "string") {
+      return null;
+    }
+    return { phase: record["phase"], attempt: record["attempt"], timestamp: record["timestamp"] };
+  } catch {
+    return null;
+  }
+}
+
+/** Remove checkpoint file on clean exit. */
+export async function clearCheckpoint(taskDir: string): Promise<void> {
+  try {
+    await unlink(join(taskDir, "checkpoint.json"));
+  } catch {
+    // Ignore — file may not exist
   }
 }
 
@@ -642,6 +686,40 @@ export async function runCompletionLoop(
 
   await mkdir(taskDir, { recursive: true });
 
+  // Crash recovery: detect interrupted phases from a previous run
+  const checkpoint = await readCheckpoint(taskDir);
+  if (checkpoint !== null) {
+    uiInfo(`Resuming from interrupted ${checkpoint.phase} phase (attempt ${checkpoint.attempt})`);
+
+    // If the execute phase was interrupted, check for uncommitted changes
+    if (checkpoint.phase === "execute") {
+      try {
+        if (await hasUncommittedChanges()) {
+          uiInfo("Detected uncommitted changes from interrupted execute phase — auto-committing.");
+          await commitTaskChanges(task.id, "recovery", `[${task.id}] recovery: uncommitted changes from interrupted execute phase`);
+          await appendFile(
+            join(taskDir, "progress.md"),
+            `\n\n---\n\n## Recovery\n\nProcess was interrupted during execute phase (attempt ${checkpoint.attempt}). Uncommitted changes were auto-committed.\n`,
+            "utf-8",
+          );
+        }
+      } catch (err: unknown) {
+        uiWarn(`Recovery auto-commit failed: ${errorMsg(err)}`);
+      }
+    }
+
+    // If a plan was already written (execute or review was interrupted), skip re-planning
+    if ((checkpoint.phase === "execute" || checkpoint.phase === "review") && existsSync(join(taskDir, "plan.md"))) {
+      const planContent = await readFileOrEmpty(join(taskDir, "plan.md"));
+      if (planContent.trim().length > 0) {
+        uiInfo("Plan exists from interrupted run — will skip planning phase.");
+      }
+    }
+
+    // Clear the stale checkpoint; the loop will write fresh ones
+    await clearCheckpoint(taskDir);
+  }
+
   // Mark task as in_progress
   let currentTask = await backend.updateTask(task.id, { state: "in_progress" });
 
@@ -689,6 +767,7 @@ export async function runCompletionLoop(
     uiInfo("Phase 0: PREFLIGHT [SKIPPED — understanding.md exists, task is resuming]");
   } else {
     uiInfo(`Phase 0: PREFLIGHT [${new Date().toLocaleTimeString()}]`);
+    await writeCheckpoint(taskDir, "preflight", 0);
     try {
       const preflightSystemPrompt = await loadTemplate("preflight");
       const preflightUserPrompt = await buildPreflightPrompt(currentTask, taskDir);
@@ -828,6 +907,7 @@ export async function runCompletionLoop(
         uiInfo(`Phase 1: PLAN [SKIPPED — using remediation plan from previous review]`);
         hasRemediationPlan = false;
       } else {
+        await writeCheckpoint(taskDir, "plan", attempt);
         const planSystemPrompt = await loadTemplate("plan");
         const planUserPrompt = await buildPlanPrompt(currentTask, taskDir);
 
@@ -879,6 +959,7 @@ export async function runCompletionLoop(
       await fireHooks("on_execute_start", currentTask, taskBranch, baseBranch, previousConfidence ?? 0, config, hookDeps);
 
       // Phase 2: EXECUTE
+      await writeCheckpoint(taskDir, "execute", attempt);
       const executeSystemPrompt = await loadTemplate("execute");
       const executeUserPrompt = await buildExecutePrompt(currentTask, taskDir);
 
@@ -931,6 +1012,7 @@ export async function runCompletionLoop(
       }
 
       // Phase 3: REVIEW
+      await writeCheckpoint(taskDir, "review", attempt);
       const reviewSystemPrompt = await loadTemplate("review");
       const reviewUserPrompt = await buildReviewPrompt(currentTask, taskDir);
 
@@ -1087,6 +1169,9 @@ export async function runCompletionLoop(
       uiInfo("Transient error — will retry on next attempt");
     }
   }
+
+  // Clean up checkpoint on normal exit
+  await clearCheckpoint(taskDir);
 
   // Switch back to base branch
   if (baseBranch !== null && taskBranch !== null) {
