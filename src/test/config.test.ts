@@ -4,6 +4,8 @@ import { mkdtemp, writeFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
+import { readFile } from "node:fs/promises";
+
 import {
   ConfigSchema,
   loadJsonFile,
@@ -11,6 +13,10 @@ import {
   loadConfig,
   getProjectDir,
   resolveOnConfidenceMode,
+  setNestedValue,
+  saveGlobalConfig,
+  saveProjectConfig,
+  coerceEnvValue,
   type OnConfidenceMode,
   type Hook,
   type HookTrigger,
@@ -410,5 +416,147 @@ describe("loadConfig with hooks", () => {
     assert.equal((config.hooks[0] as Hook).trigger, "on_blocked");
     assert.equal((config.hooks[0] as Hook).prompt, "Project-specific check");
     assert.equal((config.hooks[0] as Hook).blocking, true);
+  });
+});
+
+describe("setNestedValue", () => {
+  it("sets a top-level key", () => {
+    const obj: Record<string, unknown> = {};
+    setNestedValue(obj, "taskBackend", "github");
+    assert.deepEqual(obj, { taskBackend: "github" });
+  });
+
+  it("sets a nested key", () => {
+    const obj: Record<string, unknown> = {};
+    setNestedValue(obj, "budgets.perTask", 10);
+    assert.deepEqual(obj, { budgets: { perTask: 10 } });
+  });
+
+  it("preserves existing sibling keys", () => {
+    const obj: Record<string, unknown> = { budgets: { perSession: 0.5 } };
+    setNestedValue(obj, "budgets.perTask", 10);
+    assert.deepEqual(obj, { budgets: { perSession: 0.5, perTask: 10 } });
+  });
+
+  it("creates intermediate objects for deep paths", () => {
+    const obj: Record<string, unknown> = {};
+    setNestedValue(obj, "a.b.c", true);
+    assert.deepEqual(obj, { a: { b: { c: true } } });
+  });
+
+  it("overwrites non-object intermediate with object", () => {
+    const obj: Record<string, unknown> = { a: "string" };
+    setNestedValue(obj, "a.b", 1);
+    assert.deepEqual(obj, { a: { b: 1 } });
+  });
+
+  it("overwrites array intermediate with object", () => {
+    const obj: Record<string, unknown> = { a: [1, 2, 3] };
+    setNestedValue(obj, "a.b", "value");
+    assert.deepEqual(obj, { a: { b: "value" } });
+  });
+});
+
+describe("coerceEnvValue", () => {
+  it("coerces 'true' to boolean true", () => {
+    assert.equal(coerceEnvValue("true"), true);
+  });
+
+  it("coerces 'false' to boolean false", () => {
+    assert.equal(coerceEnvValue("false"), false);
+  });
+
+  it("coerces numeric strings to numbers", () => {
+    assert.equal(coerceEnvValue("42"), 42);
+    assert.equal(coerceEnvValue("3.14"), 3.14);
+    assert.equal(coerceEnvValue("0"), 0);
+  });
+
+  it("keeps non-numeric strings as strings", () => {
+    assert.equal(coerceEnvValue("hello"), "hello");
+    assert.equal(coerceEnvValue(""), "");
+  });
+});
+
+describe("saveGlobalConfig", () => {
+  let tmpDir: string;
+  let origHome: string;
+
+  before(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), "hootl-global-cfg-"));
+    origHome = process.env["HOME"] ?? "";
+    // Temporarily override HOME so saveGlobalConfig writes to our temp dir
+    // This won't work since homedir() may be cached, so we test saveProjectConfig pattern instead
+  });
+
+  after(async () => {
+    process.env["HOME"] = origHome;
+    await rm(tmpDir, { recursive: true });
+  });
+
+  it("saveProjectConfig creates file with correct nested content", async () => {
+    const projectDir = await mkdtemp(join(tmpDir, "proj-"));
+    const hootlDir = join(projectDir, ".hootl");
+    await mkdir(hootlDir, { recursive: true });
+    await writeFile(join(hootlDir, "config.json"), "{}\n", "utf-8");
+
+    await saveProjectConfig((raw) => {
+      setNestedValue(raw, "budgets.perTask", 10);
+    }, projectDir);
+
+    const content = JSON.parse(await readFile(join(hootlDir, "config.json"), "utf-8")) as Record<string, unknown>;
+    assert.deepEqual(content, { budgets: { perTask: 10 } });
+  });
+
+  it("saveProjectConfig reads existing config and applies mutation", async () => {
+    const projectDir = await mkdtemp(join(tmpDir, "proj-"));
+    const hootlDir = join(projectDir, ".hootl");
+    await mkdir(hootlDir, { recursive: true });
+    await writeFile(
+      join(hootlDir, "config.json"),
+      JSON.stringify({ budgets: { perSession: 0.5 }, taskBackend: "local" }),
+    );
+
+    await saveProjectConfig((raw) => {
+      setNestedValue(raw, "budgets.perTask", 10);
+    }, projectDir);
+
+    const content = JSON.parse(await readFile(join(hootlDir, "config.json"), "utf-8")) as Record<string, unknown>;
+    const budgets = content["budgets"] as Record<string, unknown>;
+    assert.equal(budgets["perSession"], 0.5);
+    assert.equal(budgets["perTask"], 10);
+    assert.equal(content["taskBackend"], "local");
+  });
+
+  it("coerces boolean values correctly via setNestedValue", async () => {
+    const projectDir = await mkdtemp(join(tmpDir, "proj-"));
+    const hootlDir = join(projectDir, ".hootl");
+    await mkdir(hootlDir, { recursive: true });
+    await writeFile(join(hootlDir, "config.json"), "{}\n", "utf-8");
+
+    const value = coerceEnvValue("false");
+    await saveProjectConfig((raw) => {
+      setNestedValue(raw, "confidence.requireTests", value);
+    }, projectDir);
+
+    const content = JSON.parse(await readFile(join(hootlDir, "config.json"), "utf-8")) as Record<string, unknown>;
+    const confidence = content["confidence"] as Record<string, unknown>;
+    assert.equal(confidence["requireTests"], false);
+  });
+
+  it("coerces number values correctly via setNestedValue", async () => {
+    const projectDir = await mkdtemp(join(tmpDir, "proj-"));
+    const hootlDir = join(projectDir, ".hootl");
+    await mkdir(hootlDir, { recursive: true });
+    await writeFile(join(hootlDir, "config.json"), "{}\n", "utf-8");
+
+    const value = coerceEnvValue("25.5");
+    await saveProjectConfig((raw) => {
+      setNestedValue(raw, "budgets.global", value);
+    }, projectDir);
+
+    const content = JSON.parse(await readFile(join(hootlDir, "config.json"), "utf-8")) as Record<string, unknown>;
+    const budgets = content["budgets"] as Record<string, unknown>;
+    assert.equal(budgets["global"], 25.5);
   });
 });

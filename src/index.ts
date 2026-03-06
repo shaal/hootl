@@ -5,7 +5,7 @@ import { existsSync } from "node:fs";
 import { writeFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { loadConfig, loadJsonFile, saveProjectConfig, HOOK_TRIGGERS, HookSchema, type Config } from "./config.js";
+import { loadConfig, loadJsonFile, saveProjectConfig, saveGlobalConfig, setNestedValue, coerceEnvValue, HOOK_TRIGGERS, HookSchema, type Config } from "./config.js";
 import { LocalTaskBackend } from "./tasks/local.js";
 import type { TaskBackend, Task, TaskState } from "./tasks/types.js";
 import { writeStatusSummary } from "./status.js";
@@ -71,6 +71,7 @@ program
         "View status",
         "Resolve blockers",
         "Discuss with Claude",
+        "View/edit config",
         "Exit",
       ]);
 
@@ -95,6 +96,9 @@ program
           break;
         case "Discuss with Claude":
           await discussCommand();
+          break;
+        case "View/edit config":
+          await configCommand({});
           break;
         case "Exit":
           break;
@@ -879,6 +883,69 @@ program
   .action(async (taskId?: string) => {
     try {
       await discussCommand(taskId);
+    } catch (err: unknown) {
+      uiError(errorMsg(err));
+      process.exitCode = 1;
+    }
+  });
+
+// --- config command ---
+
+async function configCommand(options: { set?: string; global?: boolean }): Promise<void> {
+  if (options.global === true && options.set === undefined) {
+    uiError("--global requires --set key=value");
+    process.exitCode = 1;
+    return;
+  }
+
+  if (options.set === undefined) {
+    // No --set: print resolved config as JSON
+    const config = await loadConfig();
+    console.log(JSON.stringify(config, null, 2));
+    return;
+  }
+
+  // Parse key=value (split on first = only)
+  const eqIndex = options.set.indexOf("=");
+  if (eqIndex === -1) {
+    uiError("Invalid format. Use --set key=value (e.g. --set budgets.perTask=10)");
+    process.exitCode = 1;
+    return;
+  }
+
+  const key = options.set.slice(0, eqIndex);
+  const rawValue = options.set.slice(eqIndex + 1);
+
+  if (key.trim() === "") {
+    uiError("Key cannot be empty.");
+    process.exitCode = 1;
+    return;
+  }
+
+  const value = coerceEnvValue(rawValue);
+
+  if (options.global === true) {
+    await saveGlobalConfig((raw) => {
+      setNestedValue(raw, key, value);
+    });
+    uiSuccess(`Set ${key} = ${JSON.stringify(value)} in ~/.hootl/config.json`);
+  } else {
+    await autoInit();
+    await saveProjectConfig((raw) => {
+      setNestedValue(raw, key, value);
+    });
+    uiSuccess(`Set ${key} = ${JSON.stringify(value)} in .hootl/config.json`);
+  }
+}
+
+program
+  .command("config")
+  .description("View or edit configuration")
+  .option("--set <kv>", "Set a config value (key=value, supports dotted paths)")
+  .option("--global", "Target global ~/.hootl/config.json instead of project")
+  .action(async (options: { set?: string; global?: boolean }) => {
+    try {
+      await configCommand(options);
     } catch (err: unknown) {
       uiError(errorMsg(err));
       process.exitCode = 1;

@@ -110,7 +110,7 @@ const ENV_MAP: Record<string, string[]> = {
   HOOTL_PERMISSION_MODE: ["permissionMode"],
 };
 
-function coerceEnvValue(value: string): string | number | boolean {
+export function coerceEnvValue(value: string): string | number | boolean {
   if (value === "true") return true;
   if (value === "false") return false;
   const num = Number(value);
@@ -228,4 +228,51 @@ export function resolveOnConfidenceMode(
 
   // Infer from auto.defaultLevel
   return AUTO_LEVEL_TO_ON_CONFIDENCE[config.auto.defaultLevel] ?? "none";
+}
+
+/**
+ * Sets a value at a dotted path within an object, creating intermediate objects as needed.
+ * e.g. setNestedValue({}, "budgets.perTask", 10) → { budgets: { perTask: 10 } }
+ */
+export function setNestedValue(
+  obj: Record<string, unknown>,
+  dottedPath: string,
+  value: unknown,
+): void {
+  const parts = dottedPath.split(".");
+  let current: Record<string, unknown> = obj;
+
+  for (let i = 0; i < parts.length - 1; i++) {
+    const key = parts[i]!;
+    const next = current[key];
+    if (typeof next !== "object" || next === null || Array.isArray(next)) {
+      const newObj: Record<string, unknown> = {};
+      current[key] = newObj;
+      current = newObj;
+    } else {
+      current = next as Record<string, unknown>;
+    }
+  }
+
+  const leafKey = parts[parts.length - 1];
+  if (leafKey !== undefined) {
+    current[leafKey] = value;
+  }
+}
+
+/**
+ * Reads the raw global config JSON, applies a mutation via the updater callback,
+ * and writes it back to `~/.hootl/config.json`.
+ */
+export async function saveGlobalConfig(
+  updater: (raw: Record<string, unknown>) => void,
+): Promise<void> {
+  const globalDir = join(homedir(), ".hootl");
+  const globalPath = join(globalDir, "config.json");
+  const raw = await loadJsonFile(globalPath);
+  updater(raw);
+  // Ensure directory exists
+  const { mkdir } = await import("node:fs/promises");
+  await mkdir(globalDir, { recursive: true });
+  await writeFile(globalPath, JSON.stringify(raw, null, 2) + "\n", "utf-8");
 }
