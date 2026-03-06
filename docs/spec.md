@@ -117,6 +117,14 @@ hootl config              # View/edit configuration
     "defaultLevel": "proactive",
     "maxParallel": 1
   },
+  "hooks": [
+    {
+      "trigger": "on_confidence_met",
+      "skill": "simplify",
+      "blocking": true,
+      "conditions": { "minConfidence": 90 }
+    }
+  ],
   "notifications": {
     "terminal": true,
     "osNotify": false,
@@ -225,6 +233,115 @@ Before each Phase 2 (execute), hootl records the current git state. If after exe
 - The review phase scores lower than the previous attempt
 
 Then hootl automatically rolls back the changes (`git checkout` on the worktree/branch) and logs the failure in `progress.md`. The task moves to `blocked` with context about what went wrong.
+
+### Hooks & Skills
+
+Hooks are trigger-point callbacks that run `claude -p` calls at specific moments in the completion loop. They enable automated code quality checks, security scans, lint validation, and custom workflows without modifying the core loop.
+
+#### Trigger Points
+
+| Trigger | When it fires | Behavior |
+|---------|--------------|----------|
+| `on_execute_start` | Before Phase 2 (execute) | Fire-and-forget; errors caught and logged |
+| `on_review_complete` | After Phase 3 review parsing | Fire-and-forget; errors caught and logged |
+| `on_confidence_met` | Inside `handleConfidenceMet()`, before merge/PR/state-transition | Blocking failures keep task `in_progress` for another attempt |
+| `on_blocked` | Before each blocked-state transition | Fire-and-forget via `moveToBlocked()` helper |
+
+#### Configuration Format
+
+Hooks are configured in the `hooks` array in `.hootl/config.json`:
+
+```json
+{
+  "hooks": [
+    {
+      "trigger": "on_confidence_met",
+      "skill": "simplify",
+      "blocking": true,
+      "conditions": {
+        "minConfidence": 90
+      }
+    }
+  ]
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `trigger` | string | yes | One of the four trigger points above |
+| `skill` | string | no | Named skill from the built-in registry (e.g. `"simplify"`) |
+| `prompt` | string | no | Inline prompt text or file path (used when no `skill` is set) |
+| `blocking` | boolean | no | Whether hook failure prevents state transition (default: `false`) |
+| `conditions.minConfidence` | number | no | Hook only runs if current confidence >= this value |
+
+Either `skill` or `prompt` must be provided. If both are present, `skill` takes precedence.
+
+#### Blocking vs Advisory Semantics
+
+- **Blocking** (`blocking: true`) — A hook failure at `on_confidence_met` keeps the task `in_progress` for another attempt rather than transitioning to `done`/`review`. This is the gate-keeping pattern: code must pass the hook's criteria before merging.
+- **Advisory** (`blocking: false`) — Hook failures are logged as warnings but do not block the state transition. Useful for telemetry, notifications, or non-critical checks.
+
+#### Built-in `simplify` Skill
+
+The `simplify` skill is the only built-in skill. It reviews all changed code on the task branch for reuse opportunities, code quality issues, and efficiency improvements:
+
+1. Runs `git diff <baseBranch>..HEAD` to get the full changeset
+2. Reviews the diff for: duplicated logic, unnecessary complexity, missing error handling, opportunities to reuse existing code
+3. Applies fixes directly (not just suggestions)
+4. Runs the project's test suite to verify fixes don't break anything
+
+Uses the `templates/validate-simplify.md` template with variable substitution (`{{baseBranch}}`, `{{taskTitle}}`, `{{taskDescription}}`, `{{branchName}}`). Falls back to an inline prompt if the template file cannot be read.
+
+#### Default Hook Behavior
+
+When no hooks are configured (`config.hooks` is empty), `handleConfidenceMet()` automatically injects a default blocking `simplify` hook:
+
+```json
+{ "trigger": "on_confidence_met", "skill": "simplify", "blocking": true }
+```
+
+This ensures every task that reaches the confidence target gets a code quality review before merging. To use a different hook instead, configure an explicit `hooks` array.
+
+#### Re-verification Loop
+
+When an `on_confidence_met` hook applies fixes (`fixes_applied` is non-empty in the hook result), the system enters a re-verification loop:
+
+1. Auto-commits the hook's changes
+2. Re-runs Phase 3 (review) to get an updated confidence score
+3. If confidence is still >= target, re-runs hooks to check for more fixes
+4. If confidence dropped below target, writes a remediation plan to `plan.md` and returns the task to `in_progress`
+
+The loop is capped at 2 re-verifications (`MAX_REVERIFICATIONS`) to prevent infinite hook↔review cycles.
+
+#### Hook Result JSON Schema
+
+Hooks output a JSON result. Two formats are accepted (new field names take precedence when both are present):
+
+```json
+{
+  "pass": true,
+  "remediationActions": [],
+
+  "passed": true,
+  "confidence": 95,
+  "fixes_applied": []
+}
+```
+
+#### Hook Context
+
+All hook calls receive a `HookContext` containing: task metadata, branch info, current confidence score, and the full config. Hook costs are logged with the phase label `hook:<trigger>`.
+
+#### CLI Management
+
+```
+hootl hooks add                    # Interactively add a new hook
+hootl hooks list                   # List all configured hooks
+hootl hooks remove [index]         # Remove a hook (1-based index or interactive)
+hootl hooks test --skill <name>    # Test a hook against the current branch
+hootl hooks test --prompt <text>   # Test with an inline prompt or file path
+hootl hooks test ... --dry-run     # Show resolved prompt without invoking Claude
+```
 
 ---
 

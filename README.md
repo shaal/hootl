@@ -65,6 +65,105 @@ ready ──▶ in_progress ──▶ review ──▶ done
 
 Each task runs on its own branch (`hootl/<task-id>-<slug>`). Changes are auto-committed after each execute phase. When done, hootl switches back to your base branch.
 
+## Hooks
+
+Hooks run automated checks at key moments in the completion loop. By default, a `simplify` hook reviews all changed code for quality before merging — no configuration needed.
+
+### Configuration
+
+Add hooks to `.hootl/config.json`:
+
+```json
+{
+  "hooks": [
+    {
+      "trigger": "on_confidence_met",
+      "skill": "simplify",
+      "blocking": true
+    }
+  ]
+}
+```
+
+### Example Configurations
+
+**Lint checking** — run a custom lint review before merging:
+
+```json
+{
+  "hooks": [
+    {
+      "trigger": "on_confidence_met",
+      "prompt": "Run the project linter (npm run lint). If there are any errors, fix them. Report pass/fail as JSON: {\"passed\": true/false, \"fixes_applied\": [...]}",
+      "blocking": true
+    }
+  ]
+}
+```
+
+**Security scanning** — use a prompt file for complex instructions:
+
+```json
+{
+  "hooks": [
+    {
+      "trigger": "on_confidence_met",
+      "prompt": "./prompts/security-scan.md",
+      "blocking": true
+    }
+  ]
+}
+```
+
+**Conditional hook** — only run when confidence is high enough:
+
+```json
+{
+  "hooks": [
+    {
+      "trigger": "on_confidence_met",
+      "skill": "simplify",
+      "blocking": true,
+      "conditions": { "minConfidence": 90 }
+    }
+  ]
+}
+```
+
+**Advisory (non-blocking) hook** — log observations without gating:
+
+```json
+{
+  "hooks": [
+    {
+      "trigger": "on_review_complete",
+      "prompt": "Summarize what changed and any potential risks.",
+      "blocking": false
+    }
+  ]
+}
+```
+
+### Available Triggers
+
+| Trigger | When | Blocking effect |
+|---------|------|----------------|
+| `on_execute_start` | Before execute phase | Fire-and-forget |
+| `on_review_complete` | After review phase | Fire-and-forget |
+| `on_confidence_met` | Before merge/PR | Blocking failure keeps task `in_progress` |
+| `on_blocked` | Before blocked transition | Fire-and-forget |
+
+### Managing Hooks via CLI
+
+```bash
+hootl hooks add                      # Interactive hook setup
+hootl hooks list                     # Show configured hooks
+hootl hooks remove 1                 # Remove first hook
+hootl hooks test --skill simplify    # Test a skill against current branch
+hootl hooks test --prompt "..."      # Test with inline prompt
+hootl hooks test --skill simplify --dry-run  # Preview prompt without running
+```
+
 ## Project Structure
 
 ```
