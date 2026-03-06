@@ -1010,7 +1010,7 @@ describe("formatHookLabel", () => {
     const longPrompt = "This is a very long prompt that exceeds forty characters by quite a bit";
     const hook = makeHook({ prompt: longPrompt, blocking: false });
     const label = formatHookLabel(hook, 0);
-    assert.ok(label.includes('prompt:"This is a very long prompt that exc..."'));
+    assert.ok(label.includes('prompt:"This is a very long prompt that excee..."'));
     // The truncated portion should be 37 chars + "..."
     const match = label.match(/prompt:"(.+?)"/);
     assert.ok(match !== null);
