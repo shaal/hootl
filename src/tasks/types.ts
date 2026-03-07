@@ -25,6 +25,7 @@ export const TaskSchema = z.object({
   branch: z.string().nullable(),
   worktree: z.string().nullable(),
   userPriority: z.number().nullable().default(null),
+  goal: z.string().nullable().default(null),
   blockers: z.array(z.string()),
   createdAt: z.string(),
   updatedAt: z.string(),

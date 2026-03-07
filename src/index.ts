@@ -38,6 +38,7 @@ import { critiquePlan } from "./plan-review.js";
 import { generatePlanSummary, confirmPlan } from "./plan-summary.js";
 import { formatPlanningMemoryContext } from "./plan-memory.js";
 import { extractTaskArray } from "./parse-tasks.js";
+import { loadGoals, saveGoals } from "./goals.js";
 
 function getBackend(config: Config): TaskBackend {
   const tasksDir = join(process.cwd(), ".hootl", "tasks");
@@ -702,59 +703,123 @@ async function statusCommand(): Promise<void> {
   const tasksDir = join(process.cwd(), ".hootl", "tasks");
   const claimInfo = await getActiveInstances(tasksDir);
 
-  const grouped = new Map<TaskState, Task[]>();
-  for (const task of allTasks) {
-    const existing = grouped.get(task.state);
-    if (existing !== undefined) {
-      existing.push(task);
-    } else {
-      grouped.set(task.state, [task]);
-    }
-  }
-
-  const stateOrder: TaskState[] = [
-    "in_progress",
-    "ready",
-    "blocked",
-    "review",
-    "proposed",
-    "done",
-  ];
-
-  const lines: string[] = [];
-  lines.push("# Task Status\n");
+  // Load goals for grouped display
+  const hootlDir = join(process.cwd(), ".hootl");
+  const goals = await loadGoals(hootlDir);
 
   const instanceLine = `Active instances: ${claimInfo.count}`;
-  lines.push(instanceLine + "\n");
   uiInfo(instanceLine);
 
-  for (const state of stateOrder) {
-    const tasks = grouped.get(state);
-    if (tasks === undefined || tasks.length === 0) continue;
+  if (goals.length > 0) {
+    // Goal-grouped terminal display
+    const goalMap = new Map<string, { title: string; tasks: Task[] }>();
+    for (const goal of goals) {
+      goalMap.set(goal.id, { title: goal.title, tasks: [] });
+    }
+    const ungrouped: Task[] = [];
 
-    const header = `## ${state.toUpperCase()} (${tasks.length})`;
-    lines.push(header);
-    uiInfo(header);
-
-    for (const task of tasks) {
-      const upTag = task.userPriority !== null ? ` [#${task.userPriority}]` : "";
-      let line =
-        `  ${task.id}: ${task.title} [${task.priority}]${upTag} ` +
-        `[confidence: ${task.confidence}, attempts: ${task.attempts}]`;
-      if (task.state === "in_progress" && claimInfo.pids.has(task.id)) {
-        line += ` (PID: ${claimInfo.pids.get(task.id)})`;
+    for (const task of allTasks) {
+      if (task.goal !== null && goalMap.has(task.goal)) {
+        goalMap.get(task.goal)!.tasks.push(task);
+      } else {
+        ungrouped.push(task);
       }
-      lines.push(line);
-      uiInfo(line);
     }
 
-    lines.push("");
-    uiInfo("");
+    const stateOrder: TaskState[] = [
+      "in_progress", "ready", "blocked", "review", "proposed", "done",
+    ];
+
+    for (const goal of goals) {
+      const entry = goalMap.get(goal.id)!;
+      if (entry.tasks.length === 0) continue;
+
+      const doneCount = entry.tasks.filter((t) => t.state === "done").length;
+      const header = `## ${entry.title} (${doneCount}/${entry.tasks.length} done)`;
+      uiInfo(header);
+
+      const stateGrouped = new Map<TaskState, Task[]>();
+      for (const task of entry.tasks) {
+        const existing = stateGrouped.get(task.state);
+        if (existing) { existing.push(task); } else { stateGrouped.set(task.state, [task]); }
+      }
+
+      for (const state of stateOrder) {
+        const tasks = stateGrouped.get(state);
+        if (!tasks || tasks.length === 0) continue;
+        uiInfo(`  ### ${state.toUpperCase()} (${tasks.length})`);
+        for (const task of tasks) {
+          const upTag = task.userPriority !== null ? ` [#${task.userPriority}]` : "";
+          let line = `    ${task.id}: ${task.title} [${task.priority}]${upTag} [confidence: ${task.confidence}, attempts: ${task.attempts}]`;
+          if (task.state === "in_progress" && claimInfo.pids.has(task.id)) {
+            line += ` (PID: ${claimInfo.pids.get(task.id)})`;
+          }
+          uiInfo(line);
+        }
+      }
+      uiInfo("");
+    }
+
+    if (ungrouped.length > 0) {
+      const doneCount = ungrouped.filter((t) => t.state === "done").length;
+      uiInfo(`## Ungrouped (${doneCount}/${ungrouped.length} done)`);
+
+      const stateGrouped = new Map<TaskState, Task[]>();
+      for (const task of ungrouped) {
+        const existing = stateGrouped.get(task.state);
+        if (existing) { existing.push(task); } else { stateGrouped.set(task.state, [task]); }
+      }
+
+      for (const state of stateOrder) {
+        const tasks = stateGrouped.get(state);
+        if (!tasks || tasks.length === 0) continue;
+        uiInfo(`  ### ${state.toUpperCase()} (${tasks.length})`);
+        for (const task of tasks) {
+          const upTag = task.userPriority !== null ? ` [#${task.userPriority}]` : "";
+          let line = `    ${task.id}: ${task.title} [${task.priority}]${upTag} [confidence: ${task.confidence}, attempts: ${task.attempts}]`;
+          if (task.state === "in_progress" && claimInfo.pids.has(task.id)) {
+            line += ` (PID: ${claimInfo.pids.get(task.id)})`;
+          }
+          uiInfo(line);
+        }
+      }
+      uiInfo("");
+    }
+  } else {
+    // Flat terminal display (no goals)
+    const stateOrder: TaskState[] = [
+      "in_progress", "ready", "blocked", "review", "proposed", "done",
+    ];
+
+    const grouped = new Map<TaskState, Task[]>();
+    for (const task of allTasks) {
+      const existing = grouped.get(task.state);
+      if (existing !== undefined) { existing.push(task); } else { grouped.set(task.state, [task]); }
+    }
+
+    for (const state of stateOrder) {
+      const tasks = grouped.get(state);
+      if (tasks === undefined || tasks.length === 0) continue;
+
+      const header = `## ${state.toUpperCase()} (${tasks.length})`;
+      uiInfo(header);
+
+      for (const task of tasks) {
+        const upTag = task.userPriority !== null ? ` [#${task.userPriority}]` : "";
+        let line =
+          `  ${task.id}: ${task.title} [${task.priority}]${upTag} ` +
+          `[confidence: ${task.confidence}, attempts: ${task.attempts}]`;
+        if (task.state === "in_progress" && claimInfo.pids.has(task.id)) {
+          line += ` (PID: ${claimInfo.pids.get(task.id)})`;
+        }
+        uiInfo(line);
+      }
+      uiInfo("");
+    }
   }
 
   if (config.notifications.summaryFile) {
-    const hootlDir = join(process.cwd(), ".hootl");
-    await writeStatusSummary(hootlDir, allTasks, claimInfo);
+    await writeStatusSummary(hootlDir, allTasks, claimInfo, goals);
     uiInfo(`Summary written to .hootl/status.md`);
   }
 }
@@ -1344,6 +1409,114 @@ hooksCmd
       });
 
       uiSuccess("Hook removed.");
+    } catch (err: unknown) {
+      uiError(errorMsg(err));
+      process.exitCode = 1;
+    }
+  });
+
+// ── Goals command group ──────────────────────────────────────────
+
+const goalsCmd = program
+  .command("goals")
+  .description("Goal management commands");
+
+goalsCmd
+  .command("list")
+  .description("List all goals with task counts per state")
+  .action(async () => {
+    try {
+      await autoInit();
+      const config = await loadConfig();
+      const backend = getBackend(config);
+      const hootlDir = join(process.cwd(), ".hootl");
+      const goals = await loadGoals(hootlDir);
+
+      if (goals.length === 0) {
+        uiInfo("No goals defined. Create one with: hootl goals create --id <id> --title <title>");
+        return;
+      }
+
+      const allTasks = await backend.listTasks();
+
+      for (const goal of goals) {
+        const tasksForGoal = allTasks.filter((t) => t.goal === goal.id);
+        const stateCounts: string[] = [];
+        const states: TaskState[] = ["ready", "in_progress", "blocked", "review", "done"];
+        for (const state of states) {
+          const count = tasksForGoal.filter((t) => t.state === state).length;
+          if (count > 0) {
+            stateCounts.push(`${state}: ${count}`);
+          }
+        }
+        const countsStr = stateCounts.length > 0 ? ` (${stateCounts.join(", ")})` : " (no tasks)";
+        uiInfo(`${goal.id}: ${goal.title}${countsStr}`);
+        if (goal.description) {
+          uiInfo(`  ${goal.description}`);
+        }
+      }
+    } catch (err: unknown) {
+      uiError(errorMsg(err));
+      process.exitCode = 1;
+    }
+  });
+
+goalsCmd
+  .command("create")
+  .description("Create a new goal")
+  .requiredOption("--id <id>", "Goal identifier")
+  .requiredOption("--title <title>", "Goal title")
+  .option("--description <desc>", "Goal description", "")
+  .action(async (options: { id: string; title: string; description: string }) => {
+    try {
+      await autoInit();
+      const hootlDir = join(process.cwd(), ".hootl");
+      const goals = await loadGoals(hootlDir);
+
+      if (goals.some((g) => g.id === options.id)) {
+        uiError(`Goal with id "${options.id}" already exists.`);
+        process.exitCode = 1;
+        return;
+      }
+
+      goals.push({ id: options.id, title: options.title, description: options.description });
+      await saveGoals(hootlDir, goals);
+      uiSuccess(`Goal "${options.id}" created: ${options.title}`);
+    } catch (err: unknown) {
+      uiError(errorMsg(err));
+      process.exitCode = 1;
+    }
+  });
+
+goalsCmd
+  .command("assign <taskId> <goalId>")
+  .description("Assign a task to a goal (use 'none' to clear)")
+  .action(async (taskId: string, goalId: string) => {
+    try {
+      await autoInit();
+      const config = await loadConfig();
+      const backend = getBackend(config);
+      const hootlDir = join(process.cwd(), ".hootl");
+
+      // Validate task exists
+      await backend.getTask(taskId);
+
+      if (goalId === "none") {
+        await backend.updateTask(taskId, { goal: null });
+        uiSuccess(`Cleared goal for task ${taskId}.`);
+        return;
+      }
+
+      // Validate goal exists
+      const goals = await loadGoals(hootlDir);
+      if (!goals.some((g) => g.id === goalId)) {
+        uiError(`Goal "${goalId}" not found. Run \`hootl goals list\` to see available goals.`);
+        process.exitCode = 1;
+        return;
+      }
+
+      await backend.updateTask(taskId, { goal: goalId });
+      uiSuccess(`Assigned task ${taskId} to goal "${goalId}".`);
     } catch (err: unknown) {
       uiError(errorMsg(err));
       process.exitCode = 1;

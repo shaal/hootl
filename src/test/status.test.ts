@@ -11,6 +11,7 @@ import {
   writeStatusSummary,
 } from "../status.js";
 import type { Task } from "../tasks/types.js";
+import type { Goal } from "../goals.js";
 
 let tempDir: string;
 
@@ -231,6 +232,7 @@ describe("writeStatusSummary with claim info", () => {
       blockers: [],
       dependencies: [],
       userPriority: null,
+      goal: null,
       createdAt: "2025-01-01T00:00:00.000Z",
       updatedAt: "2025-01-01T00:00:00.000Z",
       ...overrides,
@@ -293,5 +295,176 @@ describe("writeStatusSummary with claim info", () => {
 
     const content = await readFile(join(hootlDir, "status.md"), "utf-8");
     assert.ok(!content.includes("(PID:"));
+  });
+});
+
+// ── writeStatusSummary with goals ──────────────────────────────────
+
+describe("writeStatusSummary with goals", () => {
+  let hootlDir: string;
+
+  beforeEach(async () => {
+    tempDir = await freshDir();
+    hootlDir = tempDir;
+  });
+
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  function makeTask(overrides: Partial<Task> & { id: string; title: string }): Task {
+    return {
+      state: "ready",
+      description: "",
+      priority: "medium",
+      type: "feature",
+      backend: "local",
+      backendRef: null,
+      confidence: 0,
+      attempts: 0,
+      totalCost: 0,
+      branch: null,
+      worktree: null,
+      blockers: [],
+      dependencies: [],
+      userPriority: null,
+      goal: null,
+      createdAt: "2025-01-01T00:00:00.000Z",
+      updatedAt: "2025-01-01T00:00:00.000Z",
+      ...overrides,
+    };
+  }
+
+  it("groups tasks under goal headers with done counts", async () => {
+    const goals: Goal[] = [
+      { id: "g1", title: "Auth System", description: "" },
+    ];
+    const tasks = [
+      makeTask({ id: "t1", title: "Login flow", goal: "g1", state: "done", updatedAt: "2025-06-01T00:00:00Z" }),
+      makeTask({ id: "t2", title: "OAuth setup", goal: "g1", state: "ready" }),
+      makeTask({ id: "t3", title: "Token refresh", goal: "g1", state: "in_progress", confidence: 60, attempts: 1 }),
+    ];
+
+    await writeStatusSummary(hootlDir, tasks, undefined, goals);
+
+    const content = await readFile(join(hootlDir, "status.md"), "utf-8");
+    assert.ok(content.includes("## Auth System (1/3 done)"), "Goal header with done count");
+    assert.ok(content.includes("### IN_PROGRESS (1)"), "State subgroup header");
+    assert.ok(content.includes("### READY (1)"), "Ready subgroup");
+    assert.ok(content.includes("### DONE (1)"), "Done subgroup");
+  });
+
+  it("renders multiple goals in registry order", async () => {
+    const goals: Goal[] = [
+      { id: "g-beta", title: "Beta Features", description: "" },
+      { id: "g-alpha", title: "Alpha Features", description: "" },
+    ];
+    const tasks = [
+      makeTask({ id: "t1", title: "Beta task", goal: "g-beta", state: "ready" }),
+      makeTask({ id: "t2", title: "Alpha task", goal: "g-alpha", state: "ready" }),
+    ];
+
+    await writeStatusSummary(hootlDir, tasks, undefined, goals);
+
+    const content = await readFile(join(hootlDir, "status.md"), "utf-8");
+    const betaIdx = content.indexOf("## Beta Features");
+    const alphaIdx = content.indexOf("## Alpha Features");
+    assert.ok(betaIdx !== -1, "Beta goal present");
+    assert.ok(alphaIdx !== -1, "Alpha goal present");
+    assert.ok(betaIdx < alphaIdx, "Goals appear in registry order, not alphabetical");
+  });
+
+  it("renders ungrouped tasks under Ungrouped header", async () => {
+    const goals: Goal[] = [
+      { id: "g1", title: "Goal One", description: "" },
+    ];
+    const tasks = [
+      makeTask({ id: "t1", title: "Grouped task", goal: "g1", state: "ready" }),
+      makeTask({ id: "t2", title: "Orphan task", goal: null, state: "done", updatedAt: "2025-06-01T00:00:00Z" }),
+      makeTask({ id: "t3", title: "Another orphan", goal: null, state: "ready" }),
+    ];
+
+    await writeStatusSummary(hootlDir, tasks, undefined, goals);
+
+    const content = await readFile(join(hootlDir, "status.md"), "utf-8");
+    assert.ok(content.includes("## Goal One (0/1 done)"), "Goal header");
+    assert.ok(content.includes("## Ungrouped (1/2 done)"), "Ungrouped header with done count");
+    assert.ok(content.includes("Orphan task"));
+    assert.ok(content.includes("Another orphan"));
+  });
+
+  it("treats tasks with unknown goal ID as ungrouped", async () => {
+    const goals: Goal[] = [
+      { id: "g1", title: "Known Goal", description: "" },
+    ];
+    const tasks = [
+      makeTask({ id: "t1", title: "Known", goal: "g1", state: "ready" }),
+      makeTask({ id: "t2", title: "Unknown ref", goal: "nonexistent", state: "ready" }),
+    ];
+
+    await writeStatusSummary(hootlDir, tasks, undefined, goals);
+
+    const content = await readFile(join(hootlDir, "status.md"), "utf-8");
+    assert.ok(content.includes("## Known Goal (0/1 done)"));
+    assert.ok(content.includes("## Ungrouped (0/1 done)"));
+    assert.ok(content.includes("Unknown ref"));
+  });
+
+  it("omits empty goals from output", async () => {
+    const goals: Goal[] = [
+      { id: "g1", title: "Has Tasks", description: "" },
+      { id: "g2", title: "Empty Goal", description: "" },
+    ];
+    const tasks = [
+      makeTask({ id: "t1", title: "Only task", goal: "g1", state: "ready" }),
+    ];
+
+    await writeStatusSummary(hootlDir, tasks, undefined, goals);
+
+    const content = await readFile(join(hootlDir, "status.md"), "utf-8");
+    assert.ok(content.includes("## Has Tasks"), "Goal with tasks shown");
+    assert.ok(!content.includes("Empty Goal"), "Goal with no tasks omitted");
+  });
+
+  it("falls back to flat rendering when goals is undefined", async () => {
+    const tasks = [
+      makeTask({ id: "t1", title: "Flat task", state: "ready" }),
+      makeTask({ id: "t2", title: "Done task", state: "done", updatedAt: "2025-06-01T00:00:00Z" }),
+    ];
+
+    await writeStatusSummary(hootlDir, tasks);
+
+    const content = await readFile(join(hootlDir, "status.md"), "utf-8");
+    assert.ok(content.includes("## READY (1)"), "Flat state header");
+    assert.ok(content.includes("## DONE (1)"), "Flat done header");
+    assert.ok(!content.includes("Ungrouped"), "No ungrouped header in flat mode");
+  });
+
+  it("falls back to flat rendering when goals array is empty", async () => {
+    const tasks = [
+      makeTask({ id: "t1", title: "Flat task", state: "ready" }),
+    ];
+
+    await writeStatusSummary(hootlDir, tasks, undefined, []);
+
+    const content = await readFile(join(hootlDir, "status.md"), "utf-8");
+    assert.ok(content.includes("## READY (1)"), "Flat state header");
+    assert.ok(!content.includes("Ungrouped"), "No ungrouped header in flat mode");
+  });
+
+  it("renders all tasks as ungrouped when none match any goal", async () => {
+    const goals: Goal[] = [
+      { id: "g1", title: "Empty Goal", description: "" },
+    ];
+    const tasks = [
+      makeTask({ id: "t1", title: "No goal", goal: null, state: "ready" }),
+      makeTask({ id: "t2", title: "Also no goal", goal: null, state: "blocked", blockers: ["stuck"] }),
+    ];
+
+    await writeStatusSummary(hootlDir, tasks, undefined, goals);
+
+    const content = await readFile(join(hootlDir, "status.md"), "utf-8");
+    assert.ok(!content.includes("## Empty Goal"), "Empty goal omitted");
+    assert.ok(content.includes("## Ungrouped (0/2 done)"), "Ungrouped shows all");
   });
 });

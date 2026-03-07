@@ -283,6 +283,7 @@ function makeTask(overrides: Partial<Task> = {}): Task {
     branch: null,
     worktree: null,
     userPriority: null,
+    goal: null,
     blockers: [],
     createdAt: "2024-01-01T00:00:00.000Z",
     updatedAt: "2024-01-01T00:00:00.000Z",

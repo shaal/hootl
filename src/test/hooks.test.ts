@@ -41,6 +41,7 @@ function makeTask(overrides: Partial<Task> = {}): Task {
     branch: null,
     worktree: null,
     userPriority: null,
+    goal: null,
     blockers: [],
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),

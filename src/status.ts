@@ -1,6 +1,7 @@
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Task, TaskState } from "./tasks/types.js";
+import type { Goal } from "./goals.js";
 
 const STATE_ORDER: TaskState[] = [
   "in_progress",
@@ -81,11 +82,31 @@ export async function getActiveInstances(tasksDir: string): Promise<ActiveInstan
   return { count: pids.size, pids };
 }
 
-export async function writeStatusSummary(
-  hootlDir: string,
-  tasks: Task[],
-  claimInfo?: ActiveInstanceInfo,
-): Promise<void> {
+/**
+ * Format a single task line for status output.
+ */
+function formatTaskLine(task: Task, claimInfo?: ActiveInstanceInfo): string {
+  const upTag = task.userPriority !== null ? ` [#${task.userPriority}]` : "";
+  let detail = `- [${task.id}]${upTag} ${task.title}`;
+  if (task.state === "in_progress" || task.state === "review") {
+    detail += ` — ${task.confidence}% confidence, attempt ${task.attempts}`;
+    if (task.state === "in_progress" && claimInfo !== undefined && claimInfo.pids.has(task.id)) {
+      detail += ` (PID: ${claimInfo.pids.get(task.id)})`;
+    }
+  }
+  if (task.state === "blocked" && task.blockers.length > 0) {
+    detail += ` — ${task.blockers[0]}`;
+  }
+  if (task.state === "done") {
+    detail += ` — completed ${task.updatedAt.split("T")[0]}`;
+  }
+  return detail;
+}
+
+/**
+ * Render tasks grouped by state into lines (flat mode, no goal grouping).
+ */
+function renderFlat(tasks: Task[], claimInfo?: ActiveInstanceInfo): string[] {
   const grouped = new Map<TaskState, Task[]>();
   for (const task of tasks) {
     const existing = grouped.get(task.state);
@@ -96,6 +117,116 @@ export async function writeStatusSummary(
     }
   }
 
+  const lines: string[] = [];
+  for (const state of STATE_ORDER) {
+    const stateTasks = grouped.get(state);
+    if (!stateTasks || stateTasks.length === 0) continue;
+
+    lines.push(`## ${state.toUpperCase()} (${stateTasks.length})`);
+    for (const task of stateTasks) {
+      lines.push(formatTaskLine(task, claimInfo));
+    }
+    lines.push("");
+  }
+  return lines;
+}
+
+/**
+ * Render tasks grouped by goal, with sub-groups by state within each goal.
+ */
+function renderByGoal(tasks: Task[], goals: Goal[], claimInfo?: ActiveInstanceInfo): string[] {
+  // Build a map of goalId -> Goal for lookup
+  const goalMap = new Map<string, Goal>();
+  for (const goal of goals) {
+    goalMap.set(goal.id, goal);
+  }
+
+  // Partition tasks by goal
+  const goalTasks = new Map<string, Task[]>();
+  const ungrouped: Task[] = [];
+
+  for (const task of tasks) {
+    if (task.goal !== null && goalMap.has(task.goal)) {
+      const existing = goalTasks.get(task.goal);
+      if (existing) {
+        existing.push(task);
+      } else {
+        goalTasks.set(task.goal, [task]);
+      }
+    } else {
+      ungrouped.push(task);
+    }
+  }
+
+  const lines: string[] = [];
+
+  // Render each goal in the order they appear in the goals registry
+  for (const goal of goals) {
+    const tasksForGoal = goalTasks.get(goal.id);
+    if (!tasksForGoal || tasksForGoal.length === 0) continue;
+
+    const doneCount = tasksForGoal.filter((t) => t.state === "done").length;
+    lines.push(`## ${goal.title} (${doneCount}/${tasksForGoal.length} done)`);
+
+    // Sub-group by state within this goal
+    const stateGrouped = new Map<TaskState, Task[]>();
+    for (const task of tasksForGoal) {
+      const existing = stateGrouped.get(task.state);
+      if (existing) {
+        existing.push(task);
+      } else {
+        stateGrouped.set(task.state, [task]);
+      }
+    }
+
+    for (const state of STATE_ORDER) {
+      const stateTasks = stateGrouped.get(state);
+      if (!stateTasks || stateTasks.length === 0) continue;
+
+      lines.push(`### ${state.toUpperCase()} (${stateTasks.length})`);
+      for (const task of stateTasks) {
+        lines.push(formatTaskLine(task, claimInfo));
+      }
+    }
+    lines.push("");
+  }
+
+  // Render ungrouped tasks at the bottom
+  if (ungrouped.length > 0) {
+    const doneCount = ungrouped.filter((t) => t.state === "done").length;
+    lines.push(`## Ungrouped (${doneCount}/${ungrouped.length} done)`);
+
+    const stateGrouped = new Map<TaskState, Task[]>();
+    for (const task of ungrouped) {
+      const existing = stateGrouped.get(task.state);
+      if (existing) {
+        existing.push(task);
+      } else {
+        stateGrouped.set(task.state, [task]);
+      }
+    }
+
+    for (const state of STATE_ORDER) {
+      const stateTasks = stateGrouped.get(state);
+      if (!stateTasks || stateTasks.length === 0) continue;
+
+      lines.push(`### ${state.toUpperCase()} (${stateTasks.length})`);
+      for (const task of stateTasks) {
+        lines.push(formatTaskLine(task, claimInfo));
+      }
+    }
+    lines.push("");
+  }
+
+  return lines;
+}
+
+export async function writeStatusSummary(
+  hootlDir: string,
+  tasks: Task[],
+  claimInfo?: ActiveInstanceInfo,
+  goals?: Goal[],
+): Promise<void> {
   const lines: string[] = ["# hootl Status\n"];
   const now = new Date().toISOString();
   lines.push(`_Updated: ${now}_\n`);
@@ -104,29 +235,10 @@ export async function writeStatusSummary(
     lines.push(`Active instances: ${claimInfo.count}\n`);
   }
 
-  for (const state of STATE_ORDER) {
-    const stateTasks = grouped.get(state);
-    if (!stateTasks || stateTasks.length === 0) continue;
-
-    lines.push(`## ${state.toUpperCase()} (${stateTasks.length})`);
-    for (const task of stateTasks) {
-      const upTag = task.userPriority !== null ? ` [#${task.userPriority}]` : "";
-      let detail = `- [${task.id}]${upTag} ${task.title}`;
-      if (task.state === "in_progress" || task.state === "review") {
-        detail += ` — ${task.confidence}% confidence, attempt ${task.attempts}`;
-        if (task.state === "in_progress" && claimInfo !== undefined && claimInfo.pids.has(task.id)) {
-          detail += ` (PID: ${claimInfo.pids.get(task.id)})`;
-        }
-      }
-      if (task.state === "blocked" && task.blockers.length > 0) {
-        detail += ` — ${task.blockers[0]}`;
-      }
-      if (task.state === "done") {
-        detail += ` — completed ${task.updatedAt.split("T")[0]}`;
-      }
-      lines.push(detail);
-    }
-    lines.push("");
+  if (goals !== undefined && goals.length > 0) {
+    lines.push(...renderByGoal(tasks, goals, claimInfo));
+  } else {
+    lines.push(...renderFlat(tasks, claimInfo));
   }
 
   await writeFile(join(hootlDir, "status.md"), lines.join("\n") + "\n", "utf-8");

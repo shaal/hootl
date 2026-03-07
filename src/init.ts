@@ -149,6 +149,12 @@ export async function autoInit(options?: InitOptions): Promise<void> {
   );
 
   await writeFile(
+    join(hootlDir, "goals.json"),
+    "[]\n",
+    "utf-8",
+  );
+
+  await writeFile(
     join(hootlDir, ".gitignore"),
     "tasks/\nlogs/\nstatus.md\n",
     "utf-8",
