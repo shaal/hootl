@@ -21,7 +21,7 @@ import {
 import type { HookContext, HookDeps, HookResult } from "../hooks.js";
 import type { Hook } from "../config.js";
 import type { Task } from "../tasks/types.js";
-import type { InvokeResult } from "../invoke.js";
+import type { InvokeOptions, InvokeResult } from "../invoke.js";
 import { ConfigSchema, saveProjectConfig, loadJsonFile, HOOK_TRIGGERS, HookSchema } from "../config.js";
 
 function makeTask(overrides: Partial<Task> = {}): Task {
@@ -416,6 +416,58 @@ That's my assessment.`;
     const result = parseHookResult(input);
     assert.equal(result.pass, true);
   });
+
+  it("detects Claude JSON envelope and extracts inner result", () => {
+    const envelope = JSON.stringify({
+      result: '{"passed": true, "issues": [], "fixes_applied": ["refactored helper"]}',
+      total_cost_usd: 0.05,
+      context_window_percent: 42,
+    });
+    const parsed = parseHookResult(envelope);
+    assert.equal(parsed.pass, true);
+    assert.deepEqual(parsed.remediationActions, ["refactored helper"]);
+  });
+
+  it("detects Claude JSON envelope with cost_usd variant", () => {
+    const envelope = JSON.stringify({
+      result: '{"pass": true, "issues": ["minor nit"], "remediationActions": []}',
+      cost_usd: 0.02,
+    });
+    const parsed = parseHookResult(envelope);
+    assert.equal(parsed.pass, true);
+    assert.deepEqual(parsed.issues, ["minor nit"]);
+  });
+
+  it("returns pass: false when envelope inner result is plain text", () => {
+    const envelope = JSON.stringify({
+      result: "Some plain text response without JSON",
+      total_cost_usd: 0.03,
+    });
+    const parsed = parseHookResult(envelope);
+    assert.equal(parsed.pass, false);
+  });
+
+  it("returns pass: false when envelope inner result is non-object JSON", () => {
+    const envelope = JSON.stringify({
+      result: "42",
+      total_cost_usd: 0.01,
+    });
+    const parsed = parseHookResult(envelope);
+    assert.equal(parsed.pass, false);
+  });
+
+  it("does not treat normal hook output with 'result' field as envelope", () => {
+    // A hook output that has a "result" field but no cost fields
+    // should be parsed normally, not treated as an envelope
+    const input = JSON.stringify({
+      pass: true,
+      result: "some internal result",
+      issues: [],
+      remediationActions: [],
+    });
+    const parsed = parseHookResult(input);
+    assert.equal(parsed.pass, true);
+  });
 });
 
 // --- Blocking vs Advisory behavior ---
@@ -494,11 +546,11 @@ describe("buildHookSystemPrompt", () => {
 // --- runHook (with injected deps) ---
 
 function makeMockDeps(overrides: Partial<HookDeps> = {}): HookDeps & {
-  invokeCalls: Array<{ prompt: string; systemPrompt?: string }>;
+  invokeCalls: InvokeOptions[];
   logCalls: Array<{ taskId: string; phase: string; cost: number }>;
   warnCalls: string[];
 } {
-  const invokeCalls: Array<{ prompt: string; systemPrompt?: string }> = [];
+  const invokeCalls: InvokeOptions[] = [];
   const logCalls: Array<{ taskId: string; phase: string; cost: number }> = [];
   const warnCalls: string[] = [];
 
@@ -507,7 +559,7 @@ function makeMockDeps(overrides: Partial<HookDeps> = {}): HookDeps & {
     logCalls,
     warnCalls,
     invoke: overrides.invoke ?? (async (opts) => {
-      invokeCalls.push({ prompt: opts.prompt, systemPrompt: opts.systemPrompt });
+      invokeCalls.push(opts);
       return { output: '{"pass": true, "issues": [], "remediationActions": []}', costUsd: 0.01, exitCode: 0, durationMs: 100, contextWindowPercent: 0 };
     }),
     log: overrides.log ?? (async (_dir, taskId, phase, cost) => {
@@ -614,6 +666,16 @@ describe("runHook", () => {
 
     const result = await runHook(hook, ctx, deps);
     assert.equal(result.output, rawOutput);
+  });
+
+  it("always sets verbose: false for prompt-based hooks", async () => {
+    const deps = makeMockDeps();
+    const hook = makeHook({ prompt: "Check quality" });
+    const ctx = makeContext();
+
+    await runHook(hook, ctx, deps);
+    assert.equal(deps.invokeCalls.length, 1);
+    assert.equal(deps.invokeCalls[0]?.verbose, false);
   });
 });
 
@@ -846,6 +908,15 @@ describe("runSkillHook", () => {
     assert.deepEqual(result.issues, ["duplicated logic"]);
     assert.deepEqual(result.remediationActions, ["extract helper"]);
     assert.equal(result.costUsd, 0.05);
+  });
+
+  it("always sets verbose: false regardless of skill options", async () => {
+    const deps = makeMockDeps();
+    const ctx = makeContext();
+
+    await runSkillHook("simplify", ctx, deps);
+    assert.equal(deps.invokeCalls.length, 1);
+    assert.equal(deps.invokeCalls[0]?.verbose, false);
   });
 });
 

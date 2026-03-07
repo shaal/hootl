@@ -183,6 +183,10 @@ export async function runSkillHook(
   if (context.cwd && !invokeOptions.cwd) {
     invokeOptions.cwd = context.cwd;
   }
+  // Hooks must use non-verbose mode for reliable JSON parsing.
+  // Verbose mode uses stream-json output which can corrupt the result
+  // that parseHookResult() needs to extract pass/fail status.
+  invokeOptions.verbose = false;
   const result = await deps.invoke(invokeOptions);
   const parsed = parseHookResult(result.output);
 
@@ -319,7 +323,29 @@ export function parseHookResult(output: string): {
       const parsed: unknown = JSON.parse(candidate);
       if (typeof parsed !== "object" || parsed === null) continue;
 
-      const record = parsed as Record<string, unknown>;
+      let record = parsed as Record<string, unknown>;
+
+      // Defense-in-depth: detect the Claude JSON envelope shape
+      // (has "result" string + "total_cost_usd"/"cost_usd") and extract the
+      // inner "result" field. This happens when verbose mode leaks into hook
+      // invocations — the output is the raw envelope, not the extracted text.
+      if (
+        typeof record["result"] === "string" &&
+        ("total_cost_usd" in record || "cost_usd" in record)
+      ) {
+        const innerOutput = record["result"] as string;
+        try {
+          const inner: unknown = JSON.parse(innerOutput);
+          if (typeof inner === "object" && inner !== null) {
+            record = inner as Record<string, unknown>;
+            // Fall through to normal field extraction with the unwrapped record
+          } else {
+            continue; // Inner result isn't a JSON object — skip this candidate
+          }
+        } catch {
+          continue; // Inner result isn't valid JSON — skip this candidate
+        }
+      }
 
       // "passed" (new) takes precedence over "pass" (old)
       const pass = typeof record["passed"] === "boolean"
@@ -405,6 +431,7 @@ export async function runHook(
     prompt,
     systemPrompt,
     maxTurns: 3,
+    verbose: false, // Hooks must use non-verbose mode for reliable JSON parsing
     ...(context.cwd ? { cwd: context.cwd } : {}),
   });
 
