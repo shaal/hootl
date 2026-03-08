@@ -11,7 +11,7 @@
     "requireTests": true
   },
   "git": {
-    "useWorktrees": false,
+    "useWorktrees": true,
     "autoPR": true,
     "branchPrefix": "hootl/"
   },
