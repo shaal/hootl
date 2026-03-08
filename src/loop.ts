@@ -190,6 +190,7 @@ export async function buildExecutePrompt(
 export async function buildReviewPrompt(
   task: Task,
   taskDir: string,
+  opts?: { taskBranch?: string | null; baseBranch?: string | null },
 ): Promise<string> {
   const parts: string[] = [];
 
@@ -198,9 +199,18 @@ export async function buildReviewPrompt(
   parts.push(task.description);
 
   parts.push("");
-  parts.push(
-    "Run tests, examine code changes (use `git diff`), and produce a JSON confidence assessment following your system prompt instructions.",
-  );
+  if (opts?.taskBranch && opts?.baseBranch) {
+    parts.push(
+      `IMPORTANT: You are reviewing changes on branch \`${opts.taskBranch}\`. ` +
+      `First run \`git checkout ${opts.taskBranch}\` to ensure you are on the correct branch. ` +
+      `Then examine code changes with \`git diff ${opts.baseBranch}...HEAD\` (not plain \`git diff\` which only shows uncommitted changes). ` +
+      `Run tests, and produce a JSON confidence assessment following your system prompt instructions.`,
+    );
+  } else {
+    parts.push(
+      "Run tests, examine code changes (use `git diff`), and produce a JSON confidence assessment following your system prompt instructions.",
+    );
+  }
 
   const testResults = await readFileOrEmpty(join(taskDir, "test_results.md"));
   if (testResults.trim().length > 0) {
@@ -482,7 +492,10 @@ export async function handleConfidenceMet(
 
         // Re-run Phase 3 (review) to check if fixes broke anything
         const reviewSystemPrompt = await loadTemplate("review");
-        const reviewUserPrompt = await buildReviewPrompt(currentTask, taskDir);
+        const reviewUserPrompt = await buildReviewPrompt(currentTask, taskDir, {
+          taskBranch,
+          baseBranch,
+        });
 
         const reviewResult = hookDeps
           ? await hookDeps.invoke({
@@ -1179,9 +1192,15 @@ export async function runCompletionLoop(
       // can only exit via budget/attempt exhaustion, wasting both.
 
       // Phase 3: REVIEW
+      // Guard branch BEFORE review — ensures the reviewer starts on the task branch
+      await guardBranch();
+
       await writeCheckpoint(taskDir, "review", attempt);
       const reviewSystemPrompt = await loadTemplate("review");
-      const reviewUserPrompt = await buildReviewPrompt(currentTask, taskDir);
+      const reviewUserPrompt = await buildReviewPrompt(currentTask, taskDir, {
+        taskBranch,
+        baseBranch,
+      });
 
       uiInfo(`Phase 3: REVIEW [${new Date().toLocaleTimeString()}]`);
       const reviewResult = await uiSpinner("Reviewing...", () =>

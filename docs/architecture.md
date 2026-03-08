@@ -15,7 +15,7 @@ Each task begins with a one-time preflight validation, then runs through repeate
    - On preflight failure (timeout, error, empty output): graceful degradation — proceed to the loop anyway
 1. **PLAN** -- Claude analyzes the task, prior progress, and blockers to produce `plan.md`
 2. **EXECUTE** -- Claude implements the plan; output appended to `progress.md`; changes auto-committed
-3. **REVIEW** -- Claude runs tests, examines `git diff`, produces a JSON confidence assessment
+3. **REVIEW** -- Claude runs tests, examines code changes via `git diff <baseBranch>...HEAD`, produces a JSON confidence assessment. The review prompt includes explicit branch context (task branch name and base branch) so the reviewer knows which branch to checkout and how to diff — plain `git diff` only shows uncommitted changes and misses committed work.
 
 The loop continues until:
 - Confidence >= target (default 95%) --> handled by `handleConfidenceMet()` (see below)
@@ -94,7 +94,7 @@ Before the loop begins, `runCompletionLoop` creates or switches to the task bran
 
 **Fix:** `ensureBranch(expected, cwd?)` in `src/git.ts` checks the current branch and switches back if drifted. In `runCompletionLoop`, a `guardBranch()` closure wraps this with error handling and is called after every `invokeClaude`/`runHooks` call in non-worktree mode. If drift is detected, it logs a warning and restores the task branch.
 
-**Guard points (6):** after preflight, after plan, after on_execute_start hooks, before auto-commit (critical), after review, after on_review_complete hooks.
+**Guard points (7):** after preflight, after plan, after on_execute_start hooks, before auto-commit (critical), before review (ensures reviewer starts on task branch), after review, after on_review_complete hooks.
 
 **Known gap:** Hooks inside `handleConfidenceMet` (the `on_confidence_met` simplify hook) invoke Claude but are not guarded — `guardBranch()` is a closure in `runCompletionLoop` and isn't passed into `handleConfidenceMet`. Worktree mode is immune to all branch drift since `cwd` isolates the worktree.
 

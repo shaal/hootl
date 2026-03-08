@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { parseReviewResult, isContextWindowExceeded, applyContextWindowExceeded, buildPlanPrompt, isConfidenceRegression, handleConfidenceMet, parsePreflightResult, handleTooBroad, fireHooks, moveToBlocked, MAX_REVERIFICATIONS } from "../loop.js";
+import { parseReviewResult, isContextWindowExceeded, applyContextWindowExceeded, buildPlanPrompt, buildReviewPrompt, isConfidenceRegression, handleConfidenceMet, parsePreflightResult, handleTooBroad, fireHooks, moveToBlocked, MAX_REVERIFICATIONS } from "../loop.js";
 import { checkGlobalBudget } from "../budget.js";
 import { ConfigSchema } from "../config.js";
 import type { TaskBackend, CreateTaskInput } from "../tasks/types.js";
@@ -1827,5 +1827,88 @@ describe("moveToBlocked", () => {
     await moveToBlocked(backend, makeTask(), blockers, "hootl/task-mb", "main", 60, config, hookDeps);
     assert.equal(updates.length, 1);
     assert.deepEqual(updates[0]?.updates.blockers, blockers);
+  });
+});
+
+describe("buildReviewPrompt", () => {
+  const makeTask = (overrides: Partial<Task> = {}): Task => ({
+    id: "task-001",
+    title: "Test task",
+    description: "A test task description",
+    priority: "medium",
+    type: "feature",
+    state: "in_progress",
+    dependencies: [],
+    backend: "local",
+    backendRef: null,
+    confidence: 0,
+    attempts: 0,
+    totalCost: 0,
+    branch: null,
+    worktree: null,
+    userPriority: null,
+    goal: null,
+    blockers: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    ...overrides,
+  });
+
+  it("includes branch checkout and three-dot diff when opts provided", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hootl-review-"));
+    try {
+      const prompt = await buildReviewPrompt(makeTask(), dir, {
+        taskBranch: "hootl/task-001-my-feature",
+        baseBranch: "main",
+      });
+      assert.ok(prompt.includes("git checkout hootl/task-001-my-feature"), "should instruct to checkout task branch");
+      assert.ok(prompt.includes("git diff main...HEAD"), "should use three-dot diff against base");
+      assert.ok(prompt.includes("IMPORTANT"), "should emphasize the instruction");
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+
+  it("falls back to plain git diff when opts not provided", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hootl-review-"));
+    try {
+      const prompt = await buildReviewPrompt(makeTask(), dir);
+      assert.ok(prompt.includes("use `git diff`"), "should use plain git diff");
+      assert.ok(!prompt.includes("git checkout"), "should not mention checkout");
+      assert.ok(!prompt.includes("...HEAD"), "should not use three-dot diff");
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+
+  it("falls back to plain git diff when opts partially provided", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hootl-review-"));
+    try {
+      const prompt = await buildReviewPrompt(makeTask(), dir, {
+        taskBranch: "hootl/task-001-my-feature",
+        // baseBranch intentionally omitted
+      });
+      assert.ok(prompt.includes("use `git diff`"), "should fall back without baseBranch");
+      assert.ok(!prompt.includes("...HEAD"), "should not use three-dot diff");
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+
+  it("includes previous test results when present", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hootl-review-"));
+    try {
+      await writeFile(join(dir, "test_results.md"), "All 10 tests passed");
+      const prompt = await buildReviewPrompt(makeTask(), dir, {
+        taskBranch: "hootl/task-001-feat",
+        baseBranch: "main",
+      });
+      assert.ok(prompt.includes("## Previous Test Results"), "should include test results header");
+      assert.ok(prompt.includes("All 10 tests passed"), "should include test results content");
+      // Branch instructions should also be present alongside test results
+      assert.ok(prompt.includes("git diff main...HEAD"), "should still include diff instruction");
+    } finally {
+      await rm(dir, { recursive: true });
+    }
   });
 });
