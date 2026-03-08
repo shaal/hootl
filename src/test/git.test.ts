@@ -1,6 +1,7 @@
 import { describe, it, after, before } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, readFile, mkdir } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execa } from "execa";
@@ -23,8 +24,9 @@ import {
   removeWorktree,
   worktreeExists,
   getDirtyFiles,
+  branchExists,
 } from "../git.js";
-import type { CommitMessageDeps } from "../git.js";
+import type { CommitMessageDeps, StaleBranchOpts } from "../git.js";
 import type { InvokeResult } from "../invoke.js";
 
 // ---------------------------------------------------------------------------
@@ -998,6 +1000,250 @@ describe("git integration", () => {
         await execa("git", ["branch", "-D", "exclude-all-test"], { cwd: tmpDir });
       } finally {
         process.chdir(originalCwd);
+      }
+    });
+  });
+
+  describe("createTaskBranch stale detection", () => {
+    /** Helper: make N commits on the current branch. */
+    async function makeCommits(dir: string, count: number): Promise<void> {
+      for (let i = 0; i < count; i++) {
+        await writeFile(join(dir, `commit-${Date.now()}-${i}.txt`), `content-${i}`);
+        await execa("git", ["add", "-A"], { cwd: dir });
+        await execa("git", ["commit", "-m", `commit ${i}`], { cwd: dir });
+      }
+    }
+
+    it("resets branch when behind main by more than threshold", async () => {
+      const originalCwd = process.cwd();
+      const staleDir = await mkdtemp(join(tmpdir(), "hootl-stale-"));
+      try {
+        await execa("git", ["init", "-b", "main"], { cwd: staleDir });
+        await execa("git", ["config", "user.name", "Test"], { cwd: staleDir });
+        await execa("git", ["config", "user.email", "t@t.com"], { cwd: staleDir });
+        await writeFile(join(staleDir, "README"), "init");
+        await execa("git", ["add", "-A"], { cwd: staleDir });
+        await execa("git", ["commit", "-m", "init"], { cwd: staleDir });
+
+        process.chdir(staleDir);
+
+        // Create the task branch
+        await createTaskBranch("T-stale", "stale test", "hootl/");
+        const branchName = "hootl/T-stale-stale-test";
+
+        // Switch back to main and advance it by 6 commits
+        await execa("git", ["checkout", "main"], { cwd: staleDir });
+        await makeCommits(staleDir, 6);
+        const mainSha = await getHeadSha(staleDir);
+
+        // Create a task directory with artifact files
+        const taskDir = join(staleDir, "task-data");
+        await mkdir(taskDir, { recursive: true });
+        for (const name of ["understanding.md", "plan.md", "progress.md", "blockers.md", "test_results.md", "last_confidence.txt"]) {
+          await writeFile(join(taskDir, name), "old content");
+        }
+
+        // Call createTaskBranch — should detect staleness and reset
+        const result = await createTaskBranch("T-stale", "stale test", "hootl/", {
+          taskDir,
+          staleBranchThreshold: 5,
+          baseBranch: "main",
+        });
+
+        assert.equal(result, branchName);
+
+        // Branch should now point at main's HEAD
+        const branchSha = await getHeadSha(staleDir);
+        assert.equal(branchSha, mainSha);
+
+        // Artifacts should be cleaned up
+        for (const name of ["understanding.md", "plan.md", "progress.md", "blockers.md", "test_results.md", "last_confidence.txt"]) {
+          assert.equal(existsSync(join(taskDir, name)), false, `${name} should be removed`);
+        }
+      } finally {
+        process.chdir(originalCwd);
+        await rm(staleDir, { recursive: true, force: true });
+      }
+    });
+
+    it("keeps branch when behind main by exactly threshold", async () => {
+      const originalCwd = process.cwd();
+      const staleDir = await mkdtemp(join(tmpdir(), "hootl-stale-"));
+      try {
+        await execa("git", ["init", "-b", "main"], { cwd: staleDir });
+        await execa("git", ["config", "user.name", "Test"], { cwd: staleDir });
+        await execa("git", ["config", "user.email", "t@t.com"], { cwd: staleDir });
+        await writeFile(join(staleDir, "README"), "init");
+        await execa("git", ["add", "-A"], { cwd: staleDir });
+        await execa("git", ["commit", "-m", "init"], { cwd: staleDir });
+
+        process.chdir(staleDir);
+
+        // Create the task branch and add a commit on it
+        await createTaskBranch("T-exact", "exact test", "hootl/");
+        await writeFile(join(staleDir, "task-work.txt"), "task work");
+        await execa("git", ["add", "-A"], { cwd: staleDir });
+        await execa("git", ["commit", "-m", "task work"], { cwd: staleDir });
+        const taskBranchSha = await getHeadSha(staleDir);
+
+        // Switch back to main and advance it by exactly 5 commits
+        await execa("git", ["checkout", "main"], { cwd: staleDir });
+        await makeCommits(staleDir, 5);
+
+        const taskDir = join(staleDir, "task-data");
+        await mkdir(taskDir, { recursive: true });
+
+        // Call createTaskBranch with threshold 5 — count is exactly 5, should NOT reset
+        const result = await createTaskBranch("T-exact", "exact test", "hootl/", {
+          taskDir,
+          staleBranchThreshold: 5,
+          baseBranch: "main",
+        });
+
+        assert.equal(result, "hootl/T-exact-exact-test");
+
+        // Branch should still be at its old position (not reset)
+        const currentSha = await getHeadSha(staleDir);
+        assert.equal(currentSha, taskBranchSha);
+      } finally {
+        process.chdir(originalCwd);
+        await rm(staleDir, { recursive: true, force: true });
+      }
+    });
+
+    it("keeps branch when behind main by fewer than threshold", async () => {
+      const originalCwd = process.cwd();
+      const staleDir = await mkdtemp(join(tmpdir(), "hootl-stale-"));
+      try {
+        await execa("git", ["init", "-b", "main"], { cwd: staleDir });
+        await execa("git", ["config", "user.name", "Test"], { cwd: staleDir });
+        await execa("git", ["config", "user.email", "t@t.com"], { cwd: staleDir });
+        await writeFile(join(staleDir, "README"), "init");
+        await execa("git", ["add", "-A"], { cwd: staleDir });
+        await execa("git", ["commit", "-m", "init"], { cwd: staleDir });
+
+        process.chdir(staleDir);
+
+        // Create the task branch and add a commit
+        await createTaskBranch("T-below", "below test", "hootl/");
+        await writeFile(join(staleDir, "task-work.txt"), "task work");
+        await execa("git", ["add", "-A"], { cwd: staleDir });
+        await execa("git", ["commit", "-m", "task work"], { cwd: staleDir });
+        const taskBranchSha = await getHeadSha(staleDir);
+
+        // Switch to main and only advance 3 commits (below threshold of 5)
+        await execa("git", ["checkout", "main"], { cwd: staleDir });
+        await makeCommits(staleDir, 3);
+
+        const taskDir = join(staleDir, "task-data");
+        await mkdir(taskDir, { recursive: true });
+        await writeFile(join(taskDir, "understanding.md"), "should survive");
+
+        const result = await createTaskBranch("T-below", "below test", "hootl/", {
+          taskDir,
+          staleBranchThreshold: 5,
+          baseBranch: "main",
+        });
+
+        assert.equal(result, "hootl/T-below-below-test");
+
+        // Branch should still be at its old position
+        const currentSha = await getHeadSha(staleDir);
+        assert.equal(currentSha, taskBranchSha);
+
+        // Artifacts should be untouched
+        const content = await readFile(join(taskDir, "understanding.md"), "utf-8");
+        assert.equal(content, "should survive");
+      } finally {
+        process.chdir(originalCwd);
+        await rm(staleDir, { recursive: true, force: true });
+      }
+    });
+
+    it("cleans up only stale artifacts on reset, preserves other files", async () => {
+      const originalCwd = process.cwd();
+      const staleDir = await mkdtemp(join(tmpdir(), "hootl-stale-"));
+      try {
+        await execa("git", ["init", "-b", "main"], { cwd: staleDir });
+        await execa("git", ["config", "user.name", "Test"], { cwd: staleDir });
+        await execa("git", ["config", "user.email", "t@t.com"], { cwd: staleDir });
+        await writeFile(join(staleDir, "README"), "init");
+        await execa("git", ["add", "-A"], { cwd: staleDir });
+        await execa("git", ["commit", "-m", "init"], { cwd: staleDir });
+
+        process.chdir(staleDir);
+
+        // Create the task branch
+        await createTaskBranch("T-art", "artifact test", "hootl/");
+
+        // Advance main past threshold
+        await execa("git", ["checkout", "main"], { cwd: staleDir });
+        await makeCommits(staleDir, 7);
+
+        // Create task dir with all artifacts plus an extra file (task.json)
+        const taskDir = join(staleDir, "task-data");
+        await mkdir(taskDir, { recursive: true });
+        for (const name of ["understanding.md", "plan.md", "progress.md", "blockers.md", "test_results.md", "last_confidence.txt"]) {
+          await writeFile(join(taskDir, name), "stale content");
+        }
+        await writeFile(join(taskDir, "task.json"), '{"id":"T-art"}');
+
+        await createTaskBranch("T-art", "artifact test", "hootl/", {
+          taskDir,
+          staleBranchThreshold: 5,
+          baseBranch: "main",
+        });
+
+        // All 6 artifact files should be removed
+        for (const name of ["understanding.md", "plan.md", "progress.md", "blockers.md", "test_results.md", "last_confidence.txt"]) {
+          assert.equal(existsSync(join(taskDir, name)), false, `${name} should be removed`);
+        }
+
+        // task.json should be preserved
+        assert.equal(existsSync(join(taskDir, "task.json")), true, "task.json should be preserved");
+        const preserved = await readFile(join(taskDir, "task.json"), "utf-8");
+        assert.equal(preserved, '{"id":"T-art"}');
+      } finally {
+        process.chdir(originalCwd);
+        await rm(staleDir, { recursive: true, force: true });
+      }
+    });
+
+    it("skips staleness check when opts not provided (backward compat)", async () => {
+      const originalCwd = process.cwd();
+      const staleDir = await mkdtemp(join(tmpdir(), "hootl-stale-"));
+      try {
+        await execa("git", ["init", "-b", "main"], { cwd: staleDir });
+        await execa("git", ["config", "user.name", "Test"], { cwd: staleDir });
+        await execa("git", ["config", "user.email", "t@t.com"], { cwd: staleDir });
+        await writeFile(join(staleDir, "README"), "init");
+        await execa("git", ["add", "-A"], { cwd: staleDir });
+        await execa("git", ["commit", "-m", "init"], { cwd: staleDir });
+
+        process.chdir(staleDir);
+
+        // Create the task branch and add a commit
+        await createTaskBranch("T-compat", "compat test", "hootl/");
+        await writeFile(join(staleDir, "branch-work.txt"), "work");
+        await execa("git", ["add", "-A"], { cwd: staleDir });
+        await execa("git", ["commit", "-m", "branch work"], { cwd: staleDir });
+        const branchSha = await getHeadSha(staleDir);
+
+        // Advance main by 10 commits (way past any threshold)
+        await execa("git", ["checkout", "main"], { cwd: staleDir });
+        await makeCommits(staleDir, 10);
+
+        // Call without opts (3 args only) — should NOT reset
+        const result = await createTaskBranch("T-compat", "compat test", "hootl/");
+
+        assert.equal(result, "hootl/T-compat-compat-test");
+
+        // Branch should still be at its old position (no reset)
+        const currentSha = await getHeadSha(staleDir);
+        assert.equal(currentSha, branchSha);
+      } finally {
+        process.chdir(originalCwd);
+        await rm(staleDir, { recursive: true, force: true });
       }
     });
   });

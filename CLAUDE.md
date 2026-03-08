@@ -112,6 +112,7 @@ All interactive TUI calls go through helpers in `src/ui.ts` (`uiChoose`, `uiConf
 - All git operations wrapped in try/catch -- warn on failure, never crash
 - Switches back to base branch (main/master) when loop finishes
 - `getMergedOrGoneBranches()` uses `--format "%(refname:short)"` for robust branch name parsing (avoids regex on `*` prefix)
+- Stale branch detection: `config.git.staleBranchThreshold` (default: 5) — when an existing task branch is behind the base branch by more than this many commits, the branch is deleted and recreated from current base. Stale task artifacts (understanding.md, plan.md, progress.md, blockers.md, test_results.md, last_confidence.txt) are cleaned up. Configurable via `HOOTL_GIT_STALE_BRANCH_THRESHOLD` env var.
 
 ## Dependencies
 

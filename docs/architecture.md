@@ -98,6 +98,24 @@ Before the loop begins, `runCompletionLoop` creates or switches to the task bran
 
 **Known gap:** Hooks inside `handleConfidenceMet` (the `on_confidence_met` simplify hook) invoke Claude but are not guarded — `guardBranch()` is a closure in `runCompletionLoop` and isn't passed into `handleConfidenceMet`. Worktree mode is immune to all branch drift since `cwd` isolates the worktree.
 
+## Stale Branch Detection (non-worktree mode only)
+
+When an existing task branch has fallen far behind the base branch (main/master), continuing on it wastes attempts — the diff will be huge, tests may fail due to missing upstream code, and the review phase will be confused by irrelevant changes.
+
+**Detection:** `createTaskBranch()` runs `git rev-list --count <branch>..<base>` to measure how many commits the base branch has advanced beyond the task branch. If the count exceeds `config.git.staleBranchThreshold` (default: 5), the branch is considered stale.
+
+**Reset flow:**
+1. Switch to the base branch (can't delete the current branch)
+2. Force-delete the stale branch (`git branch -D`)
+3. Remove stale task artifacts from the task directory: `understanding.md`, `plan.md`, `progress.md`, `blockers.md`, `test_results.md`, `last_confidence.txt`
+4. Create a fresh branch from the current base
+
+**Configuration:** Set `git.staleBranchThreshold` in `.hootl/config.json` or via the `HOOTL_GIT_STALE_BRANCH_THRESHOLD` environment variable. A value of 0 effectively means "always reset existing branches"; a very high value disables the feature.
+
+**Error handling:** If the `git rev-list` check fails (e.g., detached HEAD, missing remote), the error is caught and logged as a warning. The function falls through to normal branch checkout — staleness check failure never prevents task execution.
+
+**Worktree mode:** This check only applies in non-worktree mode. Worktrees always create fresh branches, so staleness isn't a concern.
+
 ## Rollback Safety (confidence regression)
 
 Before each Phase 2 (execute), the loop records the current git HEAD SHA via `getHeadSha()`. After Phase 3 (review), if confidence is lower than the previous attempt's confidence, the loop:
