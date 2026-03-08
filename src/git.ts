@@ -1,4 +1,6 @@
 import { existsSync, realpathSync } from "node:fs";
+import { unlink } from "node:fs/promises";
+import { join } from "node:path";
 import { execa } from "execa";
 import { uiInfo, uiWarn, errorMsg } from "./ui.js";
 import { invokeClaude } from "./invoke.js";
@@ -101,11 +103,70 @@ export async function branchExists(branchName: string): Promise<boolean> {
   }
 }
 
-export async function createTaskBranch(taskId: string, taskTitle: string, prefix: string): Promise<string> {
+/** Artifact files that are removed when a stale branch is reset. */
+const STALE_ARTIFACTS = [
+  "understanding.md",
+  "plan.md",
+  "progress.md",
+  "blockers.md",
+  "test_results.md",
+  "last_confidence.txt",
+] as const;
+
+export interface StaleBranchOpts {
+  taskDir?: string;
+  staleBranchThreshold?: number;
+  baseBranch?: string;
+}
+
+export async function createTaskBranch(
+  taskId: string,
+  taskTitle: string,
+  prefix: string,
+  opts?: StaleBranchOpts,
+): Promise<string> {
   const slug = slugify(taskTitle);
   const branchName = `${prefix}${taskId}-${slug}`;
 
   if (await branchExists(branchName)) {
+    // Check if the branch is stale (far behind the base branch)
+    if (opts?.staleBranchThreshold !== undefined && opts.baseBranch && opts.taskDir) {
+      const threshold = opts.staleBranchThreshold;
+      try {
+        const result = await execa("git", ["rev-list", "--count", `${branchName}..${opts.baseBranch}`]);
+        const behindCount = parseInt(result.stdout.trim(), 10);
+
+        if (!Number.isNaN(behindCount) && behindCount > threshold) {
+          uiInfo(
+            `Branch ${branchName} is ${behindCount} commits behind ${opts.baseBranch} (threshold: ${threshold}) — resetting stale branch`,
+          );
+
+          // Switch to base branch first (can't delete the current branch)
+          await execa("git", ["checkout", opts.baseBranch]);
+
+          // Force-delete the stale branch (it won't be merged into base)
+          await execa("git", ["branch", "-D", branchName]);
+
+          // Remove stale task artifacts
+          for (const artifact of STALE_ARTIFACTS) {
+            try {
+              await unlink(join(opts.taskDir, artifact));
+            } catch {
+              // File may not exist — that's fine
+            }
+          }
+
+          // Create a fresh branch from the current base
+          uiInfo(`Creating fresh branch: ${branchName}`);
+          await execa("git", ["checkout", "-b", branchName]);
+          return branchName;
+        }
+      } catch (err: unknown) {
+        // If staleness check fails, fall through to normal checkout
+        uiWarn(`Stale branch check failed: ${errorMsg(err)} — proceeding with existing branch`);
+      }
+    }
+
     uiInfo(`Branch ${branchName} already exists — switching to it`);
     await execa("git", ["checkout", branchName]);
   } else {

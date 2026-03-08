@@ -23,6 +23,7 @@ const GitSchema = z.object({
   autoPR: z.boolean().default(true),
   branchPrefix: z.string().default("hootl/"),
   onConfidence: OnConfidenceSchema.nullable().default(null),
+  staleBranchThreshold: z.number().default(5),
 });
 
 const AutoSchema = z.object({
@@ -101,6 +102,7 @@ const ENV_MAP: Record<string, string[]> = {
   HOOTL_GIT_AUTO_PR: ["git", "autoPR"],
   HOOTL_GIT_BRANCH_PREFIX: ["git", "branchPrefix"],
   HOOTL_GIT_ON_CONFIDENCE: ["git", "onConfidence"],
+  HOOTL_GIT_STALE_BRANCH_THRESHOLD: ["git", "staleBranchThreshold"],
   HOOTL_AUTO_LEVEL: ["auto", "defaultLevel"],
   HOOTL_AUTO_MAX_PARALLEL: ["auto", "maxParallel"],
   HOOTL_NOTIFICATIONS_TERMINAL: ["notifications", "terminal"],

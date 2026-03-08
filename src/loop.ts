@@ -846,7 +846,11 @@ export async function runCompletionLoop(
         taskBranch = branchName;
         currentTask = await backend.updateTask(task.id, { branch: taskBranch, worktree: worktreePath });
       } else {
-        taskBranch = await createTaskBranch(task.id, task.title, config.git.branchPrefix);
+        taskBranch = await createTaskBranch(task.id, task.title, config.git.branchPrefix, {
+          taskDir,
+          staleBranchThreshold: config.git.staleBranchThreshold,
+          baseBranch,
+        });
         currentTask = await backend.updateTask(task.id, { branch: taskBranch });
       }
     } catch (err: unknown) {
