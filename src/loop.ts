@@ -1200,7 +1200,9 @@ export async function runCompletionLoop(
 
   // Auto-promote: if all dependencies are done and branch has no diff, the work was
   // already completed by subtasks. Skip the entire completion loop to save budget.
-  if (currentTask.dependencies.length > 0 && taskBranch !== null && baseBranch !== null) {
+  // Only check after at least one attempt — a fresh task (attempts === 0) always has
+  // no diff because its branch was just created, and hasn't had a chance to do its own work.
+  if (currentTask.dependencies.length > 0 && currentTask.attempts > 0 && taskBranch !== null && baseBranch !== null) {
     try {
       const allDepsDone = await checkAllDependenciesDone(backend, currentTask.dependencies);
       if (allDepsDone) {

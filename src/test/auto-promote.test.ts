@@ -106,13 +106,17 @@ process.stdout.write(JSON.stringify({ result, total_cost_usd: 0.01, context_wind
     });
     await backend.updateTask(dep2.id, { state: "done" });
 
-    // Create parent task with dependencies on both subtasks
+    // Create parent task with dependencies on both subtasks.
+    // Set attempts > 0 to simulate a task that has been worked on before —
+    // auto-promote only fires after at least one attempt to prevent false promotion
+    // of fresh tasks whose branches trivially have no diff from main.
     const parentTask = await backend.createTask({
       title: "Parent feature",
       description: "Parent task that depends on subtask 1 and 2",
     });
     await backend.updateTask(parentTask.id, {
       dependencies: [dep1.id, dep2.id],
+      attempts: 1,
     });
     const task = await backend.getTask(parentTask.id);
 
@@ -149,6 +153,56 @@ process.stdout.write(JSON.stringify({ result, total_cost_usd: 0.01, context_wind
       await execa("git", ["checkout", "main"], { cwd: tmpDir });
       if (branchName) {
         await execa("git", ["branch", "-D", branchName], { cwd: tmpDir });
+      }
+    } catch { /* best effort */ }
+  });
+
+  it("does NOT auto-promote a fresh task (attempts=0) even when all deps are done", async () => {
+    // A fresh task with attempts=0 always has no diff (branch just created).
+    // Auto-promote should NOT fire — the task hasn't had a chance to do its work.
+    const dep = await backend.createTask({
+      title: "Done dep for fresh test",
+      description: "Completed",
+    });
+    await backend.updateTask(dep.id, { state: "done" });
+
+    const freshTask = await backend.createTask({
+      title: "Fresh task with dep",
+      description: "Has work to do despite dep being done",
+    });
+    await backend.updateTask(freshTask.id, {
+      dependencies: [dep.id],
+      // attempts defaults to 0 — do NOT set it
+    });
+    const task = await backend.getTask(freshTask.id);
+
+    const stateFile = join(stateDir, "count-fresh");
+    process.env["HOOTL_FAKE_CLAUDE_STATE"] = stateFile;
+
+    const config = ConfigSchema.parse({
+      git: { onConfidence: "none" },
+    });
+
+    await runCompletionLoop(task, backend, config);
+
+    const updated = await backend.getTask(freshTask.id);
+    // Task should NOT have been auto-promoted — it should have gone through
+    // the normal loop (preflight + plan + execute + review).
+    // The fake claude returns a plan error which stops the loop, so the task
+    // ends up in a non-done state.
+    assert.notEqual(updated.confidence, 100,
+      "Fresh task should not be auto-promoted to confidence 100");
+
+    // More than 1 claude call means the loop ran (not just preflight + auto-promote)
+    const callCount = parseInt(await readFile(stateFile, "utf-8"), 10);
+    assert.ok(callCount > 1,
+      `Expected >1 claude calls (loop should run), got ${callCount}`);
+
+    // Clean up branch
+    try {
+      await execa("git", ["checkout", "main"], { cwd: tmpDir });
+      if (updated.branch) {
+        await execa("git", ["branch", "-D", updated.branch], { cwd: tmpDir });
       }
     } catch { /* best effort */ }
   });
