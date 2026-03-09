@@ -59,6 +59,24 @@ When two `hootl auto` (or `hootl run`) instances run simultaneously, a file-base
 
 **Known limitations:** `O_EXCL` is atomic on local POSIX filesystems but not guaranteed on NFS. PID reuse is theoretically possible but extremely unlikely given the large PID space.
 
+## Instance Registry
+
+Tracks active `hootl auto` processes via PID-based instance files in `.hootl/instances/`. This enables the system to detect how many hootl processes are running (for parallel gate enforcement and idle-wait decisions) and to clean up after crashed instances.
+
+**File format:** `.hootl/instances/<pid>.json` — contains `{ pid: number, startedAt: string, level: string }`. Written with atomic tmp + rename (consistent with `local.ts`). Validated on read via Zod schema (`InstanceInfoSchema`).
+
+**Module-level state:** `registeredDir` is stored at module scope after `registerInstance()` so that `deregisterInstance()` and `deregisterInstanceSync()` don't need the path re-passed. Reset via `_resetRegisteredDir()` in tests.
+
+**Lifecycle:**
+1. **Registration** — `registerInstance(level, deps)` is called in `autoCommand()` after level resolution and `autoInit()`. Creates `.hootl/instances/<pid>.json` with the current PID, ISO timestamp, and automation level.
+2. **Deregistration (normal exit)** — `deregisterInstanceSync()` is called in the `autoCommand()` cleanup path before handler restoration, and in the global `process.on('exit')` handler.
+3. **Deregistration (signal)** — `deregisterInstanceSync()` is called in the `SIGINT` and `SIGTERM` handlers in `src/index.ts` (alongside `releaseAllClaims`), and in the `autoCommand`-specific force-quit SIGINT handler.
+4. **Stale cleanup** — `getActiveInstances(deps)` scans the instances directory, reads each `*.json` file, validates via Zod, checks PID liveness with `process.kill(pid, 0)` (via `isProcessAlive()` from `status.ts`), and removes entries for dead PIDs. Corrupt or invalid files are also removed.
+
+**Sync vs async:** `deregisterInstanceSync()` uses `unlinkSync` for signal handlers where async is unreliable. `deregisterInstance()` is the async variant for normal code paths. Both are best-effort (silently ignore `ENOENT`).
+
+**Relation to parallel gate:** The instance registry complements the `.claim`-based task claiming in `src/tasks/local.ts`. Claims prevent two instances from working on the same task; the instance registry tracks how many instances exist total, which `checkParallelGate()` in `src/status.ts` uses to enforce worktree mode when multiple instances are detected.
+
 ## Git Worktree Mode
 
 When `config.git.useWorktrees` is `true`, tasks run in isolated git worktrees instead of switching branches in the main working tree. This allows multiple tasks to run without affecting the developer's checkout.

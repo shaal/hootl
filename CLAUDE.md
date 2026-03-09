@@ -40,6 +40,7 @@ src/
   hooks.ts            Hook execution engine (filter, prompt resolution, run, orchestrate)
   logger.ts           Structured JSONL event logger (phase_start/end, state_change, decision, error, hook_run, budget_check)
   notify.ts           OS notifications (macOS osascript, Linux notify-send) for task events
+  instances.ts        Instance registry: PID-based tracking of active hootl processes
   status.ts           Status summary writer (grouped by state)
   tasks/
     types.ts           Zod schemas for Task, TaskState, TaskBackend interface

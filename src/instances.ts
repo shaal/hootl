@@ -1,13 +1,16 @@
 import { readdir, readFile, writeFile, rename, unlink, mkdir } from "node:fs/promises";
-import { unlinkSync, existsSync } from "node:fs";
+import { unlinkSync } from "node:fs";
 import { join } from "node:path";
+import { z } from "zod";
 import { isProcessAlive } from "./status.js";
 
-export interface InstanceInfo {
-  pid: number;
-  startedAt: string;
-  level: string;
-}
+const InstanceInfoSchema = z.object({
+  pid: z.number(),
+  startedAt: z.string(),
+  level: z.string(),
+});
+
+export type InstanceInfo = z.infer<typeof InstanceInfoSchema>;
 
 export interface ActiveInstancesResult {
   count: number;
@@ -81,29 +84,14 @@ export function deregisterInstanceSync(deps?: InstanceDeps): void {
 }
 
 /**
- * Parse and validate an instance JSON file.
+ * Parse and validate an instance JSON file via Zod schema.
  * Returns null on missing, corrupt, or invalid files.
  */
 function parseInstanceFile(raw: string): InstanceInfo | null {
   try {
     const data: unknown = JSON.parse(raw);
-    if (
-      typeof data === "object" &&
-      data !== null &&
-      "pid" in data &&
-      typeof (data as Record<string, unknown>).pid === "number" &&
-      "startedAt" in data &&
-      typeof (data as Record<string, unknown>).startedAt === "string" &&
-      "level" in data &&
-      typeof (data as Record<string, unknown>).level === "string"
-    ) {
-      return {
-        pid: (data as InstanceInfo).pid,
-        startedAt: (data as InstanceInfo).startedAt,
-        level: (data as InstanceInfo).level,
-      };
-    }
-    return null;
+    const result = InstanceInfoSchema.safeParse(data);
+    return result.success ? result.data : null;
   } catch {
     return null;
   }
