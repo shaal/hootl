@@ -199,6 +199,27 @@ This is O(2) git subprocesses regardless of how many review tasks exist. Called 
 
 **Edge case:** A force-deleted (never-merged) branch will be detected as "gone" and the task promoted. The UI message distinguishes "branch merged" from "branch removed" so the user can spot this.
 
+## Reconcile Command (stale state detection)
+
+The `hootl reconcile` command scans all non-done tasks and checks whether their work has already landed on the base branch. While `syncReviewTasks` only targets `review`-state tasks by checking branch merge status, `reconcile` is broader — it covers **all non-done states** (proposed, ready, in_progress, blocked, review) and searches for commits by task ID via `git log <base> --grep=<taskId>`.
+
+**Phase 1 — Task reconciliation:**
+For each non-done task, runs `git log <baseBranch> --grep=<taskId> --oneline --max-count=1`. If commits are found:
+1. Marks the task as `done` via `backend.updateTask()`
+2. Deletes its stale branch (if any) via `git branch -D` — best-effort, silently ignored if the branch doesn't exist locally
+3. Removes its worktree (if any) via `removeWorktree()` and nulls out the `worktree` field — best-effort, never blocks state transitions
+
+**Phase 2 — Orphaned worktree cleanup:**
+Scans `.hootl/worktrees/` for directories whose tasks are already done or don't exist in the backend at all. For each orphan, calls `removeWorktree()` to clean up.
+
+**`--dry-run` flag:** When passed, the command performs the full analysis (Phase 1 commit checks + Phase 2 orphan detection) but skips all mutations — no task state changes, no branch deletions, no worktree removals. The report shows what *would* happen, prefixed with `[DRY RUN]`.
+
+**Relationship to `syncReviewTasks`:** Both handle the "work landed externally" scenario, but they complement each other:
+- `syncReviewTasks` runs automatically at the start of `status` and `run` commands, targeting only `review`-state tasks via batch branch-merge detection (O(2) git calls)
+- `reconcile` is a manual command for broader cleanup — it catches tasks in any state where commits referencing the task ID have landed on main, even if the task never reached `review` state (e.g., work was cherry-picked or squash-merged from another branch)
+
+Core logic lives in `src/reconcile.ts`, registered as a CLI command in `src/index.ts`.
+
 ## Planning Memory
 
 The system learns from its own history via `src/plan-memory.ts`. After a task reaches a terminal state (done or blocked), a short memory entry is appended to `.hootl/planning-patterns.md` summarizing what worked or went wrong. Before planning, the last ~20 entries plus aggregate metrics are injected into the plan prompt as "Lessons from Previous Tasks".
@@ -350,6 +371,8 @@ hootl hooks test --skill <name>  Test a hook against the current branch (real Cl
 hootl hooks test --prompt <text> Test a hook with an inline prompt or file path
 hootl hooks test ... --confidence <n>  Set confidence value for hook context (default: 95)
 hootl hooks test ... --dry-run   Show resolved prompt without invoking Claude
+hootl reconcile                Detect and fix stale task states (commits landed on main)
+hootl reconcile --dry-run      Show what would change without modifying anything
 hootl prioritize               Interactive: select and order tasks via gum multi-select
 hootl prioritize t1 t2 t3      Set userPriority by argument order (t1=#1, t2=#2, t3=#3)
 hootl prioritize --clear       Remove all userPriority overrides

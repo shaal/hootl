@@ -2,8 +2,8 @@ import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { execa } from "execa";
 import type { TaskBackend } from "./tasks/types.js";
-import { isGitRepo, getBaseBranch, removeWorktree } from "./git.js";
-import { uiInfo, uiSuccess, uiWarn, errorMsg } from "./ui.js";
+import { isGitRepo, getBaseBranch, removeWorktree as defaultRemoveWorktree } from "./git.js";
+import { uiInfo, uiSuccess, uiWarn } from "./ui.js";
 
 export interface ReconcileAction {
   id: string;
@@ -17,16 +17,29 @@ export interface ReconcileResult {
 }
 
 /**
+ * Injectable dependencies for reconcileTasks.
+ * Follows the same DI pattern as CommitMessageDeps, HookDeps, etc.
+ */
+export interface ReconcileDeps {
+  removeWorktree: (path: string) => Promise<void>;
+}
+
+const defaultDeps: ReconcileDeps = {
+  removeWorktree: defaultRemoveWorktree,
+};
+
+/**
  * Scan all non-done tasks and check whether their work has already landed on main
  * via `git log --grep=<taskId>`. For each match, mark the task done, clean up its
  * stale branch and worktree. Also detect orphaned worktree directories whose tasks
- * are already done.
+ * are already done or no longer exist in the backend.
  */
 export async function reconcileTasks(
   backend: TaskBackend,
-  options?: { dryRun?: boolean },
+  options?: { dryRun?: boolean; deps?: ReconcileDeps },
 ): Promise<ReconcileResult> {
   const dryRun = options?.dryRun === true;
+  const deps = options?.deps ?? defaultDeps;
   const result: ReconcileResult = { reconciled: [], orphanedCleaned: 0 };
 
   if (!(await isGitRepo())) return result;
@@ -81,7 +94,7 @@ export async function reconcileTasks(
 
       if (task.worktree !== null) {
         try {
-          await removeWorktree(task.worktree);
+          await deps.removeWorktree(task.worktree);
           await backend.updateTask(task.id, { worktree: null });
         } catch {
           // Best-effort: worktree cleanup should never block state transitions
@@ -119,7 +132,7 @@ export async function reconcileTasks(
         if (!dryRun) {
           const worktreePath = join(worktreesDir, dirName);
           try {
-            await removeWorktree(worktreePath);
+            await deps.removeWorktree(worktreePath);
           } catch {
             // Best-effort cleanup
           }
