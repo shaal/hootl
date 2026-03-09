@@ -83,6 +83,23 @@ export async function getActiveInstances(tasksDir: string): Promise<ActiveInstan
 }
 
 /**
+ * Check whether parallel execution is safe.
+ * Returns blocked=true when other instances are active and worktrees are disabled.
+ */
+export async function checkParallelGate(
+  tasksDir: string,
+  useWorktrees: boolean,
+  deps?: { getActiveInstances?: (dir: string) => Promise<ActiveInstanceInfo> },
+): Promise<{ blocked: boolean; activeCount: number }> {
+  const getInstances = deps?.getActiveInstances ?? getActiveInstances;
+  const { count } = await getInstances(tasksDir);
+  if (count > 0 && !useWorktrees) {
+    return { blocked: true, activeCount: count };
+  }
+  return { blocked: false, activeCount: count };
+}
+
+/**
  * Format a single task line for status output.
  */
 function formatTaskLine(task: Task, claimInfo?: ActiveInstanceInfo): string {

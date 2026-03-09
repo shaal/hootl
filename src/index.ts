@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { loadConfig, loadJsonFile, saveProjectConfig, saveGlobalConfig, setNestedValue, coerceEnvValue, HOOK_TRIGGERS, HookSchema, type Config } from "./config.js";
 import { LocalTaskBackend } from "./tasks/local.js";
 import type { TaskBackend, Task, TaskState } from "./tasks/types.js";
-import { writeStatusSummary, getActiveInstances } from "./status.js";
+import { writeStatusSummary, getActiveInstances, checkParallelGate } from "./status.js";
 import { invokeClaude, defaultSleep } from "./invoke.js";
 import { shouldRetryOnNoTask, MAX_IDLE_RETRIES, IDLE_SLEEP_MS } from "./idle-wait.js";
 import {
@@ -522,6 +522,17 @@ export async function autoCommand(
   const sleep = deps?.sleep ?? defaultSleep;
   let tasksCompleted = 0;
   let idleRetries = 0;
+
+  // Worktree enforcement: parallel instances require worktree mode
+  const { blocked, activeCount } = await checkParallelGate(tasksDir, config.git.useWorktrees);
+  if (blocked) {
+    uiError(
+      `${activeCount} other hootl instance(s) already running. Parallel execution requires worktree mode.\n` +
+      `  Enable it: set "git.useWorktrees": true in .hootl/config.json\n` +
+      `  Or set env: HOOTL_GIT_USE_WORKTREES=true`,
+    );
+    process.exit(1);
+  }
 
   // eslint-disable-next-line no-constant-condition
   while (true) {

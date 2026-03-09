@@ -9,6 +9,7 @@ import { checkGlobalBudget } from "../budget.js";
 import { findRunnableTask } from "../selection.js";
 import { ConfigSchema } from "../config.js";
 import { shouldRetryOnNoTask, MAX_IDLE_RETRIES, IDLE_SLEEP_MS } from "../idle-wait.js";
+import { checkParallelGate } from "../status.js";
 
 function makeTmpDir(): string {
   return join(tmpdir(), `hootl-auto-test-${randomUUID()}`);
@@ -214,5 +215,59 @@ describe("auto command — idle wait retry", () => {
   it("exports expected constants", () => {
     assert.equal(MAX_IDLE_RETRIES, 12);
     assert.equal(IDLE_SLEEP_MS, 5000);
+  });
+});
+
+describe("auto command — parallel worktree gate", () => {
+  it("blocks when 2+ instances and useWorktrees=false", async () => {
+    const mockGetActiveInstances = async (_dir: string) => ({
+      count: 1,
+      pids: new Map([["task-1", 1234]]),
+    });
+
+    const result = await checkParallelGate("/tmp/tasks", false, {
+      getActiveInstances: mockGetActiveInstances,
+    });
+    assert.equal(result.blocked, true);
+    assert.equal(result.activeCount, 1);
+  });
+
+  it("allows single instance without worktrees", async () => {
+    const mockGetActiveInstances = async (_dir: string) => ({
+      count: 0,
+      pids: new Map<string, number>(),
+    });
+
+    const result = await checkParallelGate("/tmp/tasks", false, {
+      getActiveInstances: mockGetActiveInstances,
+    });
+    assert.equal(result.blocked, false);
+    assert.equal(result.activeCount, 0);
+  });
+
+  it("allows multiple instances with worktrees enabled", async () => {
+    const mockGetActiveInstances = async (_dir: string) => ({
+      count: 2,
+      pids: new Map([["task-1", 1234], ["task-2", 5678]]),
+    });
+
+    const result = await checkParallelGate("/tmp/tasks", true, {
+      getActiveInstances: mockGetActiveInstances,
+    });
+    assert.equal(result.blocked, false);
+    assert.equal(result.activeCount, 2);
+  });
+
+  it("returns activeCount from getActiveInstances", async () => {
+    const mockGetActiveInstances = async (_dir: string) => ({
+      count: 3,
+      pids: new Map([["task-1", 111], ["task-2", 222], ["task-3", 333]]),
+    });
+
+    const result = await checkParallelGate("/tmp/tasks", false, {
+      getActiveInstances: mockGetActiveInstances,
+    });
+    assert.equal(result.activeCount, 3);
+    assert.equal(result.blocked, true);
   });
 });
