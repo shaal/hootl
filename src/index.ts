@@ -9,7 +9,8 @@ import { loadConfig, loadJsonFile, saveProjectConfig, saveGlobalConfig, setNeste
 import { LocalTaskBackend } from "./tasks/local.js";
 import type { TaskBackend, Task, TaskState } from "./tasks/types.js";
 import { writeStatusSummary, getActiveInstances } from "./status.js";
-import { invokeClaude } from "./invoke.js";
+import { invokeClaude, defaultSleep } from "./invoke.js";
+import { shouldRetryOnNoTask, MAX_IDLE_RETRIES, IDLE_SLEEP_MS } from "./idle-wait.js";
 import {
   uiChoose,
   uiChooseMultiple,
@@ -486,6 +487,7 @@ async function selectFromState(state: TaskState, backend: TaskBackend): Promise<
 export async function autoCommand(
   cliLevel?: string,
   cliFlags?: { merge?: boolean; noMerge?: boolean },
+  deps?: { sleep?: (ms: number) => Promise<void> },
 ): Promise<void> {
   await autoInit();
   const config = await loadConfig();
@@ -516,7 +518,10 @@ export async function autoCommand(
   }
 
   const costLogDir = join(process.cwd(), ".hootl", "logs");
+  const tasksDir = join(process.cwd(), ".hootl", "tasks");
+  const sleep = deps?.sleep ?? defaultSleep;
   let tasksCompleted = 0;
+  let idleRetries = 0;
 
   // eslint-disable-next-line no-constant-condition
   while (true) {
@@ -544,7 +549,18 @@ export async function autoCommand(
     }
 
     if (targetTask === undefined) {
-      uiSuccess("No more runnable tasks. Auto mode complete.");
+      const decision = await shouldRetryOnNoTask(tasksDir, idleRetries, MAX_IDLE_RETRIES);
+      if (decision === "retry") {
+        idleRetries++;
+        uiInfo(`No runnable tasks, but other instance(s) active. Waiting (${idleRetries}/${MAX_IDLE_RETRIES})...`);
+        await sleep(IDLE_SLEEP_MS);
+        continue;
+      }
+      if (decision === "timeout") {
+        uiWarn(`Idle timeout: no runnable tasks after ${MAX_IDLE_RETRIES} retries. Exiting.`);
+      } else {
+        uiSuccess("No more runnable tasks. Auto mode complete.");
+      }
       break;
     }
 
@@ -565,6 +581,7 @@ export async function autoCommand(
       break;
     }
     tasksCompleted++;
+    idleRetries = 0;
   }
 
   // Restore original SIGINT handlers
