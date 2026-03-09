@@ -19,7 +19,7 @@ npm run test:build  # Build then run tests
 
 ```
 src/
-  index.ts            CLI entry point (commander). Commands: init, plan, run, status, clarify, discuss, prioritize
+  index.ts            CLI entry point (commander). Commands: init, plan, run, status, reconcile, clarify, discuss, prioritize
   parse-tasks.ts      Robust JSON array extraction from Claude plan responses (bracket-matching)
   dependencies.ts     Post-planning dependency inference and index-to-ID resolution
   selection.ts        Dependency-aware task selection (findRunnableTask)
@@ -31,6 +31,7 @@ src/
   invoke.ts           Wrapper around `claude -p` via execa. Parses cost from JSON output. Envelope leak prevention
   git.ts              Git operations: task branches, auto-commit, branch switching, merged-branch detection, branch diff checking
   sync.ts             Review-task sync: auto-promotes tasks to done when branches are merged externally
+  reconcile.ts        Reconcile command: detects tasks with work landed on main, marks done, cleans stale branches/worktrees
   guided.ts           Interactive goal clarification (generates questions via Claude, collects answers via gum)
   ui.ts               Terminal UI helpers using `gum` with stdin fallback
   plan-memory.ts      Planning memory: records lessons from task outcomes, injects into plan prompts

@@ -29,6 +29,7 @@ import { checkGlobalBudget } from "./budget.js";
 import { discussCommand } from "./discuss.js";
 import { findRunnableTask, findAndClaimTask } from "./selection.js";
 import { syncReviewTasks } from "./sync.js";
+import { reconcileTasks, printReconcileReport } from "./reconcile.js";
 import { notifyWebhook } from "./notify.js";
 import { inferDependencies, resolveIndicesToIds } from "./dependencies.js";
 import {
@@ -875,6 +876,28 @@ program
   .action(async () => {
     try {
       await statusCommand();
+    } catch (err: unknown) {
+      uiError(errorMsg(err));
+      process.exitCode = 1;
+    }
+  });
+
+async function reconcileCommand(dryRun: boolean): Promise<void> {
+  await autoInit();
+  const config = await loadConfig();
+  const backend = getBackend(config);
+
+  const result = await reconcileTasks(backend, { dryRun });
+  printReconcileReport(result, dryRun);
+}
+
+program
+  .command("reconcile")
+  .description("Detect and fix stale task states")
+  .option("--dry-run", "Show what would change without modifying anything")
+  .action(async (options: { dryRun?: boolean }) => {
+    try {
+      await reconcileCommand(options.dryRun === true);
     } catch (err: unknown) {
       uiError(errorMsg(err));
       process.exitCode = 1;
