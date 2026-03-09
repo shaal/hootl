@@ -357,15 +357,13 @@ export function parseHookResult(output: string, _depth = 0): {
           return parseHookResult(innerOutput, _depth + 1);
         }
       }
-      // Envelope with non-string result (null, number, boolean) — Claude returned
-      // nothing useful. Only trigger when envelope detection confirms it's truly
-      // a Claude envelope (not a normal hook output that happens to have a
-      // "result" field).
-      if (
-        "result" in record &&
-        typeof record["result"] !== "string" &&
-        isEnvelope
-      ) {
+      // Envelope with non-string result (null, number, boolean) or no result
+      // field at all — Claude returned nothing useful. Only trigger when
+      // envelope detection confirms it's truly a Claude envelope (not a normal
+      // hook output that happens to have a "result" field).
+      // Re-evaluate isClaudeEnvelope on the current record since it may have
+      // been reassigned to the unwrapped inner object above.
+      if (isClaudeEnvelope(record) && typeof record["result"] !== "string") {
         return { pass: true, issues: [], remediationActions: [], confidence: null };
       }
 

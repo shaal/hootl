@@ -74,12 +74,14 @@ describe("extractTextOutput with error responses", () => {
     assert.equal(extractTextOutput(raw, "json"), "Error: model refused to respond");
   });
 
-  it("returns raw when is_error is true but no result field", () => {
+  it("returns empty string when is_error is true but no result field (envelope detected)", () => {
     const raw = JSON.stringify({
       is_error: true,
       total_cost_usd: 0.001,
     });
-    assert.equal(extractTextOutput(raw, "json"), raw);
+    // Envelope without result field → empty string (prevents raw envelope leak).
+    // is_error detection still works because invokeClaudeStandard re-parses stdout.
+    assert.equal(extractTextOutput(raw, "json"), "");
   });
 
   it("extracts result containing newlines and special characters", () => {

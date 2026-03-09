@@ -122,22 +122,25 @@ export function extractTextOutput(raw: string, format: "text" | "json"): string 
 
   try {
     const parsed: unknown = JSON.parse(raw);
-    if (
-      typeof parsed === "object" &&
-      parsed !== null &&
-      "result" in parsed
-    ) {
+    if (typeof parsed === "object" && parsed !== null) {
       const record = parsed as Record<string, unknown>;
-      if (typeof record["result"] === "string") {
-        return record["result"];
+      if ("result" in record) {
+        if (typeof record["result"] === "string") {
+          return record["result"];
+        }
+        // When the envelope is clearly from Claude but result is not a string
+        // (null, number, etc.), return empty string to prevent the raw envelope
+        // from leaking into downstream parsers.
+        if (isClaudeEnvelope(record)) {
+          return "";
+        }
+        return raw;
       }
-      // When the envelope is clearly from Claude but result is not a string
-      // (null, number, etc.), return empty string to prevent the raw envelope
-      // from leaking into downstream parsers.
+      // Envelope with no "result" field at all — Claude returned no content.
+      // Return empty string to prevent the raw envelope from leaking.
       if (isClaudeEnvelope(record)) {
         return "";
       }
-      return raw;
     }
   } catch {
     // Return raw output if parsing fails

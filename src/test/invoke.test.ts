@@ -115,8 +115,13 @@ describe("extractTextOutput", () => {
     assert.equal(extractTextOutput(raw, "json"), "The answer is 42");
   });
 
-  it("returns raw when result field is missing in JSON format", () => {
+  it("returns empty string when result field is missing and envelope detected", () => {
     const raw = JSON.stringify({ total_cost_usd: 0.01 });
+    assert.equal(extractTextOutput(raw, "json"), "");
+  });
+
+  it("returns raw when result field is missing and not an envelope", () => {
+    const raw = JSON.stringify({ someField: "hello" });
     assert.equal(extractTextOutput(raw, "json"), raw);
   });
 
@@ -404,6 +409,17 @@ describe("extractTextOutput — new envelope format", () => {
       usage: { costUSD: 0.02 },
       uuid: "xyz",
       fast_mode_state: "off",
+    });
+    assert.equal(extractTextOutput(raw, "json"), "");
+  });
+
+  it("returns empty string for new-format envelope with no result field", () => {
+    const raw = JSON.stringify({
+      usage: { costUSD: 0.67, inputTokens: 12 },
+      permission_denials: [],
+      fast_mode_state: "off",
+      uuid: "0204d2ab-9249-4de0-9c0d-0edfaab7bca8",
+      errors: [],
     });
     assert.equal(extractTextOutput(raw, "json"), "");
   });

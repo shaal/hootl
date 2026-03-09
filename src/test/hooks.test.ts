@@ -569,6 +569,28 @@ That's my assessment.`;
     assert.equal(parsed.pass, true);
   });
 
+  it("detects envelope with no result field at all and returns pass: true", () => {
+    // Reproduces the exact task-061 failure: envelope has structural markers
+    // and cost fields but no "result" field whatsoever.
+    const envelope = JSON.stringify({
+      usage: {
+        inputTokens: 12,
+        outputTokens: 4198,
+        cacheReadInputTokens: 345394,
+        costUSD: 0.6734695,
+        contextWindow: 200000,
+        maxOutputTokens: 32000,
+      },
+      permission_denials: [],
+      fast_mode_state: "off",
+      uuid: "0204d2ab-9249-4de0-9c0d-0edfaab7bca8",
+      errors: [],
+    });
+    const parsed = parseHookResult(envelope);
+    assert.equal(parsed.pass, true);
+    assert.deepEqual(parsed.issues, []);
+  });
+
   it("detects envelope via structural markers alone (no cost fields)", () => {
     const envelope = JSON.stringify({
       result: '{"passed": false, "issues": ["needs tests"]}',
