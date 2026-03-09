@@ -54,6 +54,27 @@ Update any relevant project documentation (CLAUDE.md, README.md, inline comments
 ### 2. Write a Remediation Plan
 Include a `remediationPlan` field in your JSON output. This is a concrete, actionable markdown plan that the next execution phase will follow directly (the planning phase will be skipped). Be specific — you have full context right now that a fresh session won't have.
 
+**Tag each item with the scoring category it affects** and order by impact (highest potential point gain first):
+```
+### 1. [testCoverage] Add integration tests for the retry loop
+### 2. [correctness] Fix off-by-one in boundary check
+### 3. [documentation] Update architecture.md with new behavior
+```
+This helps the executor prioritize correctly — items affecting testCoverage (30% weight) or correctness (40% weight) should come before documentation (10% weight).
+
+### 3. Structured Remediation Items
+
+In addition to the free-form `remediationPlan`, include a `remediationItems` array in your JSON output. Each item represents a specific gap with verifiable diff markers:
+
+- **category**: Which scoring category this affects (correctness, testCoverage, codeQuality, documentation)
+- **title**: Brief description of what needs to be done
+- **diffMarkers**: One or more distinctive strings that WILL appear in the `git diff` when this item is completed. Choose strings like test describe blocks (`describe("retry logic"`), function signatures (`export function validateInput`), or doc section headers (`## Retry Configuration`). The system uses these to verify the executor actually addressed this item before running the next review.
+- **weight**: Estimated weighted point impact (category score improvement × category weight). For example, if testCoverage is at 60 and fixing this item would raise it to 80, the weight is (80−60) × 0.3 = 6.0.
+
+Items with weight >= 2.0 and non-empty diffMarkers will be verified via `git diff` before the next review runs. If the executor skips high-weight items, it will be sent back to re-execute instead of wasting a review cycle.
+
+Only include `remediationItems` when confidence < 95. Omit the array (or leave it empty) when confidence >= 95.
+
 ## Output Format (JSON)
 ```json
 {
@@ -68,7 +89,15 @@ Include a `remediationPlan` field in your JSON output. This is a concrete, actio
   "issues": ["<list of specific issues found>"],
   "suggestions": ["<list of suggestions for improvement>"],
   "blockers": ["<list of blockers requiring human input, if any>"],
-  "remediationPlan": "<markdown plan for next attempt — REQUIRED when confidence < 95, omit when >= 95>"
+  "remediationPlan": "<markdown plan for next attempt — REQUIRED when confidence < 95, omit when >= 95>",
+  "remediationItems": [
+    {
+      "category": "<correctness|testCoverage|codeQuality|documentation>",
+      "title": "<brief description of what needs to be done>",
+      "diffMarkers": ["<distinctive string that will appear in git diff when done>"],
+      "weight": <number — estimated weighted point impact>
+    }
+  ]
 }
 ```
 
@@ -78,3 +107,4 @@ Include a `remediationPlan` field in your JSON output. This is a concrete, actio
 - If you find bugs, list them specifically in issues
 - If requirements are unclear, add them to blockers
 - When confidence < 95%, the remediationPlan must contain concrete steps (not vague suggestions) — "Add integration test in src/test/loop.test.ts that mocks invokeClaude and verifies phases are skipped" not "Add more tests"
+- When confidence < 95%, the remediationItems array must include at least one item for every issue that caused a score deduction of >= 2 weighted points

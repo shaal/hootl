@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { parseReviewResult, isContextWindowExceeded, applyContextWindowExceeded, buildPlanPrompt, buildReviewPrompt, isConfidenceRegression, handleConfidenceMet, parsePreflightResult, handleTooBroad, fireHooks, moveToBlocked, MAX_REVERIFICATIONS } from "../loop.js";
+import { parseReviewResult, isContextWindowExceeded, applyContextWindowExceeded, buildPlanPrompt, buildReviewPrompt, isConfidenceRegression, buildScoringTable, verifyRemediationMarkers, MARKER_WEIGHT_THRESHOLD, handleConfidenceMet, parsePreflightResult, handleTooBroad, fireHooks, moveToBlocked, MAX_REVERIFICATIONS } from "../loop.js";
+import type { RemediationItem, DiffProvider } from "../loop.js";
 import { checkGlobalBudget } from "../budget.js";
 import { ConfigSchema } from "../config.js";
 import type { TaskBackend, CreateTaskInput } from "../tasks/types.js";
@@ -178,6 +179,312 @@ Please address the issues above.`;
     assert.equal(result.summary, "Good progress");
     assert.deepEqual(result.issues, ["minor typo"]);
     assert.deepEqual(result.blockers, []);
+  });
+});
+
+describe("parseReviewResult — breakdown", () => {
+  it("extracts breakdown scores when present", () => {
+    const input = JSON.stringify({
+      confidence: 93,
+      breakdown: { correctness: 97, testCoverage: 85, codeQuality: 97, documentation: 75 },
+      summary: "Good",
+      issues: [],
+      blockers: [],
+    });
+
+    const result = parseReviewResult(input);
+    assert.deepEqual(result.breakdown, {
+      correctness: 97,
+      testCoverage: 85,
+      codeQuality: 97,
+      documentation: 75,
+    });
+  });
+
+  it("defaults breakdown to zeros when absent", () => {
+    const input = JSON.stringify({ confidence: 50, summary: "", issues: [], blockers: [] });
+    const result = parseReviewResult(input);
+    assert.deepEqual(result.breakdown, {
+      correctness: 0,
+      testCoverage: 0,
+      codeQuality: 0,
+      documentation: 0,
+    });
+  });
+
+  it("defaults individual breakdown fields to 0 when not numbers", () => {
+    const input = JSON.stringify({
+      confidence: 80,
+      breakdown: { correctness: "high", testCoverage: null, codeQuality: 90 },
+      summary: "",
+      issues: [],
+      blockers: [],
+    });
+    const result = parseReviewResult(input);
+    assert.equal(result.breakdown.correctness, 0);
+    assert.equal(result.breakdown.testCoverage, 0);
+    assert.equal(result.breakdown.codeQuality, 90);
+    assert.equal(result.breakdown.documentation, 0);
+  });
+});
+
+describe("buildScoringTable", () => {
+  it("produces a markdown table sorted by potential gain descending", () => {
+    const table = buildScoringTable(
+      { correctness: 97, testCoverage: 85, codeQuality: 97, documentation: 75 },
+      93, 95,
+    );
+    // testCoverage (+4.5) should come before documentation (+2.5)
+    const tcIndex = table.indexOf("testCoverage");
+    const docIndex = table.indexOf("documentation");
+    assert.ok(tcIndex < docIndex, "testCoverage should appear before documentation");
+  });
+
+  it("marks categories with >= 2 point potential gain as FIX THIS", () => {
+    const table = buildScoringTable(
+      { correctness: 97, testCoverage: 85, codeQuality: 97, documentation: 75 },
+      93, 95,
+    );
+    assert.ok(table.includes("testCoverage") && table.includes("FIX THIS"));
+    assert.ok(table.includes("documentation") && table.includes("FIX THIS"));
+    // codeQuality at 97 has only +0.6 potential — no FIX THIS
+    const cqLine = table.split("\n").find((l) => l.includes("codeQuality"));
+    assert.ok(cqLine && !cqLine.includes("FIX THIS"));
+  });
+
+  it("includes confidence and target in header", () => {
+    const table = buildScoringTable(
+      { correctness: 100, testCoverage: 100, codeQuality: 100, documentation: 100 },
+      100, 95,
+    );
+    assert.ok(table.includes("100/100"));
+    assert.ok(table.includes("target: 95"));
+  });
+
+  it("computes potential gain correctly", () => {
+    const table = buildScoringTable(
+      { correctness: 0, testCoverage: 0, codeQuality: 0, documentation: 0 },
+      0, 95,
+    );
+    // correctness at 0 with 40% weight = +40.0 potential
+    assert.ok(table.includes("+40.0"));
+    // testCoverage at 0 with 30% weight = +30.0 potential
+    assert.ok(table.includes("+30.0"));
+  });
+
+  it("lists top opportunities in 'Work on these first' line", () => {
+    const table = buildScoringTable(
+      { correctness: 97, testCoverage: 85, codeQuality: 97, documentation: 75 },
+      93, 95,
+    );
+    assert.ok(table.includes("Work on these first"));
+    assert.ok(table.includes("**testCoverage** (+4.5 points)"));
+    assert.ok(table.includes("**documentation** (+2.5 points)"));
+  });
+});
+
+describe("parseReviewResult — remediationItems", () => {
+  it("extracts remediationItems when present", () => {
+    const input = JSON.stringify({
+      confidence: 80,
+      summary: "Needs work",
+      issues: [],
+      blockers: [],
+      remediationPlan: "Fix things",
+      remediationItems: [
+        {
+          category: "testCoverage",
+          title: "Add integration tests",
+          diffMarkers: ["describe(\"integration\""],
+          weight: 4.5,
+        },
+      ],
+    });
+    const result = parseReviewResult(input);
+    assert.equal(result.remediationItems.length, 1);
+    const item = result.remediationItems[0];
+    assert.ok(item);
+    assert.equal(item.category, "testCoverage");
+    assert.equal(item.title, "Add integration tests");
+    assert.deepEqual(item.diffMarkers, ["describe(\"integration\""]);
+    assert.equal(item.weight, 4.5);
+  });
+
+  it("defaults remediationItems to empty array when absent", () => {
+    const input = JSON.stringify({
+      confidence: 97,
+      summary: "All good",
+      issues: [],
+      blockers: [],
+    });
+    const result = parseReviewResult(input);
+    assert.deepEqual(result.remediationItems, []);
+  });
+
+  it("skips items missing category or title", () => {
+    const input = JSON.stringify({
+      confidence: 80,
+      summary: "Needs work",
+      issues: [],
+      blockers: [],
+      remediationItems: [
+        { category: "testCoverage", title: "", diffMarkers: [], weight: 3 },
+        { category: "", title: "Fix thing", diffMarkers: [], weight: 3 },
+        { category: "correctness", title: "Real item", diffMarkers: ["marker"], weight: 5 },
+      ],
+    });
+    const result = parseReviewResult(input);
+    assert.equal(result.remediationItems.length, 1);
+    assert.equal(result.remediationItems[0]?.title, "Real item");
+  });
+
+  it("handles non-array remediationItems gracefully", () => {
+    const input = JSON.stringify({
+      confidence: 80,
+      summary: "Needs work",
+      issues: [],
+      blockers: [],
+      remediationItems: "not an array",
+    });
+    const result = parseReviewResult(input);
+    assert.deepEqual(result.remediationItems, []);
+  });
+
+  it("filters non-string diffMarkers", () => {
+    const input = JSON.stringify({
+      confidence: 80,
+      summary: "Needs work",
+      issues: [],
+      blockers: [],
+      remediationItems: [
+        { category: "correctness", title: "Fix bug", diffMarkers: [123, "valid marker", null], weight: 5 },
+      ],
+    });
+    const result = parseReviewResult(input);
+    assert.equal(result.remediationItems.length, 1);
+    assert.deepEqual(result.remediationItems[0]?.diffMarkers, ["valid marker"]);
+  });
+
+  it("defaults weight to 0 when not a number", () => {
+    const input = JSON.stringify({
+      confidence: 80,
+      summary: "Needs work",
+      issues: [],
+      blockers: [],
+      remediationItems: [
+        { category: "correctness", title: "Fix bug", diffMarkers: [], weight: "high" },
+      ],
+    });
+    const result = parseReviewResult(input);
+    assert.equal(result.remediationItems[0]?.weight, 0);
+  });
+});
+
+describe("verifyRemediationMarkers", () => {
+  const makeDeps = (diff: string): DiffProvider => ({
+    getDiff: async () => diff,
+  });
+
+  const makeItem = (overrides: Partial<RemediationItem> = {}): RemediationItem => ({
+    category: "testCoverage",
+    title: "Add tests",
+    diffMarkers: ["describe(\"test\""],
+    weight: 3.0,
+    ...overrides,
+  });
+
+  it("passes when no items", async () => {
+    const result = await verifyRemediationMarkers([], "main", undefined, makeDeps(""));
+    assert.equal(result.passed, true);
+    assert.deepEqual(result.missingItems, []);
+  });
+
+  it("passes when all items have weight below threshold", async () => {
+    const item = makeItem({ weight: 1.0 });
+    const result = await verifyRemediationMarkers([item], "main", undefined, makeDeps(""));
+    assert.equal(result.passed, true);
+  });
+
+  it("passes when all items have empty diffMarkers", async () => {
+    const item = makeItem({ diffMarkers: [], weight: 5.0 });
+    const result = await verifyRemediationMarkers([item], "main", undefined, makeDeps(""));
+    assert.equal(result.passed, true);
+  });
+
+  it("passes when all high-weight markers are found in diff", async () => {
+    const item = makeItem({ diffMarkers: ["describe(\"test\""], weight: 4.0 });
+    const diff = '+ describe("test", () => {';
+    const result = await verifyRemediationMarkers([item], "main", undefined, makeDeps(diff));
+    assert.equal(result.passed, true);
+    assert.deepEqual(result.missingItems, []);
+  });
+
+  it("fails when a high-weight item has no marker matches", async () => {
+    const item = makeItem({ diffMarkers: ["describe(\"integration\""], weight: 4.0 });
+    const diff = "+ // only documentation changes";
+    const result = await verifyRemediationMarkers([item], "main", undefined, makeDeps(diff));
+    assert.equal(result.passed, false);
+    assert.equal(result.missingItems.length, 1);
+    assert.equal(result.missingItems[0]?.title, "Add tests");
+  });
+
+  it("passes when at least one marker of an item matches", async () => {
+    const item = makeItem({
+      diffMarkers: ["describe(\"integration\"", "describe(\"unit\""],
+      weight: 4.0,
+    });
+    const diff = '+ describe("unit", () => {';
+    const result = await verifyRemediationMarkers([item], "main", undefined, makeDeps(diff));
+    assert.equal(result.passed, true);
+  });
+
+  it("passes (skips verification) when getDiff throws", async () => {
+    const failDeps: DiffProvider = {
+      getDiff: async () => { throw new Error("git not found"); },
+    };
+    const item = makeItem({ weight: 5.0 });
+    const result = await verifyRemediationMarkers([item], "main", undefined, failDeps);
+    assert.equal(result.passed, true);
+  });
+
+  it("returns all missing items in the list", async () => {
+    const items = [
+      makeItem({ title: "Add unit tests", diffMarkers: ["describe(\"unit\""], weight: 3.0 }),
+      makeItem({ title: "Add integration tests", diffMarkers: ["describe(\"integration\""], weight: 4.0 }),
+      makeItem({ title: "Update docs", diffMarkers: ["## New Feature"], weight: 2.5 }),
+    ];
+    const diff = "+ ## New Feature\n+ some docs";
+    const result = await verifyRemediationMarkers(items, "main", undefined, makeDeps(diff));
+    assert.equal(result.passed, false);
+    assert.equal(result.missingItems.length, 2);
+    const titles = result.missingItems.map((i) => i.title);
+    assert.ok(titles.includes("Add unit tests"));
+    assert.ok(titles.includes("Add integration tests"));
+  });
+
+  it("checks items with weight exactly at threshold", async () => {
+    const item = makeItem({ diffMarkers: ["describe(\"missing\""], weight: MARKER_WEIGHT_THRESHOLD });
+    const diff = "+ only documentation changes";
+    const result = await verifyRemediationMarkers([item], "main", undefined, makeDeps(diff));
+    assert.equal(result.passed, false);
+    assert.equal(result.missingItems.length, 1);
+  });
+
+  it("skips items just below threshold", async () => {
+    const item = makeItem({ diffMarkers: ["describe(\"missing\""], weight: MARKER_WEIGHT_THRESHOLD - 0.1 });
+    const diff = "+ only documentation changes";
+    const result = await verifyRemediationMarkers([item], "main", undefined, makeDeps(diff));
+    assert.equal(result.passed, true);
+  });
+
+  it("threads cwd to getDiff", async () => {
+    let receivedCwd: string | undefined;
+    const deps: DiffProvider = {
+      getDiff: async (_base, cwd) => { receivedCwd = cwd; return "+ marker"; },
+    };
+    const item = makeItem({ diffMarkers: ["marker"], weight: 3.0 });
+    await verifyRemediationMarkers([item], "main", "/my/worktree", deps);
+    assert.equal(receivedCwd, "/my/worktree");
   });
 });
 

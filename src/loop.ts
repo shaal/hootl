@@ -1,4 +1,5 @@
 import { readFile, writeFile, appendFile, mkdir, unlink, rename } from "node:fs/promises";
+import { execa } from "execa";
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -229,23 +230,47 @@ export interface PreflightResult {
   reproductionResult: string;
 }
 
+interface ReviewBreakdown {
+  correctness: number;
+  testCoverage: number;
+  codeQuality: number;
+  documentation: number;
+}
+
+export interface RemediationItem {
+  category: string;
+  title: string;
+  diffMarkers: string[];
+  weight: number;
+}
+
 interface ReviewResult {
   confidence: number;
+  breakdown: ReviewBreakdown;
   summary: string;
   issues: string[];
   suggestions: string[];
   blockers: string[];
   remediationPlan: string;
+  remediationItems: RemediationItem[];
 }
 
 export function parseReviewResult(output: string): ReviewResult {
+  const defaultBreakdown: ReviewBreakdown = {
+    correctness: 0,
+    testCoverage: 0,
+    codeQuality: 0,
+    documentation: 0,
+  };
   const defaultResult: ReviewResult = {
     confidence: 0,
+    breakdown: defaultBreakdown,
     summary: "",
     issues: [],
     suggestions: [],
     blockers: [],
     remediationPlan: "",
+    remediationItems: [],
   };
 
   // Try to extract JSON from the output — it may be wrapped in markdown code blocks
@@ -291,7 +316,35 @@ export function parseReviewResult(output: string): ReviewResult {
           ? record["remediationPlan"]
           : "";
 
-      return { confidence, summary, issues, suggestions, blockers, remediationPlan };
+      const rawBreakdown = typeof record["breakdown"] === "object" && record["breakdown"] !== null
+        ? record["breakdown"] as Record<string, unknown>
+        : {};
+      const breakdown: ReviewBreakdown = {
+        correctness: typeof rawBreakdown["correctness"] === "number" ? rawBreakdown["correctness"] : 0,
+        testCoverage: typeof rawBreakdown["testCoverage"] === "number" ? rawBreakdown["testCoverage"] : 0,
+        codeQuality: typeof rawBreakdown["codeQuality"] === "number" ? rawBreakdown["codeQuality"] : 0,
+        documentation: typeof rawBreakdown["documentation"] === "number" ? rawBreakdown["documentation"] : 0,
+      };
+
+      const remediationItems: RemediationItem[] = [];
+      if (Array.isArray(record["remediationItems"])) {
+        for (const item of record["remediationItems"] as unknown[]) {
+          if (typeof item === "object" && item !== null) {
+            const rec = item as Record<string, unknown>;
+            const category = typeof rec["category"] === "string" ? rec["category"] : "";
+            const title = typeof rec["title"] === "string" ? rec["title"] : "";
+            const diffMarkers = Array.isArray(rec["diffMarkers"])
+              ? (rec["diffMarkers"] as unknown[]).filter((v): v is string => typeof v === "string")
+              : [];
+            const weight = typeof rec["weight"] === "number" ? rec["weight"] : 0;
+            if (category && title) {
+              remediationItems.push({ category, title, diffMarkers, weight });
+            }
+          }
+        }
+      }
+
+      return { confidence, breakdown, summary, issues, suggestions, blockers, remediationPlan, remediationItems };
     } catch {
       continue;
     }
@@ -379,6 +432,104 @@ export function parsePreflightResult(output: string): PreflightResult {
 export function isConfidenceRegression(current: number, previous: number | null): boolean {
   if (previous === null) return false;
   return current < previous;
+}
+
+const SCORING_WEIGHTS: Record<keyof ReviewBreakdown, number> = {
+  correctness: 0.4,
+  testCoverage: 0.3,
+  codeQuality: 0.2,
+  documentation: 0.1,
+};
+
+export function buildScoringTable(
+  breakdown: ReviewBreakdown,
+  confidence: number,
+  target: number,
+): string {
+  const rows = (Object.entries(SCORING_WEIGHTS) as [keyof ReviewBreakdown, number][])
+    .map(([category, weight]) => {
+      const score = breakdown[category];
+      const points = score * weight;
+      const maxPoints = 100 * weight;
+      const potentialGain = (100 - score) * weight;
+      return { category, score, weight, points, maxPoints, potentialGain };
+    })
+    .sort((a, b) => b.potentialGain - a.potentialGain);
+
+  const lines: string[] = [];
+  lines.push(`## Previous Review Scores (${confidence}/100, target: ${target})`);
+  lines.push("");
+  lines.push("| Category | Score | Weight | Weighted Points | Potential Gain |");
+  lines.push("|----------|-------|--------|-----------------|----------------|");
+  for (const r of rows) {
+    const marker = r.potentialGain >= 2 ? " **← FIX THIS**" : "";
+    lines.push(
+      `| ${r.category} | ${r.score} | ${(r.weight * 100).toFixed(0)}% | ${r.points.toFixed(1)}/${r.maxPoints.toFixed(0)} | +${r.potentialGain.toFixed(1)}${marker} |`,
+    );
+  }
+
+  const topGaps = rows
+    .filter((r) => r.potentialGain >= 1)
+    .map((r) => `**${r.category}** (+${r.potentialGain.toFixed(1)} points)`)
+    .join(", ");
+
+  if (topGaps) {
+    lines.push("");
+    lines.push(`**Work on these first:** ${topGaps}`);
+  }
+
+  lines.push("");
+  return lines.join("\n");
+}
+
+export const MARKER_WEIGHT_THRESHOLD = 2.0;
+
+export interface MarkerVerificationResult {
+  passed: boolean;
+  missingItems: RemediationItem[];
+}
+
+export interface DiffProvider {
+  getDiff: (baseBranch: string, cwd?: string) => Promise<string>;
+}
+
+async function defaultGetDiff(baseBranch: string, cwd?: string): Promise<string> {
+  const execOpts = cwd ? { cwd } : {};
+  const result = await execa("git", ["diff", `${baseBranch}...HEAD`], execOpts);
+  return result.stdout;
+}
+
+export async function verifyRemediationMarkers(
+  items: RemediationItem[],
+  baseBranch: string,
+  cwd?: string,
+  deps?: DiffProvider,
+): Promise<MarkerVerificationResult> {
+  if (items.length === 0) return { passed: true, missingItems: [] };
+
+  const checkable = items.filter(
+    (item) => item.weight >= MARKER_WEIGHT_THRESHOLD && item.diffMarkers.length > 0,
+  );
+  if (checkable.length === 0) return { passed: true, missingItems: [] };
+
+  let diff: string;
+  try {
+    const getDiff = deps?.getDiff ?? defaultGetDiff;
+    diff = await getDiff(baseBranch, cwd);
+  } catch {
+    // If git diff fails, skip verification rather than blocking progress
+    return { passed: true, missingItems: [] };
+  }
+
+  const missingItems: RemediationItem[] = [];
+  for (const item of checkable) {
+    const hasAnyMarker = item.diffMarkers.some((marker) => diff.includes(marker));
+    if (!hasAnyMarker) {
+      missingItems.push(item);
+    }
+  }
+
+  return { passed: missingItems.length === 0, missingItems };
 }
 
 export function isContextWindowExceeded(contextWindowPercent: number, limit: number): boolean {
@@ -906,6 +1057,7 @@ export async function runCompletionLoop(
   }
 
   let hasRemediationPlan = false;
+  let lastRemediationItems: RemediationItem[] = [];
 
   // Load previous confidence from persistence file (supports cross-run rollback detection)
   let previousConfidence: number | null = null;
@@ -1195,6 +1347,44 @@ export async function runCompletionLoop(
       // review here would create a plan→execute loop with no confidence evaluation — the task
       // can only exit via budget/attempt exhaustion, wasting both.
 
+      // Diff marker verification: check if executor addressed high-weight remediation items
+      if (lastRemediationItems.length > 0 && baseBranch !== null) {
+        const verification = await verifyRemediationMarkers(
+          lastRemediationItems, baseBranch, worktreePath,
+        );
+        if (!verification.passed) {
+          const missing = verification.missingItems
+            .map((item) => `- **[${item.category}]** ${item.title} (weight: ${item.weight})`)
+            .join("\n");
+          uiWarn(
+            `Diff marker check: ${verification.missingItems.length} high-weight item(s) missing from diff.`,
+          );
+
+          const originalPlan = await readFileOrEmpty(join(taskDir, "plan.md"));
+          const reExecPlan = [
+            "<!-- RE-EXECUTION: Diff marker verification failed -->",
+            "<!-- The following high-weight remediation items were NOT found in the git diff. -->",
+            "<!-- You MUST address these before your work will be reviewed. -->",
+            "",
+            "## CRITICAL: Missing Remediation Items",
+            "",
+            missing,
+            "",
+            "The review phase will NOT run until these items appear in the diff.",
+            "Focus on the missing items above — they are worth the most points.",
+            "",
+            "## Original Remediation Plan",
+            "",
+            originalPlan,
+          ].join("\n");
+          await writeFile(join(taskDir, "plan.md"), reExecPlan, "utf-8");
+          hasRemediationPlan = true;
+          uiInfo("Looping back to execute — review skipped until missing items are addressed.");
+          continue;
+        }
+        lastRemediationItems = [];
+      }
+
       // Phase 3: REVIEW
       // Guard branch BEFORE review — ensures the reviewer starts on the task branch
       await guardBranch();
@@ -1332,12 +1522,24 @@ export async function runCompletionLoop(
 
       // Write remediation plan for the next attempt's execute phase (skipping plan phase)
       if (review.remediationPlan.trim().length > 0) {
+        const scoringTable = buildScoringTable(
+          review.breakdown, review.confidence, config.confidence.target,
+        );
+        const remediationHeader = [
+          "<!-- REMEDIATION PLAN — written by the reviewer after a sub-target confidence score -->",
+          "<!-- IMPORTANT: Every item below was identified as a specific gap that prevented the",
+          "     previous attempt from reaching the confidence target. You MUST complete ALL items.",
+          "     Items are tagged with [category] to show which score they affect. -->",
+          "",
+          scoringTable,
+        ].join("\n");
         await writeFile(
           join(taskDir, "plan.md"),
-          review.remediationPlan,
+          remediationHeader + review.remediationPlan,
           "utf-8",
         );
         hasRemediationPlan = true;
+        lastRemediationItems = review.remediationItems;
         uiInfo("Remediation plan written — next attempt will skip planning phase.");
       }
 
@@ -1375,6 +1577,7 @@ export async function runCompletionLoop(
       }
       // Transient error — will loop back and check attempt/budget limits
       hasRemediationPlan = false;
+      lastRemediationItems = [];
       uiInfo("Transient error — will retry on next attempt");
     }
   }
