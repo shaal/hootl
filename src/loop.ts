@@ -728,8 +728,8 @@ export async function handleConfidenceMet(
     // Merge from the main working tree (not the worktree), since we need to checkout baseBranch
     const merged = await mergeBranch(taskBranch, baseBranch);
     if (merged) {
-      await deleteBranch(taskBranch);
-      // Clean up worktree after successful merge (best-effort)
+      // Clean up worktree before branch deletion — git refuses to delete a branch
+      // that's checked out in a worktree
       if (worktreePath) {
         try {
           await removeWorktree(worktreePath);
@@ -738,6 +738,7 @@ export async function handleConfidenceMet(
           // Best-effort: worktree cleanup should never block state transitions
         }
       }
+      await deleteBranch(taskBranch);
       await backend.updateTask(task.id, { state: "done" });
       uiSuccess(`Task ${task.id} merged into ${baseBranch} and moved to done.`);
       await notify("Task Complete", `${task.id}: ${task.title}`, config);
