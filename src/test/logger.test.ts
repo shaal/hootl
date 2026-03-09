@@ -119,6 +119,72 @@ describe("logEvent", () => {
     assert.equal(entry.data.costUsd, 0.05);
   });
 
+  it("writes valid JSONL for run_start with config snapshot", async () => {
+    const tracking = makeTrackingDeps();
+    const event: LogEvent = {
+      taskId: "t8",
+      type: "run_start",
+      data: {
+        config: {
+          budgetPerTask: 5,
+          budgetGlobal: 50,
+          confidenceTarget: 80,
+          onConfidenceMode: "merge",
+          maxAttempts: 5,
+          useWorktrees: true,
+        },
+      },
+    };
+    await logEvent("/logs", event, tracking.deps);
+
+    const entry = parseEntry(tracking);
+    assert.equal(entry.type, "run_start");
+    assert.equal(entry.taskId, "t8");
+    assert.equal(entry.data.config.budgetPerTask, 5);
+    assert.equal(entry.data.config.budgetGlobal, 50);
+    assert.equal(entry.data.config.confidenceTarget, 80);
+    assert.equal(entry.data.config.onConfidenceMode, "merge");
+    assert.equal(entry.data.config.maxAttempts, 5);
+    assert.equal(entry.data.config.useWorktrees, true);
+  });
+
+  it("writes valid JSONL for rollback with SHA before/after", async () => {
+    const tracking = makeTrackingDeps();
+    const event: LogEvent = {
+      taskId: "t9",
+      type: "rollback",
+      data: {
+        shaBefore: "abc1234",
+        shaAfter: "def5678",
+        reason: "Confidence regression",
+      },
+    };
+    await logEvent("/logs", event, tracking.deps);
+
+    const entry = parseEntry(tracking);
+    assert.equal(entry.type, "rollback");
+    assert.equal(entry.taskId, "t9");
+    assert.equal(entry.data.shaBefore, "abc1234");
+    assert.equal(entry.data.shaAfter, "def5678");
+    assert.equal(entry.data.reason, "Confidence regression");
+  });
+
+  it("writes valid JSONL for phase_end with extended fields", async () => {
+    const tracking = makeTrackingDeps();
+    const event: LogEvent = {
+      taskId: "t10",
+      type: "phase_end",
+      data: { phase: "execute", attempt: 2, costUsd: 0.55, durationMs: 12345, exitCode: 0, outputLength: 4567 },
+    };
+    await logEvent("/logs", event, tracking.deps);
+
+    const entry = parseEntry(tracking);
+    assert.equal(entry.type, "phase_end");
+    assert.equal(entry.data.durationMs, 12345);
+    assert.equal(entry.data.exitCode, 0);
+    assert.equal(entry.data.outputLength, 4567);
+  });
+
   it("writes valid JSONL for budget_check", async () => {
     const tracking = makeTrackingDeps();
     const event: LogEvent = { taskId: "t7", type: "budget_check", data: { todayCost: 42.5, limit: 50, exceeded: false } };

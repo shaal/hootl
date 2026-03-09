@@ -14,6 +14,7 @@ import { generateMemoryEntry, appendMemoryEntry } from "./plan-memory.js";
 import { inferDependencies, resolveIndicesToIds } from "./dependencies.js";
 import { runHooks } from "./hooks.js";
 import type { HookContext, HookDeps, HookResult } from "./hooks.js";
+import { logEvent } from "./logger.js";
 
 export async function readFileOrEmpty(path: string): Promise<string> {
   try {
@@ -624,6 +625,11 @@ export async function handleConfidenceMet(
     const hasDiff = await hasBranchDiff(baseBranch, taskBranch, worktreePath);
     if (!hasDiff) {
       uiInfo("Branch has no diff from base — skipping on_confidence_met hooks.");
+      await logEvent(join(getProjectDir(), "logs"), {
+        taskId: task.id,
+        type: "decision",
+        data: { decision: "hooks_skipped", details: "No branch diff" },
+      });
       skipHooks = true;
     }
   }
@@ -948,6 +954,11 @@ export async function moveToBlocked(
 ): Promise<Task> {
   await fireHooks("on_blocked", task, taskBranch, baseBranch, confidence, config, hookDeps, cwd);
   const updated = await backend.updateTask(task.id, { state: "blocked", blockers });
+  await logEvent(join(getProjectDir(), "logs"), {
+    taskId: task.id,
+    type: "state_change",
+    data: { from: "in_progress", to: "blocked", reason: blockers[0] ?? "unknown reason" },
+  });
   await notify("Task Blocked", `${task.id}: ${blockers[0] ?? "unknown reason"}`, config);
   void notifyWebhook({
     taskId: task.id,
@@ -971,6 +982,21 @@ export async function runCompletionLoop(
 ): Promise<void> {
   const taskDir = join(getProjectDir(), "tasks", task.id);
   const costLogDir = join(getProjectDir(), "logs");
+
+  await logEvent(costLogDir, {
+    taskId: task.id,
+    type: "run_start",
+    data: {
+      config: {
+        budgetPerTask: config.budgets.perTask,
+        budgetGlobal: config.budgets.global,
+        confidenceTarget: config.confidence.target,
+        onConfidenceMode: resolveOnConfidenceMode(config, cliFlags.merge, cliFlags.noMerge),
+        maxAttempts: config.budgets.maxAttemptsPerTask,
+        useWorktrees: config.git.useWorktrees,
+      },
+    },
+  });
 
   await mkdir(taskDir, { recursive: true });
 
@@ -1012,6 +1038,11 @@ export async function runCompletionLoop(
 
   // Mark task as in_progress
   let currentTask = await backend.updateTask(task.id, { state: "in_progress" });
+  await logEvent(costLogDir, {
+    taskId: task.id,
+    type: "state_change",
+    data: { from: task.state, to: "in_progress", reason: "Task claimed and starting" },
+  });
   void notifyWebhook({
     taskId: task.id,
     title: task.title,
@@ -1048,6 +1079,11 @@ export async function runCompletionLoop(
     } catch (err: unknown) {
       const msg = errorMsg(err);
       uiWarn(`Could not create task branch: ${msg}`);
+      await logEvent(costLogDir, {
+        taskId: task.id,
+        type: "error",
+        data: { phase: "branch_creation", message: msg },
+      });
       if (useWorktrees) {
         // Worktree creation failures don't involve dirty worktree issues
         const blocker = `Cannot create worktree: ${msg}`;
@@ -1107,12 +1143,23 @@ export async function runCompletionLoop(
   const understandingPath = join(taskDir, "understanding.md");
   if (existsSync(understandingPath)) {
     uiInfo("Phase 0: PREFLIGHT [SKIPPED — understanding.md exists, task is resuming]");
+    await logEvent(costLogDir, {
+      taskId: task.id,
+      type: "decision",
+      data: { decision: "preflight_skipped", details: "understanding.md exists, task is resuming" },
+    });
   } else {
     uiInfo(`Phase 0: PREFLIGHT [${new Date().toLocaleTimeString()}]`);
     await writeCheckpoint(taskDir, "preflight", 0);
     try {
       const preflightSystemPrompt = await loadTemplate("preflight");
       const preflightUserPrompt = await buildPreflightPrompt(currentTask, taskDir);
+
+      await logEvent(costLogDir, {
+        taskId: task.id,
+        type: "phase_start",
+        data: { phase: "preflight", attempt: 0 },
+      });
 
       const preflightResult = await uiSpinner("Running preflight validation...", () =>
         invokeClaude({
@@ -1128,6 +1175,18 @@ export async function runCompletionLoop(
 
       // Log cost immediately — even if parsing fails, spend is captured
       await logCost(costLogDir, task.id, "preflight", preflightResult.costUsd);
+      await logEvent(costLogDir, {
+        taskId: task.id,
+        type: "phase_end",
+        data: {
+          phase: "preflight",
+          attempt: 0,
+          costUsd: preflightResult.costUsd,
+          durationMs: preflightResult.durationMs,
+          exitCode: preflightResult.exitCode,
+          outputLength: preflightResult.output.length,
+        },
+      });
       currentTask = await backend.updateTask(task.id, {
         totalCost: currentTask.totalCost + preflightResult.costUsd,
       });
@@ -1142,6 +1201,12 @@ export async function runCompletionLoop(
         // Persist understanding for context bridging (even for non-proceed verdicts)
         await writeFile(understandingPath, preflight.understanding || preflightResult.output, "utf-8");
 
+        await logEvent(costLogDir, {
+          taskId: task.id,
+          type: "decision",
+          data: { decision: "preflight_verdict", details: preflight.verdict },
+        });
+
         if (preflight.verdict === "proceed") {
           uiSuccess("Preflight: task validated — proceeding to completion loop.");
         } else if (preflight.verdict === "too_broad") {
@@ -1152,6 +1217,11 @@ export async function runCompletionLoop(
             const updatedTask = await backend.updateTask(task.id, {
               state: "blocked",
               blockers: [...currentTask.blockers, blockerMsg],
+            });
+            await logEvent(costLogDir, {
+              taskId: task.id,
+              type: "state_change",
+              data: { from: "in_progress", to: "blocked", reason: "Preflight: too_broad, no subtasks" },
             });
             await recordMemory(updatedTask, getProjectDir());
           } else {
@@ -1172,6 +1242,11 @@ export async function runCompletionLoop(
             state: "blocked",
             blockers: [...currentTask.blockers, blockerMsg],
           });
+          await logEvent(costLogDir, {
+            taskId: task.id,
+            type: "state_change",
+            data: { from: "in_progress", to: "blocked", reason: "Preflight: unclear" },
+          });
           await recordMemory(updatedTask, getProjectDir());
           try { await backend.releaseTask(task.id); } catch { /* best-effort */ }
           if (!useWorktrees && baseBranch !== null && taskBranch !== null) {
@@ -1185,6 +1260,11 @@ export async function runCompletionLoop(
             state: "blocked",
             blockers: [...currentTask.blockers, blockerMsg],
           });
+          await logEvent(costLogDir, {
+            taskId: task.id,
+            type: "state_change",
+            data: { from: "in_progress", to: "blocked", reason: "Preflight: cannot_reproduce" },
+          });
           await recordMemory(updatedTask, getProjectDir());
           try { await backend.releaseTask(task.id); } catch { /* best-effort */ }
           if (!useWorktrees && baseBranch !== null && taskBranch !== null) {
@@ -1195,6 +1275,11 @@ export async function runCompletionLoop(
       }
     } catch (err: unknown) {
       uiWarn(`Preflight phase error: ${errorMsg(err)} — proceeding anyway`);
+      await logEvent(costLogDir, {
+        taskId: task.id,
+        type: "error",
+        data: { phase: "preflight", message: errorMsg(err) },
+      });
     }
   }
 
@@ -1209,9 +1294,19 @@ export async function runCompletionLoop(
         const hasDiff = await hasBranchDiff(baseBranch, taskBranch, worktreePath);
         if (!hasDiff) {
           uiInfo(`All ${currentTask.dependencies.length} dependencies are done and branch has no diff — auto-promoting.`);
+          await logEvent(costLogDir, {
+            taskId: task.id,
+            type: "decision",
+            data: { decision: "auto_promote", details: `All ${currentTask.dependencies.length} dependencies done, no branch diff` },
+          });
           const mode: OnConfidenceMode = resolveOnConfidenceMode(config, cliFlags.merge, cliFlags.noMerge);
           const targetState = mode === "merge" ? "done" : "review";
           await backend.updateTask(task.id, { state: targetState, confidence: 100 });
+          await logEvent(costLogDir, {
+            taskId: task.id,
+            type: "state_change",
+            data: { from: "in_progress", to: targetState, reason: "Auto-promoted: all deps done, no diff" },
+          });
           uiSuccess(`Task ${task.id} auto-promoted to ${targetState}.`);
           await notify("Task Auto-Promoted", `${task.id}: ${task.title} (all subtasks done, no new changes)`, config);
           void notifyWebhook({
@@ -1250,6 +1345,11 @@ export async function runCompletionLoop(
   while (true) {
     // Check budget
     if (currentTask.totalCost >= config.budgets.perTask) {
+      await logEvent(costLogDir, {
+        taskId: task.id,
+        type: "decision",
+        data: { decision: "budget_exceeded", details: `Per-task: $${currentTask.totalCost.toFixed(2)} >= $${config.budgets.perTask.toFixed(2)}` },
+      });
       uiWarn(
         `Task ${task.id} exceeded per-task budget ($${currentTask.totalCost.toFixed(2)} >= $${config.budgets.perTask.toFixed(2)}). Moving to blocked.`,
       );
@@ -1263,7 +1363,17 @@ export async function runCompletionLoop(
 
     // Check global daily budget
     const globalBudgetCheck = await checkGlobalBudget(costLogDir, config.budgets.global);
+    await logEvent(costLogDir, {
+      taskId: task.id,
+      type: "budget_check",
+      data: { todayCost: globalBudgetCheck.todayCost, limit: config.budgets.global, exceeded: globalBudgetCheck.exceeded },
+    });
     if (globalBudgetCheck.exceeded) {
+      await logEvent(costLogDir, {
+        taskId: task.id,
+        type: "decision",
+        data: { decision: "budget_exceeded", details: `Global daily: $${globalBudgetCheck.todayCost.toFixed(2)} >= $${config.budgets.global.toFixed(2)}` },
+      });
       uiWarn(
         `Global daily budget exhausted ($${globalBudgetCheck.todayCost.toFixed(2)} >= $${config.budgets.global.toFixed(2)}). Moving task to blocked.`,
       );
@@ -1287,6 +1397,11 @@ export async function runCompletionLoop(
 
     // Check attempts
     if (currentTask.attempts >= config.budgets.maxAttemptsPerTask) {
+      await logEvent(costLogDir, {
+        taskId: task.id,
+        type: "decision",
+        data: { decision: "max_attempts_reached", details: `${currentTask.attempts}/${config.budgets.maxAttemptsPerTask}` },
+      });
       uiWarn(
         `Task ${task.id} reached max attempts (${currentTask.attempts}/${config.budgets.maxAttemptsPerTask}). Moving to blocked.`,
       );
@@ -1312,6 +1427,11 @@ export async function runCompletionLoop(
       // Phase 1: PLAN (skipped when the previous review wrote a remediation plan)
       if (hasRemediationPlan) {
         uiInfo(`Phase 1: PLAN [SKIPPED — using remediation plan from previous review]`);
+        await logEvent(costLogDir, {
+          taskId: task.id,
+          type: "decision",
+          data: { decision: "plan_skipped", details: "Using remediation plan from previous review" },
+        });
         hasRemediationPlan = false;
       } else {
         await writeCheckpoint(taskDir, "plan", attempt);
@@ -1319,6 +1439,11 @@ export async function runCompletionLoop(
         const planUserPrompt = await buildPlanPrompt(currentTask, taskDir);
 
         uiInfo(`Phase 1: PLAN [${new Date().toLocaleTimeString()}]`);
+        await logEvent(costLogDir, {
+          taskId: task.id,
+          type: "phase_start",
+          data: { phase: "plan", attempt },
+        });
         const planResult = await uiSpinner("Planning...", () =>
           invokeClaude({
             prompt: planUserPrompt,
@@ -1344,11 +1469,28 @@ export async function runCompletionLoop(
         uiInfo(`Phase 1 done [${new Date().toLocaleTimeString()}] (${planResult.durationMs}ms, $${planResult.costUsd.toFixed(4)}, exit=${planResult.exitCode})`);
         await writeFile(join(taskDir, "plan.md"), planResult.output, "utf-8");
         await logCost(costLogDir, task.id, "plan", planResult.costUsd);
+        await logEvent(costLogDir, {
+          taskId: task.id,
+          type: "phase_end",
+          data: {
+            phase: "plan",
+            attempt,
+            costUsd: planResult.costUsd,
+            durationMs: planResult.durationMs,
+            exitCode: planResult.exitCode,
+            outputLength: planResult.output.length,
+          },
+        });
         phaseCost += planResult.costUsd;
 
         // Check context window usage after plan phase
         const planCtxResult = await applyContextWindowExceeded(backend, task.id, currentTask, phaseCost, planResult.contextWindowPercent, config.budgets.contextWindowLimit);
         if (planCtxResult) {
+          await logEvent(costLogDir, {
+            taskId: task.id,
+            type: "decision",
+            data: { decision: "context_window_exceeded", details: "Plan phase context window exceeded" },
+          });
           currentTask = planCtxResult;
           // phaseCost resets at loop top (let phaseCost = 0); totalCost persisted in backend
           continue;
@@ -1375,6 +1517,11 @@ export async function runCompletionLoop(
       const executeUserPrompt = await buildExecutePrompt(currentTask, taskDir);
 
       uiInfo(`Phase 2: EXECUTE [${new Date().toLocaleTimeString()}]`);
+      await logEvent(costLogDir, {
+        taskId: task.id,
+        type: "phase_start",
+        data: { phase: "execute", attempt },
+      });
       const executeResult = await uiSpinner("Executing...", () =>
         invokeClaude({
           prompt: executeUserPrompt,
@@ -1403,6 +1550,18 @@ export async function runCompletionLoop(
         "utf-8",
       );
       await logCost(costLogDir, task.id, "execute", executeResult.costUsd);
+      await logEvent(costLogDir, {
+        taskId: task.id,
+        type: "phase_end",
+        data: {
+          phase: "execute",
+          attempt,
+          costUsd: executeResult.costUsd,
+          durationMs: executeResult.durationMs,
+          exitCode: executeResult.exitCode,
+          outputLength: executeResult.output.length,
+        },
+      });
       phaseCost += executeResult.costUsd;
 
       // Guard against branch drift before committing — ensures changes land on the task branch
@@ -1428,6 +1587,11 @@ export async function runCompletionLoop(
           lastRemediationItems, baseBranch, worktreePath,
         );
         if (!verification.passed) {
+          await logEvent(costLogDir, {
+            taskId: task.id,
+            type: "decision",
+            data: { decision: "remediation_markers_missing", details: `${verification.missingItems.length} high-weight item(s) missing from diff` },
+          });
           const missing = verification.missingItems
             .map((item) => `- **[${item.category}]** ${item.title} (weight: ${item.weight})`)
             .join("\n");
@@ -1472,6 +1636,11 @@ export async function runCompletionLoop(
       });
 
       uiInfo(`Phase 3: REVIEW [${new Date().toLocaleTimeString()}]`);
+      await logEvent(costLogDir, {
+        taskId: task.id,
+        type: "phase_start",
+        data: { phase: "review", attempt },
+      });
       const reviewResult = await uiSpinner("Reviewing...", () =>
         invokeClaude({
           prompt: reviewUserPrompt,
@@ -1500,6 +1669,18 @@ export async function runCompletionLoop(
         "utf-8",
       );
       await logCost(costLogDir, task.id, "review", reviewResult.costUsd);
+      await logEvent(costLogDir, {
+        taskId: task.id,
+        type: "phase_end",
+        data: {
+          phase: "review",
+          attempt,
+          costUsd: reviewResult.costUsd,
+          durationMs: reviewResult.durationMs,
+          exitCode: reviewResult.exitCode,
+          outputLength: reviewResult.output.length,
+        },
+      });
       phaseCost += reviewResult.costUsd;
 
       // Parse review output
@@ -1524,13 +1705,25 @@ export async function runCompletionLoop(
 
       // Rollback safety: detect confidence regression
       if (isConfidenceRegression(review.confidence, previousConfidence) && preExecuteSha !== null) {
+        await logEvent(costLogDir, {
+          taskId: task.id,
+          type: "decision",
+          data: { decision: "confidence_regression", details: `${review.confidence}% < ${previousConfidence}% (previous)` },
+        });
         uiWarn(`Confidence regressed: ${review.confidence}% < ${previousConfidence}% (previous). Rolling back.`);
+        let shaAfterRollback = preExecuteSha;
         try {
           await resetToSha(preExecuteSha, worktreePath);
+          try { shaAfterRollback = await getHeadSha(worktreePath); } catch { /* use preExecuteSha */ }
           uiInfo(`Rolled back to ${preExecuteSha.slice(0, 8)}`);
         } catch (rollbackErr: unknown) {
           uiError(`Rollback failed: ${rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)}`);
         }
+        await logEvent(costLogDir, {
+          taskId: task.id,
+          type: "rollback",
+          data: { shaBefore: preExecuteSha, shaAfter: shaAfterRollback, reason: "Confidence regression" },
+        });
         // Log failure in progress.md
         const rollbackMsg = `\n\n---\n\n## Attempt ${attempt} — ROLLED BACK\n\nConfidence regressed from ${previousConfidence}% to ${review.confidence}%. Changes reverted to ${preExecuteSha.slice(0, 8)}.\n`;
         await appendFile(join(taskDir, "progress.md"), rollbackMsg, "utf-8");
@@ -1550,6 +1743,11 @@ export async function runCompletionLoop(
 
       // Check if we've reached the target
       if (review.confidence >= config.confidence.target) {
+        await logEvent(costLogDir, {
+          taskId: task.id,
+          type: "decision",
+          data: { decision: "confidence_met", details: `${review.confidence}% >= ${config.confidence.target}% target` },
+        });
         uiSuccess(
           `Task ${task.id} reached ${review.confidence}% confidence.`,
         );
@@ -1615,6 +1813,11 @@ export async function runCompletionLoop(
         );
         hasRemediationPlan = true;
         lastRemediationItems = review.remediationItems;
+        await logEvent(costLogDir, {
+          taskId: task.id,
+          type: "decision",
+          data: { decision: "remediation_plan_written", details: `Confidence ${review.confidence}% below target ${config.confidence.target}%, wrote remediation plan` },
+        });
         uiInfo("Remediation plan written — next attempt will skip planning phase.");
       }
 
@@ -1632,6 +1835,11 @@ export async function runCompletionLoop(
       const message =
         error instanceof Error ? error.message : String(error);
       uiError(`Error during attempt ${attempt}: ${message}`);
+      await logEvent(costLogDir, {
+        taskId: task.id,
+        type: "error",
+        data: { phase: "attempt", message },
+      });
 
       // Update cost even on failure
       if (phaseCost > 0) {
