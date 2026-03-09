@@ -7,7 +7,7 @@ import { invokeClaude, logCost } from "./invoke.js";
 import { type Config, type OnConfidenceMode, getProjectDir, resolveOnConfidenceMode } from "./config.js";
 import { type Task, type TaskBackend, type TaskPriority, type TaskType, TaskPriority as TaskPriorityEnum, TaskType as TaskTypeEnum } from "./tasks/types.js";
 import { uiInfo, uiWarn, uiError, uiSuccess, uiSpinner, errorMsg } from "./ui.js";
-import { isGitRepo, createTaskBranch, commitTaskChanges, switchBranch, getBaseBranch, getHeadSha, resetToSha, mergeBranch, deleteBranch, pushBranch, createDraftPR, hasUncommittedChanges, slugify, createWorktree, removeWorktree, getDirtyFiles, ensureBranch } from "./git.js";
+import { isGitRepo, createTaskBranch, commitTaskChanges, switchBranch, getBaseBranch, getHeadSha, resetToSha, mergeBranch, deleteBranch, pushBranch, createDraftPR, hasUncommittedChanges, slugify, createWorktree, removeWorktree, getDirtyFiles, ensureBranch, hasBranchDiff } from "./git.js";
 import { checkGlobalBudget } from "./budget.js";
 import { notify, notifyWebhook } from "./notify.js";
 import { generateMemoryEntry, appendMemoryEntry } from "./plan-memory.js";
@@ -434,6 +434,22 @@ export function isConfidenceRegression(current: number, previous: number | null)
   return current < previous;
 }
 
+/**
+ * Returns true if every dependency task is in 'done' state.
+ * Returns false on any error (conservative — don't auto-promote if we can't verify).
+ */
+export async function checkAllDependenciesDone(backend: TaskBackend, depIds: string[]): Promise<boolean> {
+  for (const depId of depIds) {
+    try {
+      const dep = await backend.getTask(depId);
+      if (dep.state !== "done") return false;
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
 const SCORING_WEIGHTS: Record<keyof ReviewBreakdown, number> = {
   correctness: 0.4,
   testCoverage: 0.3,
@@ -601,7 +617,18 @@ export async function handleConfidenceMet(
     : [{ trigger: "on_confidence_met" as const, skill: "simplify", blocking: true }];
   const hasConfidenceHooks = effectiveHooks.some((h) => h.trigger === "on_confidence_met");
 
-  if (hasConfidenceHooks) {
+  // Skip hooks when the branch has no diff from base — nothing to validate.
+  // Only check diff if there are actually hooks to run (avoids wasted git subprocess).
+  let skipHooks = false;
+  if (hasConfidenceHooks && taskBranch !== null && baseBranch !== null) {
+    const hasDiff = await hasBranchDiff(baseBranch, taskBranch, worktreePath);
+    if (!hasDiff) {
+      uiInfo("Branch has no diff from base — skipping on_confidence_met hooks.");
+      skipHooks = true;
+    }
+  }
+
+  if (hasConfidenceHooks && !skipHooks) {
     let currentTask = task;
     try {
       const hookContext: HookContext = {
@@ -1168,6 +1195,51 @@ export async function runCompletionLoop(
       }
     } catch (err: unknown) {
       uiWarn(`Preflight phase error: ${errorMsg(err)} — proceeding anyway`);
+    }
+  }
+
+  // Auto-promote: if all dependencies are done and branch has no diff, the work was
+  // already completed by subtasks. Skip the entire completion loop to save budget.
+  if (currentTask.dependencies.length > 0 && taskBranch !== null && baseBranch !== null) {
+    try {
+      const allDepsDone = await checkAllDependenciesDone(backend, currentTask.dependencies);
+      if (allDepsDone) {
+        const hasDiff = await hasBranchDiff(baseBranch, taskBranch, worktreePath);
+        if (!hasDiff) {
+          uiInfo(`All ${currentTask.dependencies.length} dependencies are done and branch has no diff — auto-promoting.`);
+          const mode: OnConfidenceMode = resolveOnConfidenceMode(config, cliFlags.merge, cliFlags.noMerge);
+          const targetState = mode === "merge" ? "done" : "review";
+          await backend.updateTask(task.id, { state: targetState, confidence: 100 });
+          uiSuccess(`Task ${task.id} auto-promoted to ${targetState}.`);
+          await notify("Task Auto-Promoted", `${task.id}: ${task.title} (all subtasks done, no new changes)`, config);
+          void notifyWebhook({
+            taskId: task.id,
+            title: task.title,
+            oldState: "in_progress",
+            newState: targetState,
+            confidence: 100,
+            timestamp: new Date().toISOString(),
+          }, config);
+          await recordMemory(await backend.getTask(task.id), getProjectDir());
+          await clearCheckpoint(taskDir);
+          try { await backend.releaseTask(task.id); } catch { /* best-effort */ }
+          if (worktreePath) {
+            try {
+              await removeWorktree(worktreePath);
+              await backend.updateTask(task.id, { worktree: null });
+            } catch { /* best-effort */ }
+          }
+          if (taskBranch) {
+            try { await deleteBranch(taskBranch); } catch { /* best-effort */ }
+          }
+          if (!useWorktrees && baseBranch !== null) {
+            try { await switchBranch(baseBranch); } catch { /* best-effort */ }
+          }
+          return;
+        }
+      }
+    } catch (err: unknown) {
+      uiWarn(`Auto-promote check failed: ${errorMsg(err)} — proceeding normally`);
     }
   }
 

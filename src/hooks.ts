@@ -329,11 +329,17 @@ export function parseHookResult(output: string): {
       // (has "result" string + "total_cost_usd"/"cost_usd") and extract the
       // inner "result" field. This happens when verbose mode leaks into hook
       // invocations — the output is the raw envelope, not the extracted text.
+      const hasCostFields = "total_cost_usd" in record || "cost_usd" in record;
+      const hasEnvelopeMarkers = "session_id" in record || "uuid" in record || "num_turns" in record;
       if (
         typeof record["result"] === "string" &&
-        ("total_cost_usd" in record || "cost_usd" in record)
+        hasCostFields
       ) {
         const innerOutput = record["result"] as string;
+        // Empty/whitespace result means Claude had nothing to report — treat as pass
+        if (innerOutput.trim() === "") {
+          return { pass: true, issues: [], remediationActions: [], confidence: null };
+        }
         try {
           const inner: unknown = JSON.parse(innerOutput);
           if (typeof inner === "object" && inner !== null) {
@@ -345,6 +351,18 @@ export function parseHookResult(output: string): {
         } catch {
           continue; // Inner result isn't valid JSON — skip this candidate
         }
+      }
+      // Envelope with non-string result (null, number, boolean) — Claude returned
+      // nothing useful. Only trigger when additional envelope markers confirm it's
+      // truly a Claude envelope (not a normal hook output that happens to have a
+      // "result" field).
+      if (
+        "result" in record &&
+        typeof record["result"] !== "string" &&
+        hasCostFields &&
+        hasEnvelopeMarkers
+      ) {
+        return { pass: true, issues: [], remediationActions: [], confidence: null };
       }
 
       // "passed" (new) takes precedence over "pass" (old)

@@ -17,6 +17,8 @@ Each task begins with a one-time preflight validation, then runs through repeate
 2. **EXECUTE** -- Claude implements the plan; output appended to `progress.md`; changes auto-committed
 3. **REVIEW** -- Claude runs tests, examines code changes via `git diff <baseBranch>...HEAD`, produces a JSON confidence assessment. The review prompt includes explicit branch context (task branch name and base branch) so the reviewer knows which branch to checkout and how to diff — plain `git diff` only shows uncommitted changes and misses committed work.
 
+**Auto-promote (subtask completion shortcut)**: After preflight completes, before entering the attempt loop, the system checks whether the task can be auto-promoted. If `dependencies.length > 0` AND all dependencies are in `done` state AND the branch has no diff from the base branch (`hasBranchDiff()` in `src/git.ts`), the task is promoted directly — confidence is set to 100, state is set based on `git.onConfidence` mode (`done` for merge, `review` otherwise), and the function returns immediately. This skips plan/execute/review entirely, saving budget on parent tasks whose subtasks already completed all the work. The check is conservative: any git or backend error causes it to fall through to the normal loop.
+
 The loop continues until:
 - Confidence >= target (default 95%) --> handled by `handleConfidenceMet()` (see below)
 - Confidence regression detected --> task moves to `blocked` state (changes rolled back)
@@ -165,6 +167,8 @@ When a task reaches the confidence target, `handleConfidenceMet()` in `src/loop.
 
 All git operations (`mergeBranch`, `deleteBranch`, `pushBranch`, `createDraftPR`) are wrapped in try/catch. On failure, they warn and fall back to `none` behavior (task moves to `review`). The `resolveOnConfidenceMode()` helper in `src/config.ts` is a pure function that encapsulates the priority logic.
 
+**Empty-diff hook skip**: Before running `on_confidence_met` hooks, `handleConfidenceMet()` checks whether the task branch has any diff from the base branch via `hasBranchDiff(baseBranch, taskBranch, worktreePath)`. If the diff is empty, all hooks are skipped — there's nothing for hooks (like simplify) to validate. This prevents the degenerate case where the simplify hook receives an empty `git diff` and produces an unparseable or vacuous response.
+
 **Re-verification after hook fixes**: When an `on_confidence_met` hook reports `fixes_applied` (non-empty `remediationActions`), `handleConfidenceMet()` enters a re-verification loop: (1) auto-commits the hook's changes via `hookDeps.commit` (or `commitTaskChanges` in production), (2) re-runs Phase 3 (review) to get an updated confidence score, (3) if confidence is still >= target, re-runs hooks to check for more fixes, (4) if confidence dropped below target, writes a remediation plan to `plan.md` and returns `in_progress` so the main loop continues. The loop is capped at `MAX_REVERIFICATIONS` (2) to prevent infinite hook↔review cycles. Re-verification costs are logged with the `"re-verify"` phase label. When `hookDeps` is injected (testing), invoke, log, and commit calls route through the injected dependencies.
 
 ## Autonomous Mode (`hootl auto`)
@@ -273,6 +277,8 @@ Built-in skills: `simplify` (runs `git diff <baseBranch>..HEAD`, reviews changed
 
 **Hook result JSON schema**: Hooks can output either the old format (`pass`, `remediationActions`) or the new format (`passed`, `confidence`, `fixes_applied`). `parseHookResult` accepts both, with new field names taking precedence when both are present. Uses a multi-candidate extraction strategy: (1) code-block regex, (2) reverse brace-matching from last `}`, (3) forward brace-matching from first `{`. The first candidate that parses as valid JSON wins. Reverse matching is critical because hooks (especially simplify) produce prose/code with curly braces before the result JSON at the end. When no candidates parse successfully, defaults to `pass: false` (fail-closed). **Diagnostic logging**: `runSkillHook` logs a warning with the output length and last 300 chars when parsing fails with no issues or remediation — this surfaces what Claude actually said instead of the opaque "no details provided" blocker.
 
+**Claude envelope defense-in-depth**: `parseHookResult` detects the Claude JSON envelope shape (has `result` + `total_cost_usd`/`cost_usd`) and extracts the inner `result` field. When the inner result is empty/whitespace, returns `pass: true` (Claude had nothing to report). When `result` is non-string (null, boolean, number) and additional envelope markers are present (`session_id`, `uuid`, `num_turns`), also returns `pass: true`. The root-cause prevention lives in `extractTextOutput()` in `src/invoke.ts`: when the Claude envelope has cost fields but `result` is not a string, it returns `""` instead of the raw envelope, preventing the envelope from leaking into downstream parsers.
+
 Optional fields: `conditions.minConfidence` (number), `prompt` (inline string or file path, used if no `skill`).
 
 When `blocking: true`, hook behavior at `on_confidence_met` depends on whether fixes were applied:
@@ -285,7 +291,7 @@ Advisory hooks (`blocking: false`) log warnings but don't block.
 Hook integration in the completion loop (`src/loop.ts`):
 - **`on_execute_start`** — fired before Phase 2 (execute). Fire-and-forget; errors are caught and logged.
 - **`on_review_complete`** — fired after Phase 3 review parsing and confidence update. Fire-and-forget.
-- **`on_confidence_met`** — fired inside `handleConfidenceMet()` before merge/PR/state-transition. When no hooks are configured, the default simplify hook runs here as a blocking validator. Blocking failures with fixes return `in_progress` (retry); failures without fixes or errors move task to `blocked` (no point retrying identical code).
+- **`on_confidence_met`** — fired inside `handleConfidenceMet()` before merge/PR/state-transition. **Skipped when branch has no diff from base** (nothing to validate). When no hooks are configured, the default simplify hook runs here as a blocking validator. Blocking failures with fixes return `in_progress` (retry); failures without fixes or errors move task to `blocked` (no point retrying identical code).
 - **`on_blocked`** — fired before each blocked-state transition (budget, max attempts, confidence regression, review blockers). Fire-and-forget via `moveToBlocked()` helper.
 
 All hook calls receive a `HookContext` with task, branch info, confidence, and config. Hook costs are logged by `runHooks` with phase label `hook:<trigger>`. `HookDeps` provides injectable dependencies for testing: `invoke`, `log`, `warn`, and optional `commit` (used by the re-verification loop to avoid real git commits during tests).
@@ -294,8 +300,10 @@ All hook calls receive a `HookContext` with task, branch info, confidence, and c
 
 ```
 proposed --> ready --> in_progress --> review --> done
-                          |              |
-                          |              +--> done (auto-sync: branch merged/deleted externally)
+                          |    |         |
+                          |    |         +--> done (auto-sync: branch merged/deleted externally)
+                          |    |
+                          |    +--> done/review (auto-promote: all deps done + no branch diff)
                           |
                           +--> blocked (budget, max attempts, branch-switch failure, or review blockers)
                           |       |

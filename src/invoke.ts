@@ -95,9 +95,16 @@ export function extractTextOutput(raw: string, format: "text" | "json"): string 
       "result" in parsed
     ) {
       const record = parsed as Record<string, unknown>;
-      return typeof record["result"] === "string"
-        ? record["result"]
-        : raw;
+      if (typeof record["result"] === "string") {
+        return record["result"];
+      }
+      // When the envelope is clearly from Claude (has cost fields) but result
+      // is not a string (null, number, etc.), return empty string to prevent
+      // the raw envelope from leaking into downstream parsers.
+      if ("total_cost_usd" in record || "cost_usd" in record) {
+        return "";
+      }
+      return raw;
     }
   } catch {
     // Return raw output if parsing fails

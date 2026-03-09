@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { parseReviewResult, isContextWindowExceeded, applyContextWindowExceeded, buildPlanPrompt, buildReviewPrompt, isConfidenceRegression, buildScoringTable, verifyRemediationMarkers, MARKER_WEIGHT_THRESHOLD, handleConfidenceMet, parsePreflightResult, handleTooBroad, fireHooks, moveToBlocked, MAX_REVERIFICATIONS } from "../loop.js";
+import { parseReviewResult, isContextWindowExceeded, applyContextWindowExceeded, buildPlanPrompt, buildReviewPrompt, isConfidenceRegression, buildScoringTable, verifyRemediationMarkers, MARKER_WEIGHT_THRESHOLD, handleConfidenceMet, parsePreflightResult, handleTooBroad, fireHooks, moveToBlocked, MAX_REVERIFICATIONS, checkAllDependenciesDone } from "../loop.js";
 import type { RemediationItem, DiffProvider } from "../loop.js";
 import { checkGlobalBudget } from "../budget.js";
 import { ConfigSchema } from "../config.js";
@@ -2217,5 +2217,65 @@ describe("buildReviewPrompt", () => {
     } finally {
       await rm(dir, { recursive: true });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// checkAllDependenciesDone
+// ---------------------------------------------------------------------------
+
+describe("checkAllDependenciesDone", () => {
+  const makeTask = (state: string): Task => ({
+    id: "dep-001",
+    title: "Dep",
+    description: "A dependency",
+    priority: "medium",
+    type: "feature",
+    state: state as Task["state"],
+    dependencies: [],
+    backend: "local",
+    backendRef: null,
+    confidence: 0,
+    attempts: 0,
+    totalCost: 0,
+    branch: null,
+    worktree: null,
+    userPriority: null,
+    goal: null,
+    blockers: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+
+  it("returns true when all dependencies are done", async () => {
+    const backend = {
+      getTask: async () => makeTask("done"),
+    } as unknown as TaskBackend;
+    assert.equal(await checkAllDependenciesDone(backend, ["dep-001", "dep-002"]), true);
+  });
+
+  it("returns false when any dependency is not done", async () => {
+    let callCount = 0;
+    const backend = {
+      getTask: async () => {
+        callCount++;
+        return makeTask(callCount === 1 ? "done" : "in_progress");
+      },
+    } as unknown as TaskBackend;
+    assert.equal(await checkAllDependenciesDone(backend, ["dep-001", "dep-002"]), false);
+  });
+
+  it("returns false on getTask error", async () => {
+    const backend = {
+      getTask: async () => { throw new Error("not found"); },
+    } as unknown as TaskBackend;
+    assert.equal(await checkAllDependenciesDone(backend, ["dep-001"]), false);
+  });
+
+  it("returns true for empty dependencies array", async () => {
+    const backend = {
+      getTask: async () => makeTask("done"),
+    } as unknown as TaskBackend;
+    assert.equal(await checkAllDependenciesDone(backend, []), true);
   });
 });

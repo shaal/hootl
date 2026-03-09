@@ -468,6 +468,64 @@ That's my assessment.`;
     const parsed = parseHookResult(input);
     assert.equal(parsed.pass, true);
   });
+
+  it("detects Claude envelope with empty string result and returns pass: true", () => {
+    const envelope = JSON.stringify({
+      result: "",
+      total_cost_usd: 0.29,
+      session_id: "abc-123",
+    });
+    const parsed = parseHookResult(envelope);
+    assert.equal(parsed.pass, true);
+    assert.deepEqual(parsed.issues, []);
+    assert.deepEqual(parsed.remediationActions, []);
+  });
+
+  it("detects Claude envelope with whitespace-only result and returns pass: true", () => {
+    const envelope = JSON.stringify({
+      result: "   \n  ",
+      total_cost_usd: 0.1,
+      uuid: "def-456",
+    });
+    const parsed = parseHookResult(envelope);
+    assert.equal(parsed.pass, true);
+  });
+
+  it("detects Claude envelope with null result and envelope markers and returns pass: true", () => {
+    const envelope = JSON.stringify({
+      result: null,
+      total_cost_usd: 0.05,
+      session_id: "abc",
+      uuid: "xyz",
+    });
+    const parsed = parseHookResult(envelope);
+    assert.equal(parsed.pass, true);
+  });
+
+  it("detects Claude envelope with non-string result and envelope markers and returns pass: true", () => {
+    const envelope = JSON.stringify({
+      result: false,
+      total_cost_usd: 0.02,
+      uuid: "xyz",
+      num_turns: 1,
+    });
+    const parsed = parseHookResult(envelope);
+    assert.equal(parsed.pass, true);
+  });
+
+  it("does not treat as envelope when result is non-string but no envelope markers", () => {
+    // Has cost fields but no session_id/uuid/num_turns — could be a normal hook output
+    const input = JSON.stringify({
+      result: null,
+      total_cost_usd: 0.01,
+    });
+    const parsed = parseHookResult(input);
+    // Falls through — result is not a string, cost fields present but no markers.
+    // The string-result envelope branch doesn't match (result is null, not string).
+    // The non-string-result branch requires envelope markers.
+    // So it falls through to normal field extraction (pass defaults to false).
+    assert.equal(parsed.pass, false);
+  });
 });
 
 // --- Blocking vs Advisory behavior ---

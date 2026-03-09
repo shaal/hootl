@@ -25,6 +25,7 @@ import {
   worktreeExists,
   getDirtyFiles,
   branchExists,
+  hasBranchDiff,
 } from "../git.js";
 import type { CommitMessageDeps, StaleBranchOpts } from "../git.js";
 import type { InvokeResult } from "../invoke.js";
@@ -1246,5 +1247,49 @@ describe("git integration", () => {
         await rm(staleDir, { recursive: true, force: true });
       }
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// hasBranchDiff
+// ---------------------------------------------------------------------------
+
+describe("hasBranchDiff", () => {
+  let repoDir: string;
+
+  before(async () => {
+    repoDir = await mkdtemp(join(tmpdir(), "hootl-branchdiff-"));
+    await execa("git", ["init", "-b", "main"], { cwd: repoDir });
+    await execa("git", ["config", "user.email", "test@test.com"], { cwd: repoDir });
+    await execa("git", ["config", "user.name", "Test"], { cwd: repoDir });
+    await writeFile(join(repoDir, "file.txt"), "initial");
+    await execa("git", ["add", "."], { cwd: repoDir });
+    await execa("git", ["commit", "-m", "init"], { cwd: repoDir });
+  });
+
+  after(async () => {
+    await rm(repoDir, { recursive: true, force: true });
+  });
+
+  it("returns false when branch is identical to base", async () => {
+    await execa("git", ["checkout", "-b", "no-diff-branch"], { cwd: repoDir });
+    await execa("git", ["checkout", "main"], { cwd: repoDir });
+    const result = await hasBranchDiff("main", "no-diff-branch", repoDir);
+    assert.equal(result, false);
+  });
+
+  it("returns true when branch has changes", async () => {
+    await execa("git", ["checkout", "-b", "has-diff-branch"], { cwd: repoDir });
+    await writeFile(join(repoDir, "new-file.txt"), "change");
+    await execa("git", ["add", "."], { cwd: repoDir });
+    await execa("git", ["commit", "-m", "add file"], { cwd: repoDir });
+    await execa("git", ["checkout", "main"], { cwd: repoDir });
+    const result = await hasBranchDiff("main", "has-diff-branch", repoDir);
+    assert.equal(result, true);
+  });
+
+  it("returns true on git error (conservative)", async () => {
+    const result = await hasBranchDiff("main", "nonexistent-branch", "/nonexistent/path");
+    assert.equal(result, true);
   });
 });

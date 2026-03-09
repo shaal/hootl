@@ -119,19 +119,18 @@ describe("extractTextOutput", () => {
     assert.equal(extractTextOutput(raw, "json"), raw);
   });
 
-  it("returns raw when result is not a string", () => {
-    const raw = JSON.stringify({ result: 42, total_cost_usd: 0.01 });
-    assert.equal(extractTextOutput(raw, "json"), raw);
+  it("returns empty string when result is non-string and envelope has cost fields", () => {
+    assert.equal(extractTextOutput(JSON.stringify({ result: 42, total_cost_usd: 0.01 }), "json"), "");
+    assert.equal(extractTextOutput(JSON.stringify({ result: null, total_cost_usd: 0.05 }), "json"), "");
+    assert.equal(extractTextOutput(JSON.stringify({ result: false, cost_usd: 0.02 }), "json"), "");
+    assert.equal(extractTextOutput(JSON.stringify({ result: { nested: true }, total_cost_usd: 0.1 }), "json"), "");
   });
 
-  it("returns raw when result is an object", () => {
-    const raw = JSON.stringify({ result: { nested: true } });
-    assert.equal(extractTextOutput(raw, "json"), raw);
-  });
-
-  it("returns raw when result is null", () => {
-    const raw = JSON.stringify({ result: null });
-    assert.equal(extractTextOutput(raw, "json"), raw);
+  it("returns raw when result is non-string and no cost fields", () => {
+    const raw1 = JSON.stringify({ result: { nested: true } });
+    assert.equal(extractTextOutput(raw1, "json"), raw1);
+    const raw2 = JSON.stringify({ result: null });
+    assert.equal(extractTextOutput(raw2, "json"), raw2);
   });
 
   it("returns raw unchanged in text format", () => {

@@ -450,6 +450,20 @@ export async function worktreeExists(worktreePath: string): Promise<boolean> {
   }
 }
 
+/**
+ * Returns true if taskBranch has any diff compared to baseBranch.
+ * Uses three-dot diff with --stat for efficiency (only needs non-empty check).
+ * Returns true on error (conservative — don't skip validation on git failure).
+ */
+export async function hasBranchDiff(baseBranch: string, taskBranch: string, cwd?: string): Promise<boolean> {
+  try {
+    const result = await execa("git", ["diff", `${baseBranch}...${taskBranch}`, "--stat"], cwd ? { cwd } : {});
+    return result.stdout.trim().length > 0;
+  } catch {
+    return true;
+  }
+}
+
 export async function createDraftPR(title: string, body: string): Promise<boolean> {
   if (!(await isGhAvailable())) {
     uiWarn("gh CLI not installed — skipping PR creation. Install from https://cli.github.com/");

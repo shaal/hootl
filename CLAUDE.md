@@ -27,9 +27,9 @@ src/
   config.ts           Zod-validated config. 3-layer merge: ~/.hootl/config.json < .hootl/config.json < env vars
   context.ts          Project context gathering for plan command (spec, structure, tasks, git log)
   budget.ts           Global daily budget enforcement (reads cost.csv, checks against budgets.global)
-  loop.ts             Core completion loop (preflight -> plan -> execute -> review). Budget/attempt tracking
-  invoke.ts           Wrapper around `claude -p` via execa. Parses cost from JSON output
-  git.ts              Git operations: task branches, auto-commit, branch switching, merged-branch detection
+  loop.ts             Core completion loop (preflight -> auto-promote check -> plan -> execute -> review). Budget/attempt tracking
+  invoke.ts           Wrapper around `claude -p` via execa. Parses cost from JSON output. Envelope leak prevention
+  git.ts              Git operations: task branches, auto-commit, branch switching, merged-branch detection, branch diff checking
   sync.ts             Review-task sync: auto-promotes tasks to done when branches are merged externally
   guided.ts           Interactive goal clarification (generates questions via Claude, collects answers via gum)
   ui.ts               Terminal UI helpers using `gum` with stdin fallback
