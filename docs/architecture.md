@@ -78,6 +78,8 @@ When `config.git.useWorktrees` is `true`, tasks run in isolated git worktrees in
 - `blocked` state: worktree kept alive (user may want to inspect)
 - Crash recovery uses `task.worktree` to pass `cwd` to `hasUncommittedChanges()` and `commitTaskChanges()`
 
+**Parallel enforcement gate:** When `auto` mode starts, `checkParallelGate()` in `src/status.ts` checks for other active hootl instances (via `.claim` files with live PIDs). If other instances are detected and `git.useWorktrees` is `false`, the command exits immediately with an error instructing the user to enable worktree mode. Single-instance execution continues to work without worktrees (backward compatible). This gate runs before the main loop and before the current instance creates any claims.
+
 **Config:** `git.useWorktrees: true` (default: `false`). Env var: `HOOTL_GIT_USE_WORKTREES`.
 
 **Git functions with `cwd` support:** `commitTaskChanges`, `getHeadSha`, `resetToSha`, `hasUncommittedChanges`, `pushBranch`, `mergeBranch`, `deleteBranch`, `generateCommitMessage`, `getCurrentBranch`, `ensureBranch`. All default to `undefined` (current directory) for backward compatibility.

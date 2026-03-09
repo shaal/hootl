@@ -270,4 +270,15 @@ describe("auto command — parallel worktree gate", () => {
     assert.equal(result.activeCount, 3);
     assert.equal(result.blocked, true);
   });
+
+  it("propagates errors from getActiveInstances", async () => {
+    const mockGetActiveInstances = async (_dir: string): Promise<never> => {
+      throw new Error("tasks directory is corrupt");
+    };
+
+    await assert.rejects(
+      () => checkParallelGate("/tmp/tasks", false, { getActiveInstances: mockGetActiveInstances }),
+      { message: "tasks directory is corrupt" },
+    );
+  });
 });

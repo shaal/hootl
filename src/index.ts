@@ -487,7 +487,10 @@ async function selectFromState(state: TaskState, backend: TaskBackend): Promise<
 export async function autoCommand(
   cliLevel?: string,
   cliFlags?: { merge?: boolean; noMerge?: boolean },
-  deps?: { sleep?: (ms: number) => Promise<void> },
+  deps?: {
+    sleep?: (ms: number) => Promise<void>;
+    checkParallelGate?: (tasksDir: string, useWorktrees: boolean) => Promise<{ blocked: boolean; activeCount: number }>;
+  },
 ): Promise<void> {
   await autoInit();
   const config = await loadConfig();
@@ -524,7 +527,8 @@ export async function autoCommand(
   let idleRetries = 0;
 
   // Worktree enforcement: parallel instances require worktree mode
-  const { blocked, activeCount } = await checkParallelGate(tasksDir, config.git.useWorktrees);
+  const checkGate = deps?.checkParallelGate ?? checkParallelGate;
+  const { blocked, activeCount } = await checkGate(tasksDir, config.git.useWorktrees);
   if (blocked) {
     uiError(
       `${activeCount} other hootl instance(s) already running. Parallel execution requires worktree mode.\n` +
