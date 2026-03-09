@@ -6,6 +6,7 @@ import {
   extractTextOutput,
   buildArgs,
   getClaudeEnv,
+  isClaudeEnvelope,
 } from "../invoke.js";
 import type { InvokeOptions } from "../invoke.js";
 
@@ -302,6 +303,118 @@ describe("getClaudeEnv", () => {
     env["TEST_MUTATION"] = "mutated";
     assert.strictEqual(process.env["TEST_MUTATION"], undefined);
     delete env["TEST_MUTATION"];
+  });
+});
+
+describe("isClaudeEnvelope", () => {
+  it("detects old-style total_cost_usd", () => {
+    assert.equal(isClaudeEnvelope({ total_cost_usd: 0.05 }), true);
+  });
+
+  it("detects old-style cost_usd", () => {
+    assert.equal(isClaudeEnvelope({ cost_usd: 0.02 }), true);
+  });
+
+  it("detects new-style usage.costUSD", () => {
+    assert.equal(isClaudeEnvelope({ usage: { costUSD: 0.7 } }), true);
+  });
+
+  it("detects structural markers (2+ required)", () => {
+    assert.equal(isClaudeEnvelope({ uuid: "abc", permission_denials: [] }), true);
+    assert.equal(isClaudeEnvelope({ uuid: "abc", errors: [] }), true);
+    assert.equal(isClaudeEnvelope({ session_id: "x", fast_mode_state: "off" }), true);
+  });
+
+  it("rejects single structural marker", () => {
+    assert.equal(isClaudeEnvelope({ uuid: "abc" }), false);
+    assert.equal(isClaudeEnvelope({ errors: [] }), false);
+  });
+
+  it("rejects normal hook output", () => {
+    assert.equal(isClaudeEnvelope({ pass: true, issues: [] }), false);
+    assert.equal(isClaudeEnvelope({ passed: true, fixes_applied: [] }), false);
+  });
+
+  it("rejects empty object", () => {
+    assert.equal(isClaudeEnvelope({}), false);
+  });
+
+  it("detects new-format envelope matching the real failure case", () => {
+    // Reproduce the exact envelope shape from the task-080 hook failure
+    const record = {
+      result: null,
+      usage: {
+        inputTokens: 12,
+        outputTokens: 5781,
+        cacheReadInputTokens: 438748,
+        costUSD: 0.70895275,
+        contextWindow: 200000,
+        maxOutputTokens: 32000,
+      },
+      permission_denials: [],
+      fast_mode_state: "off",
+      uuid: "7d76609c-6aed-477e-a878-de53e23d290f",
+      errors: [],
+    };
+    assert.equal(isClaudeEnvelope(record), true);
+  });
+});
+
+describe("parseCostFromOutput — new format", () => {
+  it("extracts cost from usage.costUSD when top-level fields missing", () => {
+    const raw = JSON.stringify({
+      result: null,
+      usage: { inputTokens: 12, outputTokens: 5781, costUSD: 0.70895275 },
+    });
+    assert.equal(parseCostFromOutput(raw), 0.70895275);
+  });
+
+  it("prefers top-level total_cost_usd over usage.costUSD", () => {
+    const raw = JSON.stringify({
+      total_cost_usd: 0.05,
+      usage: { costUSD: 0.06 },
+    });
+    assert.equal(parseCostFromOutput(raw), 0.05);
+  });
+
+  it("returns 0 when usage exists but has no costUSD", () => {
+    const raw = JSON.stringify({
+      result: "hello",
+      usage: { inputTokens: 10 },
+    });
+    assert.equal(parseCostFromOutput(raw), 0);
+  });
+});
+
+describe("extractTextOutput — new envelope format", () => {
+  it("returns empty string for new-format envelope with null result", () => {
+    const raw = JSON.stringify({
+      result: null,
+      usage: { costUSD: 0.7, inputTokens: 12 },
+      uuid: "abc-123",
+      permission_denials: [],
+      errors: [],
+    });
+    assert.equal(extractTextOutput(raw, "json"), "");
+  });
+
+  it("returns empty string for new-format envelope with non-string result", () => {
+    const raw = JSON.stringify({
+      result: false,
+      usage: { costUSD: 0.02 },
+      uuid: "xyz",
+      fast_mode_state: "off",
+    });
+    assert.equal(extractTextOutput(raw, "json"), "");
+  });
+
+  it("extracts result string from new-format envelope", () => {
+    const raw = JSON.stringify({
+      result: "The code looks good",
+      usage: { costUSD: 0.5 },
+      uuid: "abc",
+    });
+    assert.equal(extractTextOutput(raw, "json"), "The code looks good");
   });
 });
 

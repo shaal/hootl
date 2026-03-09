@@ -520,10 +520,107 @@ That's my assessment.`;
       total_cost_usd: 0.01,
     });
     const parsed = parseHookResult(input);
-    // Falls through — result is not a string, cost fields present but no markers.
-    // The string-result envelope branch doesn't match (result is null, not string).
-    // The non-string-result branch requires envelope markers.
-    // So it falls through to normal field extraction (pass defaults to false).
+    // With isClaudeEnvelope, total_cost_usd alone IS enough to detect envelope.
+    // So result=null + envelope detection → pass: true (Claude returned nothing = pass).
+    assert.equal(parsed.pass, true);
+  });
+
+  it("detects new-format envelope with usage.costUSD and extracts inner result", () => {
+    const envelope = JSON.stringify({
+      result: '{"passed": true, "issues": [], "fixes_applied": ["cleaned imports"]}',
+      usage: { inputTokens: 100, outputTokens: 2000, costUSD: 0.45 },
+      uuid: "test-uuid",
+    });
+    const parsed = parseHookResult(envelope);
+    assert.equal(parsed.pass, true);
+    assert.deepEqual(parsed.remediationActions, ["cleaned imports"]);
+  });
+
+  it("detects new-format envelope with null result and returns pass: true", () => {
+    // This is the exact failure scenario from task-080
+    const envelope = JSON.stringify({
+      result: null,
+      usage: {
+        inputTokens: 12,
+        outputTokens: 5781,
+        cacheReadInputTokens: 438748,
+        costUSD: 0.70895275,
+        contextWindow: 200000,
+        maxOutputTokens: 32000,
+      },
+      permission_denials: [],
+      fast_mode_state: "off",
+      uuid: "7d76609c-6aed-477e-a878-de53e23d290f",
+      errors: [],
+    });
+    const parsed = parseHookResult(envelope);
+    assert.equal(parsed.pass, true);
+    assert.deepEqual(parsed.issues, []);
+  });
+
+  it("detects new-format envelope with non-string result and returns pass: true", () => {
+    const envelope = JSON.stringify({
+      result: false,
+      usage: { costUSD: 0.02 },
+      permission_denials: [],
+      fast_mode_state: "off",
+    });
+    const parsed = parseHookResult(envelope);
+    assert.equal(parsed.pass, true);
+  });
+
+  it("detects envelope via structural markers alone (no cost fields)", () => {
+    const envelope = JSON.stringify({
+      result: '{"passed": false, "issues": ["needs tests"]}',
+      uuid: "abc",
+      permission_denials: [],
+    });
+    const parsed = parseHookResult(envelope);
+    assert.equal(parsed.pass, false);
+    assert.deepEqual(parsed.issues, ["needs tests"]);
+  });
+
+  it("handles double-wrapped envelope where inner result is prose with JSON", () => {
+    // Reproduces the exact task-080 failure: extractTextOutput returns the inner
+    // envelope as a string, and the inner envelope's result is Claude's prose
+    // containing an embedded JSON block (not directly parseable by JSON.parse).
+    const claudeResponse = 'I reviewed the code. Here is my assessment:\n\n```json\n{"passed": true, "issues": [], "fixes_applied": ["removed unused import"]}\n```';
+    const innerEnvelope = JSON.stringify({
+      result: claudeResponse,
+      total_cost_usd: 0.71,
+      session_id: "sess-123",
+      uuid: "7d76609c-6aed-477e-a878-de53e23d290f",
+      usage: { inputTokens: 12, outputTokens: 5781, costUSD: 0.70895275 },
+      permission_denials: [],
+      errors: [],
+    });
+    // parseHookResult receives the inner envelope string (as returned by extractTextOutput)
+    const parsed = parseHookResult(innerEnvelope);
+    assert.equal(parsed.pass, true);
+    assert.deepEqual(parsed.remediationActions, ["removed unused import"]);
+  });
+
+  it("handles double-wrapped envelope where inner result has no code block", () => {
+    // Inner result is prose with inline JSON (no code fence)
+    const claudeResponse = 'No issues found.\n{"passed": true, "confidence": 96, "issues": [], "fixes_applied": []}';
+    const innerEnvelope = JSON.stringify({
+      result: claudeResponse,
+      total_cost_usd: 0.5,
+      uuid: "abc",
+      errors: [],
+    });
+    const parsed = parseHookResult(innerEnvelope);
+    assert.equal(parsed.pass, true);
+    assert.equal(parsed.confidence, 96);
+  });
+
+  it("returns defaultResult for triple-wrapped envelope (depth guard)", () => {
+    // Pathological case: envelope inside envelope inside envelope
+    const innermost = JSON.stringify({ result: "deep", total_cost_usd: 0.01, uuid: "a", errors: [] });
+    const middle = JSON.stringify({ result: innermost, total_cost_usd: 0.02, uuid: "b", errors: [] });
+    const outer = JSON.stringify({ result: middle, total_cost_usd: 0.03, uuid: "c", errors: [] });
+    const parsed = parseHookResult(outer);
+    // Depth guard prevents infinite recursion — returns default at depth > 1
     assert.equal(parsed.pass, false);
   });
 });

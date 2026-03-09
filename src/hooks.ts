@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { invokeClaude, logCost } from "./invoke.js";
+import { invokeClaude, logCost, isClaudeEnvelope } from "./invoke.js";
 import type { InvokeOptions } from "./invoke.js";
 import type { CommitMessageDeps } from "./git.js";
 import type { Config, Hook, HookTrigger } from "./config.js";
@@ -264,7 +264,7 @@ export async function buildHookPrompt(hook: Pick<Hook, "prompt">): Promise<strin
  * (passed, fixes_applied, confidence). New names take precedence.
  * Defaults to pass: false if JSON parsing fails (fail-closed).
  */
-export function parseHookResult(output: string): {
+export function parseHookResult(output: string, _depth = 0): {
   pass: boolean;
   issues: string[];
   remediationActions: string[];
@@ -273,6 +273,8 @@ export function parseHookResult(output: string): {
   const defaultResult = { pass: false, issues: [] as string[], remediationActions: [] as string[], confidence: null as number | null };
 
   if (output.trim() === "") return defaultResult;
+  // Guard against infinite recursion from nested envelope unwrapping
+  if (_depth > 1) return defaultResult;
 
   // Multi-candidate extraction strategy (same pattern as parseReviewResult in loop.ts).
   // Hooks (especially simplify) produce lots of prose/code with curly braces before
@@ -325,15 +327,13 @@ export function parseHookResult(output: string): {
 
       let record = parsed as Record<string, unknown>;
 
-      // Defense-in-depth: detect the Claude JSON envelope shape
-      // (has "result" string + "total_cost_usd"/"cost_usd") and extract the
-      // inner "result" field. This happens when verbose mode leaks into hook
-      // invocations — the output is the raw envelope, not the extracted text.
-      const hasCostFields = "total_cost_usd" in record || "cost_usd" in record;
-      const hasEnvelopeMarkers = "session_id" in record || "uuid" in record || "num_turns" in record;
+      // Defense-in-depth: detect the Claude JSON envelope shape and extract
+      // the inner "result" field. This happens when verbose mode leaks into
+      // hook invocations — the output is the raw envelope, not the extracted text.
+      const isEnvelope = isClaudeEnvelope(record);
       if (
         typeof record["result"] === "string" &&
-        hasCostFields
+        isEnvelope
       ) {
         const innerOutput = record["result"] as string;
         // Empty/whitespace result means Claude had nothing to report — treat as pass
@@ -346,21 +346,25 @@ export function parseHookResult(output: string): {
             record = inner as Record<string, unknown>;
             // Fall through to normal field extraction with the unwrapped record
           } else {
-            continue; // Inner result isn't a JSON object — skip this candidate
+            // Inner result is a JSON primitive — recurse to apply extraction strategies
+            return parseHookResult(innerOutput, _depth + 1);
           }
         } catch {
-          continue; // Inner result isn't valid JSON — skip this candidate
+          // Inner result isn't valid JSON (e.g., prose with embedded JSON).
+          // Recurse to apply all extraction strategies (code-block, brace-matching)
+          // to Claude's actual text response. This handles double-wrapping where
+          // the envelope's result field contains the full envelope as a string.
+          return parseHookResult(innerOutput, _depth + 1);
         }
       }
       // Envelope with non-string result (null, number, boolean) — Claude returned
-      // nothing useful. Only trigger when additional envelope markers confirm it's
-      // truly a Claude envelope (not a normal hook output that happens to have a
+      // nothing useful. Only trigger when envelope detection confirms it's truly
+      // a Claude envelope (not a normal hook output that happens to have a
       // "result" field).
       if (
         "result" in record &&
         typeof record["result"] !== "string" &&
-        hasCostFields &&
-        hasEnvelopeMarkers
+        isEnvelope
       ) {
         return { pass: true, issues: [], remediationActions: [], confidence: null };
       }

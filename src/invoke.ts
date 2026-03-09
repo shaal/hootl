@@ -53,14 +53,47 @@ export function buildArgs(options: InvokeOptions): string[] {
   return args;
 }
 
+/**
+ * Detects whether a parsed JSON object is a Claude CLI output envelope
+ * (as opposed to actual hook/task output). Checks multiple markers to be
+ * robust against envelope format changes — old-style top-level cost fields,
+ * new-style nested usage.costUSD, and structural fields unique to envelopes.
+ */
+export function isClaudeEnvelope(record: Record<string, unknown>): boolean {
+  // Old-style top-level cost fields
+  if ("total_cost_usd" in record || "cost_usd" in record) return true;
+  // New-style: usage object with costUSD
+  if (
+    typeof record["usage"] === "object" &&
+    record["usage"] !== null &&
+    "costUSD" in (record["usage"] as Record<string, unknown>)
+  ) return true;
+  // Structural markers unique to Claude envelopes — require 2+ to avoid false positives
+  const markers = ["session_id", "uuid", "num_turns", "permission_denials", "fast_mode_state", "errors"];
+  let markerCount = 0;
+  for (const m of markers) {
+    if (m in record) markerCount++;
+    if (markerCount >= 2) return true;
+  }
+  return false;
+}
+
 export function parseCostFromOutput(raw: string): number {
   try {
     const parsed: unknown = JSON.parse(raw);
     if (typeof parsed === "object" && parsed !== null) {
       const record = parsed as Record<string, unknown>;
       // claude -p outputs total_cost_usd in --output-format json
-      const cost = Number(record["total_cost_usd"] ?? record["cost_usd"] ?? 0);
-      return Number.isFinite(cost) ? cost : 0;
+      if ("total_cost_usd" in record || "cost_usd" in record) {
+        const cost = Number(record["total_cost_usd"] ?? record["cost_usd"] ?? 0);
+        return Number.isFinite(cost) ? cost : 0;
+      }
+      // Fallback: new-style nested usage.costUSD
+      if (typeof record["usage"] === "object" && record["usage"] !== null) {
+        const usage = record["usage"] as Record<string, unknown>;
+        const usageCost = Number(usage["costUSD"] ?? 0);
+        if (Number.isFinite(usageCost)) return usageCost;
+      }
     }
   } catch {
     // Not valid JSON or missing cost fields — fall through
@@ -98,10 +131,10 @@ export function extractTextOutput(raw: string, format: "text" | "json"): string 
       if (typeof record["result"] === "string") {
         return record["result"];
       }
-      // When the envelope is clearly from Claude (has cost fields) but result
-      // is not a string (null, number, etc.), return empty string to prevent
-      // the raw envelope from leaking into downstream parsers.
-      if ("total_cost_usd" in record || "cost_usd" in record) {
+      // When the envelope is clearly from Claude but result is not a string
+      // (null, number, etc.), return empty string to prevent the raw envelope
+      // from leaking into downstream parsers.
+      if (isClaudeEnvelope(record)) {
         return "";
       }
       return raw;
