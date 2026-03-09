@@ -36,6 +36,7 @@ src/
   plan-memory.ts      Planning memory: records lessons from task outcomes, injects into plan prompts
   plan-review.ts      Plan critique pass (self-review before task creation)
   plan-summary.ts     TL;DR plan summary with Accept/Revise/Cancel confirmation
+  idle-wait.ts        Idle retry logic for auto command when sibling instances hold all tasks
   hooks.ts            Hook execution engine (filter, prompt resolution, run, orchestrate)
   logger.ts           Structured JSONL event logger (phase_start/end, state_change, decision, error, hook_run, budget_check)
   notify.ts           OS notifications (macOS osascript, Linux notify-send) for task events

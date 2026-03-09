@@ -100,7 +100,7 @@ hootl config              # View/edit configuration
   "taskBackend": "local",
   "budgets": {
     "perSession": 0.50,
-    "perTask": 5.00,
+    "perTask": 10.00,
     "global": 50.00,
     "maxAttemptsPerTask": 10
   },

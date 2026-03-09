@@ -187,14 +187,29 @@ The system learns from its own history via `src/plan-memory.ts`. After a task re
 
 ## Remediation Plan Flow (confidence < target)
 
-When the review phase scores confidence below the target, it does two additional things **in the same session** (while context is fresh):
+When the review phase scores confidence below the target, it does three additional things **in the same session** (while context is fresh):
 
 1. **Updates documentation** -- Captures architectural decisions, patterns, and learnings in project docs (CLAUDE.md, README, inline comments)
 2. **Writes a remediation plan** -- A concrete, actionable plan returned in the `remediationPlan` JSON field, written directly to `plan.md`
+3. **Produces structured remediation items** -- A `remediationItems` array in the review JSON, each with `category`, `title`, `diffMarkers`, and `weight`
 
 On the next attempt, the **plan phase is skipped** and the execute phase runs directly from the review's remediation plan. This avoids information loss at session boundaries -- the reviewer already knows exactly what's needed and prescribes it directly, rather than relying on a fresh planner to re-derive it.
 
 The `hasRemediationPlan` flag in the loop controls plan-skipping. It resets to `false` after use and on transient errors to prevent stale plans from persisting.
+
+### Scoring Table
+
+When writing the remediation plan to `plan.md`, the loop prepends a computed **scoring table** (`buildScoringTable()` in `loop.ts`) showing the weighted point impact per category. Categories with >= 2.0 potential gain are marked `← FIX THIS`. This gives the execute agent explicit, quantified prioritization rather than relying on prompt instructions alone.
+
+### Diff Marker Verification
+
+After the execute phase commits its work and before the review phase runs, the loop checks whether the executor actually addressed high-weight remediation items (`verifyRemediationMarkers()` in `loop.ts`):
+
+1. For each `RemediationItem` with `weight >= 2.0` and non-empty `diffMarkers`, check if ANY marker string appears in `git diff baseBranch...HEAD`
+2. If any high-weight item has zero marker matches, the **review is skipped** — a re-execution plan is written to `plan.md` listing the missing items, and the loop continues to the next attempt
+3. If all markers pass (or no items to check), the review proceeds normally
+
+This is a programmatic gate that prevents the executor from cherry-picking easy items (e.g., documentation) while skipping hard ones (e.g., integration tests). The `DiffProvider` interface allows dependency injection for testing. Items with `weight < 2.0` or empty `diffMarkers` are not checked.
 
 ## Global Daily Budget Enforcement
 
@@ -212,7 +227,7 @@ Three layers, merged with deep-merge (later wins):
 2. `.hootl/config.json` (project)
 3. `HOOTL_*` environment variables
 
-Key defaults: contextWindowLimit=60%, perTask=$5.00, global=$50.00, maxAttempts=10, confidenceTarget=95%. `git.onConfidence` defaults to null (inferred from `auto.defaultLevel`). Env var: `HOOTL_GIT_ON_CONFIDENCE`. `git.useWorktrees` defaults to `false`. Env var: `HOOTL_GIT_USE_WORKTREES`. `notifications.webhook` — webhook URL for state transition notifications (default: null). Env var: `HOOTL_NOTIFICATIONS_WEBHOOK`.
+Key defaults: contextWindowLimit=60%, perTask=$10.00, global=$50.00, maxAttempts=10, confidenceTarget=95%. `git.onConfidence` defaults to null (inferred from `auto.defaultLevel`). Env var: `HOOTL_GIT_ON_CONFIDENCE`. `git.useWorktrees` defaults to `false`. Env var: `HOOTL_GIT_USE_WORKTREES`. `notifications.webhook` — webhook URL for state transition notifications (default: null). Env var: `HOOTL_NOTIFICATIONS_WEBHOOK`.
 
 ## Hooks & Skills
 
