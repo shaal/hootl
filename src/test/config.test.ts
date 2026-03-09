@@ -29,7 +29,7 @@ describe("ConfigSchema", () => {
     assert.equal(config.taskBackend, "local");
     assert.equal(config.permissionMode, "default");
 
-    assert.equal(config.budgets.perTask, 5.0);
+    assert.equal(config.budgets.perTask, 10.0);
     assert.equal(config.budgets.global, 50.0);
     assert.equal(config.budgets.maxAttemptsPerTask, 10);
     assert.equal(config.budgets.contextWindowLimit, 60);
@@ -188,7 +188,7 @@ describe("loadConfig", () => {
     assert.equal(config.taskBackend, "beads");
     assert.equal(config.budgets.contextWindowLimit, 80);
     // Non-overridden defaults remain
-    assert.equal(config.budgets.perTask, 5.0);
+    assert.equal(config.budgets.perTask, 10.0);
     assert.equal(config.confidence.target, 95);
   });
 });

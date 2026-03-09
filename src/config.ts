@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 
 const BudgetSchema = z.object({
-  perTask: z.number().default(5.00),
+  perTask: z.number().default(10.00),
   global: z.number().default(50.00),
   maxAttemptsPerTask: z.number().default(10),
   contextWindowLimit: z.number().default(60),
