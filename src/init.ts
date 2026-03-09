@@ -109,6 +109,7 @@ export async function autoInit(options?: InitOptions): Promise<void> {
 
   await mkdir(join(hootlDir, "tasks"), { recursive: true });
   await mkdir(join(hootlDir, "logs"), { recursive: true });
+  await mkdir(join(hootlDir, "instances"), { recursive: true });
 
   const configData: Record<string, unknown> = {};
 
@@ -156,7 +157,7 @@ export async function autoInit(options?: InitOptions): Promise<void> {
 
   await writeFile(
     join(hootlDir, ".gitignore"),
-    "tasks/\nlogs/\nstatus.md\n",
+    "tasks/\nlogs/\ninstances/\nstatus.md\n",
     "utf-8",
   );
 }

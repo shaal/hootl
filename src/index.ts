@@ -24,6 +24,7 @@ import {
 } from "./ui.js";
 import { gatherProjectContext, formatContextForPrompt } from "./context.js";
 import { autoInit } from "./init.js";
+import { registerInstance, deregisterInstanceSync } from "./instances.js";
 import { checkGlobalBudget } from "./budget.js";
 import { discussCommand } from "./discuss.js";
 import { findRunnableTask, findAndClaimTask } from "./selection.js";
@@ -67,13 +68,18 @@ function releaseAllClaims(): void {
   claimedTaskIds.clear();
 }
 
-process.on("exit", releaseAllClaims);
+process.on("exit", () => {
+  releaseAllClaims();
+  deregisterInstanceSync();
+});
 process.on("SIGINT", () => {
   releaseAllClaims();
+  deregisterInstanceSync();
   process.exit(130);
 });
 process.on("SIGTERM", () => {
   releaseAllClaims();
+  deregisterInstanceSync();
   process.exit(143);
 });
 
@@ -506,6 +512,7 @@ export async function autoCommand(
     if (stopRequested) {
       // Second Ctrl+C: force quit
       releaseAllClaims();
+      deregisterInstanceSync();
       process.exit(130);
     }
     stopRequested = true;
@@ -519,6 +526,9 @@ export async function autoCommand(
       `Level "${level}" is not yet implemented — falling back to conservative.`,
     );
   }
+
+  const instancesDir = join(process.cwd(), ".hootl", "instances");
+  await registerInstance(level, { instancesDir });
 
   const costLogDir = join(process.cwd(), ".hootl", "logs");
   const tasksDir = join(process.cwd(), ".hootl", "tasks");
@@ -598,6 +608,9 @@ export async function autoCommand(
     tasksCompleted++;
     idleRetries = 0;
   }
+
+  // Clean up instance registration before restoring handlers
+  deregisterInstanceSync();
 
   // Restore original SIGINT handlers
   process.removeAllListeners("SIGINT");
