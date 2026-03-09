@@ -8,6 +8,7 @@ import { LocalTaskBackend } from "../tasks/local.js";
 import { checkGlobalBudget } from "../budget.js";
 import { findRunnableTask } from "../selection.js";
 import { ConfigSchema } from "../config.js";
+import { shouldRetryOnNoTask, MAX_IDLE_RETRIES, IDLE_SLEEP_MS } from "../idle-wait.js";
 
 function makeTmpDir(): string {
   return join(tmpdir(), `hootl-auto-test-${randomUUID()}`);
@@ -158,5 +159,60 @@ describe("auto command — level validation", () => {
       const config = ConfigSchema.parse({ auto: { defaultLevel: level } });
       assert.equal(config.auto.defaultLevel, level);
     }
+  });
+});
+
+describe("auto command — idle wait retry", () => {
+  it("retries when other instances are active and retries remain", async () => {
+    const mockGetActiveInstances = async (_dir: string) => ({
+      count: 2,
+      pids: new Map([["task-1", 1234], ["task-2", 5678]]),
+    });
+
+    const result = await shouldRetryOnNoTask("/tmp/tasks", 0, MAX_IDLE_RETRIES, {
+      getActiveInstances: mockGetActiveInstances,
+    });
+    assert.equal(result, "retry");
+  });
+
+  it("exits on idle timeout after max retries even with active instances", async () => {
+    const mockGetActiveInstances = async (_dir: string) => ({
+      count: 1,
+      pids: new Map([["task-1", 1234]]),
+    });
+
+    const result = await shouldRetryOnNoTask("/tmp/tasks", MAX_IDLE_RETRIES, MAX_IDLE_RETRIES, {
+      getActiveInstances: mockGetActiveInstances,
+    });
+    assert.equal(result, "timeout");
+  });
+
+  it("exits immediately when no other instances are active", async () => {
+    const mockGetActiveInstances = async (_dir: string) => ({
+      count: 0,
+      pids: new Map<string, number>(),
+    });
+
+    const result = await shouldRetryOnNoTask("/tmp/tasks", 0, MAX_IDLE_RETRIES, {
+      getActiveInstances: mockGetActiveInstances,
+    });
+    assert.equal(result, "complete");
+  });
+
+  it("retries at boundary (one below max) with active instances", async () => {
+    const mockGetActiveInstances = async (_dir: string) => ({
+      count: 1,
+      pids: new Map([["task-1", 9999]]),
+    });
+
+    const result = await shouldRetryOnNoTask("/tmp/tasks", MAX_IDLE_RETRIES - 1, MAX_IDLE_RETRIES, {
+      getActiveInstances: mockGetActiveInstances,
+    });
+    assert.equal(result, "retry");
+  });
+
+  it("exports expected constants", () => {
+    assert.equal(MAX_IDLE_RETRIES, 12);
+    assert.equal(IDLE_SLEEP_MS, 5000);
   });
 });
