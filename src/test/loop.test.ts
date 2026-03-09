@@ -2597,6 +2597,46 @@ describe("logEvent integration in handleConfidenceMet", () => {
       await rm(dir, { recursive: true });
     }
   });
+
+  it("emits pr_created decision and state_change to review for pr mode", async () => {
+    const testSessionId = `test-pr-created-${randomUUID()}`;
+    _setSessionId(testSessionId);
+
+    const dir = await mkdtemp(join(tmpdir(), "hootl-log-pr-"));
+    try {
+      const { backend } = makeMockBackend();
+      const config = ConfigSchema.parse({ git: { onConfidence: "pr" } });
+      // pushBranch will fail (no remote), but the pr_created events are emitted
+      // regardless because the code always transitions to review in pr mode.
+      await handleConfidenceMet(
+        makeTask(), config, backend, "hootl/task-log-001-test", "main", dir, {}, noopHookDeps,
+      );
+
+      const events = await readEventsForSession(testSessionId);
+
+      // Should have a state_change to review with reason "PR created"
+      const stateChanges = events.filter((e) => e.type === "state_change");
+      const toReview = stateChanges.find(
+        (e) => e.type === "state_change" && e.data.to === "review" && e.data.reason === "PR created",
+      );
+      assert.ok(toReview !== undefined, "should emit state_change to review with PR created reason");
+
+      // Should have a pr_created decision
+      const decisions = events.filter((e) => e.type === "decision");
+      const prCreated = decisions.find(
+        (e) => e.type === "decision" && e.data.decision === "pr_created",
+      );
+      assert.ok(prCreated !== undefined, "should emit pr_created decision");
+      if (prCreated !== undefined && prCreated.type === "decision") {
+        assert.ok(
+          prCreated.data.details?.includes("hootl/task-log-001-test"),
+          "pr_created decision details should include branch name",
+        );
+      }
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
 });
 
 describe("logEvent integration in moveToBlocked", () => {
