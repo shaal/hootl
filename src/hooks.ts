@@ -7,6 +7,7 @@ import type { CommitMessageDeps } from "./git.js";
 import type { Config, Hook, HookTrigger } from "./config.js";
 import type { Task } from "./tasks/types.js";
 import { uiWarn } from "./ui.js";
+import { logEvent } from "./logger.js";
 
 export interface HookContext {
   task: Task;
@@ -532,6 +533,19 @@ export async function runHooks(
 
     // Log cost for this hook invocation
     await deps.log(logDir, context.task.id, `hook:${triggerPoint}`, result.costUsd);
+
+    // Emit structured hook_run event for event log reconstruction
+    await logEvent(logDir, {
+      taskId: context.task.id,
+      type: "hook_run",
+      data: {
+        trigger: triggerPoint,
+        skill: hook.skill,
+        passed: result.success,
+        costUsd: result.costUsd,
+        fixes_applied: result.remediationActions.length > 0 ? result.remediationActions : undefined,
+      },
+    });
 
     if (!result.success) {
       if (hook.blocking) {

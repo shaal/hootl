@@ -11,7 +11,7 @@ export type LogEvent =
   | { taskId: string; type: "state_change"; data: { from: string; to: string; reason?: string } }
   | { taskId: string; type: "decision"; data: { decision: string; details?: string } }
   | { taskId: string; type: "error"; data: { phase: string; message: string } }
-  | { taskId: string; type: "hook_run"; data: { trigger: string; skill?: string; passed: boolean; costUsd: number } }
+  | { taskId: string; type: "hook_run"; data: { trigger: string; skill?: string; passed: boolean; costUsd: number; fixes_applied?: string[] } }
   | { taskId: string; type: "budget_check"; data: { todayCost: number; limit: number; exceeded: boolean } }
   | { taskId: string; type: "rollback"; data: { shaBefore: string; shaAfter: string; reason: string } };
 

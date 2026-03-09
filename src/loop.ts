@@ -660,6 +660,11 @@ export async function handleConfidenceMet(
 
       while (anyFixesApplied && reverifyCount < MAX_REVERIFICATIONS) {
         reverifyCount++;
+        await logEvent(costLogDir, {
+          taskId: task.id,
+          type: "decision",
+          data: { decision: "re_verification", details: `Iteration ${reverifyCount}/${MAX_REVERIFICATIONS}, hooks applied fixes` },
+        });
         uiInfo(`Re-verification ${reverifyCount}/${MAX_REVERIFICATIONS}: hook applied fixes — committing and re-reviewing.`);
 
         // Auto-commit hook changes
@@ -680,6 +685,13 @@ export async function handleConfidenceMet(
           taskBranch,
           baseBranch,
         });
+
+        await logEvent(costLogDir, {
+          taskId: task.id,
+          type: "phase_start",
+          data: { phase: "re-verify", attempt: reverifyCount },
+        });
+        const reVerifyStart = Date.now();
 
         const reviewResult = hookDeps
           ? await hookDeps.invoke({
@@ -703,6 +715,18 @@ export async function handleConfidenceMet(
         } else {
           await logCost(costLogDir, task.id, "re-verify", reviewResult.costUsd);
         }
+        await logEvent(costLogDir, {
+          taskId: task.id,
+          type: "phase_end",
+          data: {
+            phase: "re-verify",
+            attempt: reverifyCount,
+            costUsd: reviewResult.costUsd,
+            durationMs: Date.now() - reVerifyStart,
+            exitCode: reviewResult.exitCode,
+            outputLength: reviewResult.output.length,
+          },
+        });
 
         const review = parseReviewResult(reviewResult.output);
 
@@ -773,6 +797,16 @@ export async function handleConfidenceMet(
       }
       await deleteBranch(taskBranch);
       await backend.updateTask(task.id, { state: "done" });
+      await logEvent(join(getProjectDir(), "logs"), {
+        taskId: task.id,
+        type: "state_change",
+        data: { from: "in_progress", to: "done", reason: "Merge successful" },
+      });
+      await logEvent(join(getProjectDir(), "logs"), {
+        taskId: task.id,
+        type: "decision",
+        data: { decision: "merge_success", details: `Merged ${taskBranch} into ${baseBranch}` },
+      });
       uiSuccess(`Task ${task.id} merged into ${baseBranch} and moved to done.`);
       await notify("Task Complete", `${task.id}: ${task.title}`, config);
       void notifyWebhook({
@@ -788,6 +822,16 @@ export async function handleConfidenceMet(
     // Merge failed — fall through to 'none' behavior
     uiWarn("Merge failed — falling back to review state.");
     await backend.updateTask(task.id, { state: "review" });
+    await logEvent(join(getProjectDir(), "logs"), {
+      taskId: task.id,
+      type: "state_change",
+      data: { from: "in_progress", to: "review", reason: "Merge failed" },
+    });
+    await logEvent(join(getProjectDir(), "logs"), {
+      taskId: task.id,
+      type: "decision",
+      data: { decision: "merge_failed", details: `Merge of ${taskBranch} into ${baseBranch} failed, falling back to review` },
+    });
     await notify("Task Ready for Review", `${task.id}: ${task.title}`, config);
     void notifyWebhook({
       taskId: task.id,
@@ -819,6 +863,16 @@ export async function handleConfidenceMet(
       await createDraftPR(`[${task.id}] ${task.title}`, body);
     }
     await backend.updateTask(task.id, { state: "review" });
+    await logEvent(join(getProjectDir(), "logs"), {
+      taskId: task.id,
+      type: "state_change",
+      data: { from: "in_progress", to: "review", reason: "PR created" },
+    });
+    await logEvent(join(getProjectDir(), "logs"), {
+      taskId: task.id,
+      type: "decision",
+      data: { decision: "pr_created", details: `Pushed ${taskBranch} and created draft PR` },
+    });
     uiSuccess(`Task ${task.id} pushed and moved to review.`);
     await notify("Task Ready for Review", `${task.id}: ${task.title}`, config);
     void notifyWebhook({
@@ -834,6 +888,16 @@ export async function handleConfidenceMet(
 
   // 'none' mode or no branch available
   await backend.updateTask(task.id, { state: "review" });
+  await logEvent(join(getProjectDir(), "logs"), {
+    taskId: task.id,
+    type: "state_change",
+    data: { from: "in_progress", to: "review", reason: "Confidence met (none mode)" },
+  });
+  await logEvent(join(getProjectDir(), "logs"), {
+    taskId: task.id,
+    type: "decision",
+    data: { decision: "confidence_met_none", details: "No merge/PR configured, moved to review" },
+  });
   await notify("Task Ready for Review", `${task.id}: ${task.title}`, config);
   void notifyWebhook({
     taskId: task.id,
