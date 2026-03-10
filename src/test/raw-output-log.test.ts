@@ -13,7 +13,7 @@ import { mkdtemp, mkdir, writeFile, readFile, rm, access } from "node:fs/promise
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execa } from "execa";
-import { saveRawOutput } from "../loop.js";
+import { saveRawOutput } from "../raw-output.js";
 import { runCompletionLoop } from "../loop.js";
 import { ConfigSchema } from "../config.js";
 import { LocalTaskBackend } from "../tasks/local.js";
@@ -292,8 +292,10 @@ process.stdout.write(JSON.stringify({
     );
 
     // --- Verify hook output was saved ---
-    const hookContent = await readFile(join(logsDir, "hook-on_confidence_met-0.txt"), "utf-8");
-    assert.ok(hookContent.length > 0, "hook-on_confidence_met-0.txt should have content");
+    // Filename includes loop attempt: hook-on_confidence_met-<attempt>-<hookIndex>.txt
+    // First attempt in the loop is attempt=1 (currentTask.attempts + 1), hookIndex=0
+    const hookContent = await readFile(join(logsDir, "hook-on_confidence_met-1-0.txt"), "utf-8");
+    assert.ok(hookContent.length > 0, "hook-on_confidence_met-1-0.txt should have content");
     assert.ok(
       hookContent.includes("pass") || hookContent.includes("true"),
       "hook output should contain pass result",

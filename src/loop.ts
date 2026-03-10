@@ -15,6 +15,7 @@ import { inferDependencies, resolveIndicesToIds } from "./dependencies.js";
 import { runHooks } from "./hooks.js";
 import type { HookContext, HookDeps, HookResult } from "./hooks.js";
 import { logEvent } from "./logger.js";
+import { saveRawOutput } from "./raw-output.js";
 
 export async function readFileOrEmpty(path: string): Promise<string> {
   try {
@@ -31,29 +32,8 @@ export async function readFileOrEmpty(path: string): Promise<string> {
   }
 }
 
-/**
- * Save the full raw output from a claude -p invocation to the task's logs/ directory.
- * Acts as a 'black box recorder' — preserves exact Claude responses for debugging,
- * separate from processed context files (plan.md, progress.md, etc.) which may be
- * truncated, parsed, or overwritten.
- *
- * File naming: `<phase>-<attempt>.txt` (e.g., `plan-1.txt`, `execute-2.txt`, `preflight-0.txt`)
- * Wraps in try/catch so logging failures never crash the completion loop.
- */
-export async function saveRawOutput(
-  taskDir: string,
-  phase: string,
-  attempt: number,
-  output: string,
-): Promise<void> {
-  try {
-    const logsDir = join(taskDir, "logs");
-    await mkdir(logsDir, { recursive: true });
-    await writeFile(join(logsDir, `${phase}-${attempt}.txt`), output, "utf-8");
-  } catch {
-    // Logging must never crash the loop — same pattern as logEvent
-  }
-}
+// Re-export saveRawOutput from its dedicated module for backward compatibility
+export { saveRawOutput } from "./raw-output.js";
 
 export interface Checkpoint {
   phase: string;
@@ -634,6 +614,7 @@ export async function handleConfidenceMet(
   hookDeps?: HookDeps,
   verbose = false,
   worktreePath?: string,
+  attempt?: number,
 ): Promise<{ state: "done" | "review" | "in_progress" | "blocked"; mergedSuccessfully: boolean }> {
   // Run on_confidence_met hooks before proceeding with merge/PR/none.
   // If no hooks are configured, inject the default simplify hook as a blocking validator.
@@ -668,6 +649,7 @@ export async function handleConfidenceMet(
         confidence: task.confidence,
         config,
         ...(worktreePath ? { cwd: worktreePath } : {}),
+        ...(attempt !== undefined ? { attempt } : {}),
       };
       const effectiveConfig = { ...config, hooks: effectiveHooks };
       const hookResult = hookDeps
@@ -773,6 +755,7 @@ export async function handleConfidenceMet(
             confidence: review.confidence,
             config,
             ...(worktreePath ? { cwd: worktreePath } : {}),
+            ...(attempt !== undefined ? { attempt } : {}),
           };
           const reHookResult = hookDeps
             ? await runHooks("on_confidence_met", reHookContext, effectiveConfig, hookDeps)
@@ -1009,6 +992,7 @@ export async function fireHooks(
   config: Config,
   hookDeps?: HookDeps,
   cwd?: string,
+  attempt?: number,
 ): Promise<void> {
   if (config.hooks.length === 0) return;
   try {
@@ -1019,6 +1003,7 @@ export async function fireHooks(
       confidence,
       config,
       ...(cwd ? { cwd } : {}),
+      ...(attempt !== undefined ? { attempt } : {}),
     };
     if (hookDeps) {
       await runHooks(trigger, hookContext, config, hookDeps);
@@ -1041,8 +1026,9 @@ export async function moveToBlocked(
   config: Config,
   hookDeps?: HookDeps,
   cwd?: string,
+  attempt?: number,
 ): Promise<Task> {
-  await fireHooks("on_blocked", task, taskBranch, baseBranch, confidence, config, hookDeps, cwd);
+  await fireHooks("on_blocked", task, taskBranch, baseBranch, confidence, config, hookDeps, cwd, attempt);
   const updated = await backend.updateTask(task.id, { state: "blocked", blockers });
   await logEvent(join(getProjectDir(), "logs"), {
     taskId: task.id,
@@ -1526,7 +1512,7 @@ export async function runCompletionLoop(
             data: { decision: "skip_to_hook", details: `${currentTask.confidence}% >= ${config.confidence.target}% target, no dirty files, HEAD ${headSha?.slice(0, 8)} matches last review` },
           });
           const result = await handleConfidenceMet(
-            currentTask, config, backend, taskBranch, baseBranch, taskDir, cliFlags, hookDeps, verbose, worktreePath,
+            currentTask, config, backend, taskBranch, baseBranch, taskDir, cliFlags, hookDeps, verbose, worktreePath, currentTask.attempts,
           );
           if (result.state === "in_progress") {
             uiInfo("Blocking hook applied fixes — retrying.");
@@ -1590,6 +1576,9 @@ export async function runCompletionLoop(
 
         await guardBranch();
 
+        // Save raw output immediately — before error checks — so failed phases are debuggable
+        await saveRawOutput(taskDir, "plan", attempt, planResult.output);
+
         if (planResult.exitCode !== 0) {
           if (!abortSignal?.aborted) uiError(`Plan phase failed (exit code ${planResult.exitCode})`);
           throw new Error(`Plan phase failed: ${planResult.output}`);
@@ -1602,7 +1591,6 @@ export async function runCompletionLoop(
 
         uiInfo(`Phase 1 done [${new Date().toLocaleTimeString()}] (${planResult.durationMs}ms, $${planResult.costUsd.toFixed(4)}, exit=${planResult.exitCode})`);
         await writeFile(join(taskDir, "plan.md"), planResult.output, "utf-8");
-        await saveRawOutput(taskDir, "plan", attempt, planResult.output);
         await logCost(costLogDir, task.id, "plan", planResult.costUsd);
         await logEvent(costLogDir, {
           taskId: task.id,
@@ -1643,7 +1631,7 @@ export async function runCompletionLoop(
       }
 
       // Run on_execute_start hooks before Phase 2
-      await fireHooks("on_execute_start", currentTask, taskBranch, baseBranch, previousConfidence ?? 0, config, hookDeps, worktreePath);
+      await fireHooks("on_execute_start", currentTask, taskBranch, baseBranch, previousConfidence ?? 0, config, hookDeps, worktreePath, attempt);
       await guardBranch();
 
       // Phase 2: EXECUTE
@@ -1667,6 +1655,9 @@ export async function runCompletionLoop(
         }),
       );
 
+      // Save raw output immediately — before error checks — so failed phases are debuggable
+      await saveRawOutput(taskDir, "execute", attempt, executeResult.output);
+
       if (executeResult.exitCode !== 0) {
         if (!abortSignal?.aborted) uiError(`Execute phase failed (exit code ${executeResult.exitCode})`);
         throw new Error(`Execute phase failed: ${executeResult.output}`);
@@ -1684,7 +1675,6 @@ export async function runCompletionLoop(
         progressSeparator + executeResult.output,
         "utf-8",
       );
-      await saveRawOutput(taskDir, "execute", attempt, executeResult.output);
       await logCost(costLogDir, task.id, "execute", executeResult.costUsd);
       await logEvent(costLogDir, {
         taskId: task.id,
@@ -1789,6 +1779,9 @@ export async function runCompletionLoop(
 
       await guardBranch();
 
+      // Save raw output immediately — before error checks — so failed phases are debuggable
+      await saveRawOutput(taskDir, "review", attempt, reviewResult.output);
+
       if (reviewResult.exitCode !== 0) {
         if (!abortSignal?.aborted) uiError(`Review phase failed (exit code ${reviewResult.exitCode})`);
         throw new Error(`Review phase failed: ${reviewResult.output}`);
@@ -1804,7 +1797,6 @@ export async function runCompletionLoop(
         reviewResult.output,
         "utf-8",
       );
-      await saveRawOutput(taskDir, "review", attempt, reviewResult.output);
       await logCost(costLogDir, task.id, "review", reviewResult.costUsd);
       await logEvent(costLogDir, {
         taskId: task.id,
@@ -1837,7 +1829,7 @@ export async function runCompletionLoop(
       }
 
       // Run on_review_complete hooks after review parsing
-      await fireHooks("on_review_complete", currentTask, taskBranch, baseBranch, review.confidence, config, hookDeps, worktreePath);
+      await fireHooks("on_review_complete", currentTask, taskBranch, baseBranch, review.confidence, config, hookDeps, worktreePath, attempt);
       await guardBranch();
 
       // Rollback safety: detect confidence regression
@@ -1894,7 +1886,7 @@ export async function runCompletionLoop(
           `Task ${task.id} reached ${review.confidence}% confidence.`,
         );
         const result = await handleConfidenceMet(
-          currentTask, config, backend, taskBranch, baseBranch, taskDir, cliFlags, hookDeps, verbose, worktreePath,
+          currentTask, config, backend, taskBranch, baseBranch, taskDir, cliFlags, hookDeps, verbose, worktreePath, attempt,
         );
         if (result.state === "in_progress") {
           // Blocking hook failed but applied fixes — retry with the new code

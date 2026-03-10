@@ -8,7 +8,7 @@ import type { Config, Hook, HookTrigger } from "./config.js";
 import type { Task } from "./tasks/types.js";
 import { uiWarn } from "./ui.js";
 import { logEvent } from "./logger.js";
-import { saveRawOutput } from "./loop.js";
+import { saveRawOutput } from "./raw-output.js";
 
 export interface HookContext {
   task: Task;
@@ -17,6 +17,8 @@ export interface HookContext {
   confidence: number;
   config: Config;
   cwd?: string;
+  /** Loop attempt number — used for unique raw output filenames across attempts. */
+  attempt?: number;
 }
 
 export interface HookResult {
@@ -560,7 +562,9 @@ export async function runHooks(
     results.push(result);
 
     // Save raw hook output for debugging (black box recorder)
-    await saveRawOutput(taskDir, `hook-${triggerPoint}`, hookIndex, result.output);
+    // Include loop attempt in filename to avoid overwriting across attempts
+    const attemptSuffix = context.attempt !== undefined ? `-${context.attempt}` : "";
+    await saveRawOutput(taskDir, `hook-${triggerPoint}${attemptSuffix}`, hookIndex, result.output);
 
     // Log cost for this hook invocation
     await deps.log(logDir, context.task.id, `hook:${triggerPoint}`, result.costUsd);
