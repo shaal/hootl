@@ -31,6 +31,30 @@ export async function readFileOrEmpty(path: string): Promise<string> {
   }
 }
 
+/**
+ * Save the full raw output from a claude -p invocation to the task's logs/ directory.
+ * Acts as a 'black box recorder' — preserves exact Claude responses for debugging,
+ * separate from processed context files (plan.md, progress.md, etc.) which may be
+ * truncated, parsed, or overwritten.
+ *
+ * File naming: `<phase>-<attempt>.txt` (e.g., `plan-1.txt`, `execute-2.txt`, `preflight-0.txt`)
+ * Wraps in try/catch so logging failures never crash the completion loop.
+ */
+export async function saveRawOutput(
+  taskDir: string,
+  phase: string,
+  attempt: number,
+  output: string,
+): Promise<void> {
+  try {
+    const logsDir = join(taskDir, "logs");
+    await mkdir(logsDir, { recursive: true });
+    await writeFile(join(logsDir, `${phase}-${attempt}.txt`), output, "utf-8");
+  } catch {
+    // Logging must never crash the loop — same pattern as logEvent
+  }
+}
+
 export interface Checkpoint {
   phase: string;
   attempt: number;
@@ -709,6 +733,8 @@ export async function handleConfidenceMet(
               ...(worktreePath ? { cwd: worktreePath } : {}),
             });
 
+        // Save raw re-verify output for debugging
+        await saveRawOutput(taskDir, "re-verify", reverifyCount, reviewResult.output);
         // Log re-verify cost
         if (hookDeps) {
           await hookDeps.log(costLogDir, task.id, "re-verify", reviewResult.costUsd);
@@ -1238,6 +1264,8 @@ export async function runCompletionLoop(
 
       await guardBranch();
 
+      // Save raw output for debugging (black box recorder)
+      await saveRawOutput(taskDir, "preflight", 0, preflightResult.output);
       // Log cost immediately — even if parsing fails, spend is captured
       await logCost(costLogDir, task.id, "preflight", preflightResult.costUsd);
       await logEvent(costLogDir, {
@@ -1574,6 +1602,7 @@ export async function runCompletionLoop(
 
         uiInfo(`Phase 1 done [${new Date().toLocaleTimeString()}] (${planResult.durationMs}ms, $${planResult.costUsd.toFixed(4)}, exit=${planResult.exitCode})`);
         await writeFile(join(taskDir, "plan.md"), planResult.output, "utf-8");
+        await saveRawOutput(taskDir, "plan", attempt, planResult.output);
         await logCost(costLogDir, task.id, "plan", planResult.costUsd);
         await logEvent(costLogDir, {
           taskId: task.id,
@@ -1655,6 +1684,7 @@ export async function runCompletionLoop(
         progressSeparator + executeResult.output,
         "utf-8",
       );
+      await saveRawOutput(taskDir, "execute", attempt, executeResult.output);
       await logCost(costLogDir, task.id, "execute", executeResult.costUsd);
       await logEvent(costLogDir, {
         taskId: task.id,
@@ -1774,6 +1804,7 @@ export async function runCompletionLoop(
         reviewResult.output,
         "utf-8",
       );
+      await saveRawOutput(taskDir, "review", attempt, reviewResult.output);
       await logCost(costLogDir, task.id, "review", reviewResult.costUsd);
       await logEvent(costLogDir, {
         taskId: task.id,

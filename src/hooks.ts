@@ -8,6 +8,7 @@ import type { Config, Hook, HookTrigger } from "./config.js";
 import type { Task } from "./tasks/types.js";
 import { uiWarn } from "./ui.js";
 import { logEvent } from "./logger.js";
+import { saveRawOutput } from "./loop.js";
 
 export interface HookContext {
   task: Task;
@@ -551,9 +552,15 @@ export async function runHooks(
   const results: HookResult[] = [];
   const logDir = join(process.cwd(), ".hootl", "logs");
 
-  for (const hook of matchingHooks) {
+  const taskDir = join(process.cwd(), ".hootl", "tasks", context.task.id);
+
+  for (let hookIndex = 0; hookIndex < matchingHooks.length; hookIndex++) {
+    const hook = matchingHooks[hookIndex]!;
     const result = await runHook(hook, context, deps);
     results.push(result);
+
+    // Save raw hook output for debugging (black box recorder)
+    await saveRawOutput(taskDir, `hook-${triggerPoint}`, hookIndex, result.output);
 
     // Log cost for this hook invocation
     await deps.log(logDir, context.task.id, `hook:${triggerPoint}`, result.costUsd);
