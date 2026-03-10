@@ -26,6 +26,7 @@ src/
   discuss.ts          Interactive Claude session launcher (stdio: 'inherit' for full TTY control)
   config.ts           Zod-validated config. 3-layer merge: ~/.hootl/config.json < .hootl/config.json < env vars
   context.ts          Project context gathering for plan command (spec, structure, tasks, git log)
+  extract-json.ts     Shared multi-candidate JSON extraction from Claude's free-form text output (code-block, reverse/forward brace-matching)
   budget.ts           Global daily budget enforcement (reads cost.csv, checks against budgets.global)
   loop.ts             Core completion loop (preflight -> auto-promote check -> plan -> execute -> review). Budget/attempt tracking
   invoke.ts           Wrapper around `claude -p` via execa. Parses cost from JSON output. Envelope leak prevention
@@ -94,6 +95,16 @@ All `claude -p` calls go through `invokeClaude()` in `src/invoke.ts`. Critical d
 - Timeout: 5 minutes per call (exit code 124 on timeout)
 - `is_error: true` in JSON response is treated as exit code 1
 - **Transient error retry**: Timeouts (exit code 124), rate limits (429/"rate limit"), and network errors (ECONNREFUSED, ENOTFOUND, ETIMEDOUT, ECONNRESET) are retried with exponential backoff (1s, 2s, 4s) up to 3 times inside `invokeClaude()`. Cost is accumulated across retries for accurate budget tracking. The `sleep` function is injectable via `InvokeClaudeDeps` for testability. The loop in `src/loop.ts` still handles transient errors as a fallback if all invoke-level retries are exhausted.
+
+### JSON Extraction from Claude Output
+
+`parseReviewResult()`, `parsePreflightResult()` (loop.ts) and `parseHookResult()` (hooks.ts) extract JSON from Claude's free-form text output via `extractJsonCandidates()` in `extract-json.ts`. The shared helper uses a 3-candidate strategy:
+
+1. **Code-block extraction**: regex for `` ```json ... ``` `` — fails when JSON string values contain nested code fences (e.g. `remediationPlan` with `` ```typescript `` blocks), because the lazy regex stops at the first `` ``` `` it finds
+2. **Reverse brace-matching**: find last `}`, walk backwards counting `{`/`}` depth to find matching `{` — handles prose with stray `{` characters before the JSON (e.g. `${goalId}`)
+3. **Forward brace-matching**: find first `{`, walk forward counting depth — fallback for simple cases
+
+Known limitation: brace-matching counts `{`/`}` characters without JSON string awareness. Unbalanced braces inside JSON string values (e.g. a code snippet with a lone `{`) could throw off depth counting. In practice this is rare because code examples tend to have balanced braces.
 
 ### UI / gum Integration
 

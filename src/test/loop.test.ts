@@ -157,6 +157,28 @@ Please address the issues above.`;
     assert.ok(result.remediationPlan.includes("Extract helper"));
   });
 
+  it("extracts JSON when prose has curly braces AND remediationPlan has nested code fences", () => {
+    // Reproduces the real failure: reviewer prose mentions ${goalId} (contains {})
+    // AND the remediationPlan contains ```typescript code blocks inside the JSON string.
+    // Both the code-block regex and the old forward brace regex fail here.
+    const input = 'Message now says for goal "${goalId}".\n\n```json\n' + JSON.stringify({
+      confidence: 81,
+      summary: "Core implementation correct",
+      issues: ["tests replicate filtering logic inline"],
+      suggestions: ["add unit tests for exported functions"],
+      blockers: [],
+      remediationPlan: "### 1. Add tests\n```typescript\nimport { filterTasksByGoal } from '../selection.js';\n\ndescribe('filterTasksByGoal', () => {\n  it('filters', () => { assert.ok(true); });\n});\n```\n### 2. Done",
+      remediationItems: [{ category: "testCoverage", title: "Add unit tests", diffMarkers: ["filterTasksByGoal("], weight: 4.5 }],
+    }) + "\n```";
+
+    const result = parseReviewResult(input);
+    assert.equal(result.confidence, 81);
+    assert.equal(result.summary, "Core implementation correct");
+    assert.ok(result.remediationPlan.includes("Add tests"));
+    assert.equal(result.remediationItems.length, 1);
+    assert.equal(result.remediationItems[0]?.title, "Add unit tests");
+  });
+
   it("returns 0 confidence when confidence is a string", () => {
     const input = JSON.stringify({
       confidence: "85",

@@ -9,6 +9,7 @@ import type { Task } from "./tasks/types.js";
 import { uiWarn } from "./ui.js";
 import { logEvent } from "./logger.js";
 import { saveRawOutput } from "./raw-output.js";
+import { extractJsonCandidates } from "./extract-json.js";
 
 export interface HookContext {
   task: Task;
@@ -294,50 +295,7 @@ export function parseHookResult(output: string, _depth = 0): {
   // Guard against infinite recursion from nested envelope unwrapping
   if (_depth > 1) return defaultResult;
 
-  // Multi-candidate extraction strategy (same pattern as parseReviewResult in loop.ts).
-  // Hooks (especially simplify) produce lots of prose/code with curly braces before
-  // the actual JSON result at the end, so forward brace-matching grabs the wrong thing.
-  const candidates: string[] = [];
-
-  // Candidate 1: code-block extraction (```json ... ```)
-  const codeBlockMatch = /```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/.exec(output);
-  if (codeBlockMatch?.[1]) {
-    candidates.push(codeBlockMatch[1].trim());
-  }
-
-  // Candidate 2: reverse brace-matching — find last }, walk backwards to matching {
-  const lastClose = output.lastIndexOf("}");
-  if (lastClose !== -1) {
-    let depth = 0;
-    for (let i = lastClose; i >= 0; i--) {
-      if (output[i] === "}") depth++;
-      else if (output[i] === "{") {
-        depth--;
-        if (depth === 0) {
-          candidates.push(output.slice(i, lastClose + 1));
-          break;
-        }
-      }
-    }
-  }
-
-  // Candidate 3: forward brace-matching (original behavior, fallback)
-  const firstBrace = output.indexOf("{");
-  if (firstBrace !== -1) {
-    let depth = 0;
-    for (let i = firstBrace; i < output.length; i++) {
-      if (output[i] === "{") depth++;
-      else if (output[i] === "}") {
-        depth--;
-        if (depth === 0) {
-          candidates.push(output.slice(firstBrace, i + 1));
-          break;
-        }
-      }
-    }
-  }
-
-  // Try each candidate, return the first that parses as a valid JSON object
+  const candidates = extractJsonCandidates(output);
   for (const candidate of candidates) {
     try {
       const parsed: unknown = JSON.parse(candidate);

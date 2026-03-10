@@ -16,6 +16,7 @@ import { runHooks } from "./hooks.js";
 import type { HookContext, HookDeps, HookResult } from "./hooks.js";
 import { logEvent } from "./logger.js";
 import { saveRawOutput } from "./raw-output.js";
+import { extractJsonCandidates } from "./extract-json.js";
 
 export async function readFileOrEmpty(path: string): Promise<string> {
   try {
@@ -275,18 +276,7 @@ export function parseReviewResult(output: string): ReviewResult {
     remediationItems: [],
   };
 
-  // Try to extract JSON from the output — it may be wrapped in markdown code blocks
-  const codeBlockMatch = /```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/.exec(output);
-  const jsonCandidate = codeBlockMatch ? codeBlockMatch[1] : output;
-
-  // Try parsing the candidate directly, then fall back to brace matching.
-  // Always try brace matching — code block extraction can fail when the JSON
-  // contains nested code fences (e.g. remediationPlan with ```typescript blocks).
-  const candidates: string[] = [jsonCandidate ?? ""];
-  const braceMatch = /\{[\s\S]*\}/.exec(output);
-  if (braceMatch && braceMatch[0] !== jsonCandidate) {
-    candidates.push(braceMatch[0]);
-  }
+  const candidates = extractJsonCandidates(output);
 
   for (const candidate of candidates) {
     try {
@@ -365,16 +355,7 @@ export function parsePreflightResult(output: string): PreflightResult {
     reproductionResult: "",
   };
 
-  // Same robust JSON extraction as parseReviewResult:
-  // Try code block first, then brace-matching fallback
-  const codeBlockMatch = /```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/.exec(output);
-  const jsonCandidate = codeBlockMatch ? codeBlockMatch[1] : output;
-
-  const candidates: string[] = [jsonCandidate ?? ""];
-  const braceMatch = /\{[\s\S]*\}/.exec(output);
-  if (braceMatch && braceMatch[0] !== jsonCandidate) {
-    candidates.push(braceMatch[0]);
-  }
+  const candidates = extractJsonCandidates(output);
 
   for (const candidate of candidates) {
     try {
