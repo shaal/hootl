@@ -111,6 +111,7 @@ const STALE_ARTIFACTS = [
   "blockers.md",
   "test_results.md",
   "last_confidence.txt",
+  "last_review_sha.txt",
 ] as const;
 
 export interface StaleBranchOpts {

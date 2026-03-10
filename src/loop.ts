@@ -1190,6 +1190,7 @@ export async function runCompletionLoop(
   // Load previous confidence from persistence file (supports cross-run rollback detection)
   let previousConfidence: number | null = null;
   const lastConfidencePath = join(taskDir, "last_confidence.txt");
+  const lastReviewShaPath = join(taskDir, "last_review_sha.txt");
   try {
     const stored = await readFileOrEmpty(lastConfidencePath);
     if (stored.trim().length > 0) {
@@ -1475,6 +1476,47 @@ export async function runCompletionLoop(
       );
       await recordMemory(updatedAttemptsTask, getProjectDir());
       break;
+    }
+
+    // Fast path: skip plan+execute when confidence already met on a clean, unchanged branch
+    if (currentTask.confidence >= config.confidence.target) {
+      let dirtyTree = true;
+      try { dirtyTree = await hasUncommittedChanges(worktreePath); } catch { /* assume dirty */ }
+      if (!dirtyTree) {
+        let lastReviewSha: string | null = null;
+        try {
+          const stored = (await readFileOrEmpty(lastReviewShaPath)).trim();
+          if (stored.length > 0) lastReviewSha = stored;
+        } catch { /* ignore */ }
+        let headSha: string | null = null;
+        try { headSha = await getHeadSha(worktreePath); } catch { /* ignore */ }
+        if (lastReviewSha !== null && headSha === lastReviewSha) {
+          uiInfo(`Confidence ${currentTask.confidence}% >= ${config.confidence.target}% target, branch clean and unchanged — skipping to hook.`);
+          await logEvent(costLogDir, {
+            taskId: task.id,
+            type: "decision",
+            data: { decision: "skip_to_hook", details: `${currentTask.confidence}% >= ${config.confidence.target}% target, no dirty files, HEAD ${headSha?.slice(0, 8)} matches last review` },
+          });
+          const result = await handleConfidenceMet(
+            currentTask, config, backend, taskBranch, baseBranch, taskDir, cliFlags, hookDeps, verbose, worktreePath,
+          );
+          if (result.state === "in_progress") {
+            uiInfo("Blocking hook applied fixes — retrying.");
+            continue;
+          }
+          if (result.state === "blocked") {
+            const blockedTask = await backend.getTask(task.id);
+            await recordMemory(blockedTask, getProjectDir());
+            break;
+          }
+          const doneTask = await backend.getTask(task.id);
+          await recordMemory(doneTask, getProjectDir());
+          if (result.mergedSuccessfully) {
+            taskBranch = null;
+          }
+          break;
+        }
+      }
     }
 
     // Increment attempts
@@ -1804,6 +1846,11 @@ export async function runCompletionLoop(
       // Persist confidence for cross-run rollback detection
       previousConfidence = review.confidence;
       await writeFile(lastConfidencePath, String(review.confidence), "utf-8");
+      // Persist HEAD SHA so the skip-to-hook fast path can detect unchanged branches
+      try {
+        const reviewHeadSha = await getHeadSha(worktreePath);
+        await writeFile(lastReviewShaPath, reviewHeadSha, "utf-8");
+      } catch { /* best-effort — fast path will simply not trigger if missing */ }
 
       // Check if we've reached the target
       if (review.confidence >= config.confidence.target) {
