@@ -951,6 +951,94 @@ export async function handleTooBroad(
   return { createdIds, updatedTask };
 }
 
+/**
+ * Decompose a failed remediation plan into sequential subtasks.
+ *
+ * When the execute phase fails while a remediation plan is active and there are 2+ structured
+ * remediationItems, this function creates one subtask per item (sorted by weight descending,
+ * capped at 5 with low-weight merging). Subtasks are chained with sequential dependencies
+ * and inherit the parent's branch, worktree, goal, priority, and type.
+ *
+ * Unlike handleTooBroad, understanding.md is preserved — the parent's understanding is still
+ * valid since decomposition is about execution breakdown, not re-scoping.
+ */
+export async function handleRemediationDecomposition(
+  backend: TaskBackend,
+  currentTask: Task,
+  remediationItems: RemediationItem[],
+  taskDir: string,
+): Promise<{ createdIds: string[]; updatedTask: Task }> {
+  // Sort by weight descending so highest-impact items execute first
+  const sorted = [...remediationItems].sort((a, b) => b.weight - a.weight);
+
+  // Cap at 5 subtasks: merge overflow items into the 5th slot
+  const MAX_SUBTASKS = 5;
+  let items: RemediationItem[];
+  if (sorted.length <= MAX_SUBTASKS) {
+    items = sorted;
+  } else {
+    items = sorted.slice(0, MAX_SUBTASKS - 1);
+    const overflow = sorted.slice(MAX_SUBTASKS - 1);
+    const merged: RemediationItem = {
+      category: overflow.map((o) => o.category).join(", "),
+      title: overflow.map((o) => o.title).join(" + "),
+      diffMarkers: overflow.flatMap((o) => o.diffMarkers),
+      weight: overflow.reduce((sum, o) => sum + o.weight, 0),
+    };
+    items.push(merged);
+  }
+
+  const createdIds: string[] = [];
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i]!;
+    const description = [
+      `[${item.category}] ${item.title}`,
+      ...(item.diffMarkers.length > 0 ? [`Diff markers: ${item.diffMarkers.join(", ")}`] : []),
+    ].join("\n");
+
+    const created = await backend.createTask({
+      title: item.title,
+      description,
+      priority: currentTask.priority,
+      type: currentTask.type,
+      dependencies: [],
+    });
+
+    // Move to ready, assign fractional userPriority, inherit goal/branch/worktree
+    const subtaskUpdate: Partial<Task> = {
+      state: "ready",
+      branch: currentTask.branch,
+      worktree: currentTask.worktree,
+    };
+    if (currentTask.userPriority !== null) {
+      subtaskUpdate.userPriority = currentTask.userPriority + (i + 1) / (items.length + 1);
+    }
+    if (currentTask.goal !== null) {
+      subtaskUpdate.goal = currentTask.goal;
+    }
+    await backend.updateTask(created.id, subtaskUpdate);
+    createdIds.push(created.id);
+  }
+
+  // Wire chained sequential dependencies: subtask[1] depends on subtask[0], etc.
+  for (let i = 1; i < createdIds.length; i++) {
+    const depId = createdIds[i - 1]!;
+    const subtaskId = createdIds[i]!;
+    await backend.updateTask(subtaskId, { dependencies: [depId] });
+  }
+
+  // Update parent: add subtask IDs as dependencies, add blocker note
+  const idList = createdIds.join(", ");
+  const note = `Decomposed remediation into subtasks: ${idList}`;
+  const updatedTask = await backend.updateTask(currentTask.id, {
+    state: "ready",
+    dependencies: [...currentTask.dependencies, ...createdIds],
+    blockers: [...currentTask.blockers, note],
+  });
+
+  return { createdIds, updatedTask };
+}
+
 async function recordMemory(task: Task, projectDir: string): Promise<void> {
   try {
     const entry = generateMemoryEntry(task);
@@ -1958,6 +2046,30 @@ export async function runCompletionLoop(
         currentTask = await backend.updateTask(task.id, {
           totalCost: currentTask.totalCost + phaseCost,
         });
+      }
+
+      // Remediation decomposition: if we have 2+ remediation items from the last review,
+      // decompose into subtasks instead of retrying the entire plan.
+      // Note: we check lastRemediationItems (not hasRemediationPlan) because
+      // hasRemediationPlan is reset to false when the plan phase is skipped,
+      // which happens BEFORE the execute phase — so it's already false here.
+      // One-time guard: the blocker note prevents re-decomposition if the parent loops back.
+      if (
+        config.remediation.decompose &&
+        lastRemediationItems.length >= 2 &&
+        currentTask.attempts < config.budgets.maxAttemptsPerTask &&
+        !currentTask.blockers.some((b) => b.startsWith("Decomposed remediation"))
+      ) {
+        uiInfo(`Execute failed with remediation plan — decomposing ${lastRemediationItems.length} items into subtasks`);
+        const { createdIds } = await handleRemediationDecomposition(
+          backend, currentTask, lastRemediationItems, taskDir,
+        );
+        await logEvent(costLogDir, {
+          taskId: task.id,
+          type: "decision",
+          data: { decision: "remediation_decomposed", details: `Created ${createdIds.length} subtasks: ${createdIds.join(", ")}` },
+        });
+        break; // Exit the completion loop — subtasks will handle it
       }
 
       // Transient errors (empty output, timeouts) → continue looping

@@ -31,6 +31,10 @@ const AutoSchema = z.object({
   maxParallel: z.number().default(1),
 });
 
+const RemediationSchema = z.object({
+  decompose: z.boolean().default(true),
+});
+
 const NotificationsSchema = z.object({
   terminal: z.boolean().default(true),
   osNotify: z.boolean().default(false),
@@ -73,6 +77,7 @@ export const ConfigSchema = z.object({
   git: GitSchema.default({}),
   auto: AutoSchema.default({}),
   notifications: NotificationsSchema.default({}),
+  remediation: RemediationSchema.default({}),
   hooks: HooksSchema,
   permissionMode: z.string().default("default"),
 });
@@ -109,6 +114,7 @@ const ENV_MAP: Record<string, string[]> = {
   HOOTL_NOTIFICATIONS_OS_NOTIFY: ["notifications", "osNotify"],
   HOOTL_NOTIFICATIONS_SUMMARY_FILE: ["notifications", "summaryFile"],
   HOOTL_NOTIFICATIONS_WEBHOOK: ["notifications", "webhook"],
+  HOOTL_REMEDIATION_DECOMPOSE: ["remediation", "decompose"],
   HOOTL_PERMISSION_MODE: ["permissionMode"],
 };
 
