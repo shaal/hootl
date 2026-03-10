@@ -1,4 +1,4 @@
-type PlanTask = { title: string; description: string; priority?: string; type?: string; dependsOn?: number[] };
+type PlanTask = { title: string; description: string; priority?: string; type?: string; dependsOn?: number[]; group?: string };
 
 /**
  * Extract a JSON array of task objects from Claude's plan response.

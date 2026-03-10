@@ -110,4 +110,42 @@ describe("extractTaskArray", () => {
   it("returns null for a JSON object (not array)", () => {
     assert.equal(extractTaskArray('{"title": "not an array"}'), null);
   });
+
+  // ── group field preservation ──────────────────────────────────────
+
+  it("preserves group field in parsed tasks", () => {
+    const tasks = [
+      { title: "Add git hooks", description: "Set up hooks", priority: "high", group: "Git Integration" },
+      { title: "Add logging", description: "Set up logging", priority: "medium", group: "Observability" },
+    ];
+    const result = extractTaskArray(JSON.stringify(tasks));
+    assert.ok(result);
+    assert.equal(result.length, 2);
+    assert.equal(result[0]?.group, "Git Integration");
+    assert.equal(result[1]?.group, "Observability");
+  });
+
+  it("returns undefined group for tasks without group field", () => {
+    const tasks = [
+      { title: "Task A", description: "No group", priority: "low" },
+    ];
+    const result = extractTaskArray(JSON.stringify(tasks));
+    assert.ok(result);
+    assert.equal(result.length, 1);
+    assert.equal(result[0]?.group, undefined);
+  });
+
+  it("handles mixed tasks (some with group, some without)", () => {
+    const tasks = [
+      { title: "Task A", description: "Has group", priority: "high", group: "CLI Commands" },
+      { title: "Task B", description: "No group", priority: "medium" },
+      { title: "Task C", description: "Also grouped", priority: "low", group: "CLI Commands" },
+    ];
+    const result = extractTaskArray(JSON.stringify(tasks));
+    assert.ok(result);
+    assert.equal(result.length, 3);
+    assert.equal(result[0]?.group, "CLI Commands");
+    assert.equal(result[1]?.group, undefined);
+    assert.equal(result[2]?.group, "CLI Commands");
+  });
 });

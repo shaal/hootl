@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { loadGoals, saveGoals, GoalSchema } from "../goals.js";
+import { loadGoals, saveGoals, GoalSchema, slugifyGoalId } from "../goals.js";
 import { TaskSchema } from "../tasks/types.js";
 
 let tempDir: string;
@@ -33,6 +33,42 @@ describe("GoalSchema", () => {
 
   it("rejects missing title", () => {
     assert.throws(() => GoalSchema.parse({ id: "g1" }));
+  });
+});
+
+// ── slugifyGoalId ─────────────────────────────────────────────────
+
+describe("slugifyGoalId", () => {
+  it("converts title case to slug", () => {
+    assert.equal(slugifyGoalId("Git Integration"), "git-integration");
+  });
+
+  it("converts multi-word titles", () => {
+    assert.equal(slugifyGoalId("CLI Commands"), "cli-commands");
+  });
+
+  it("collapses multiple spaces and dashes", () => {
+    assert.equal(slugifyGoalId("  Spaces  and--dashes  "), "spaces-and-dashes");
+  });
+
+  it("returns 'ungrouped' for empty string", () => {
+    assert.equal(slugifyGoalId(""), "ungrouped");
+  });
+
+  it("returns 'ungrouped' for whitespace-only input", () => {
+    assert.equal(slugifyGoalId("   "), "ungrouped");
+  });
+
+  it("handles special characters", () => {
+    assert.equal(slugifyGoalId("Test & Debug (v2)"), "test-debug-v2");
+  });
+
+  it("handles single word", () => {
+    assert.equal(slugifyGoalId("Logging"), "logging");
+  });
+
+  it("strips leading/trailing hyphens from punctuation", () => {
+    assert.equal(slugifyGoalId("--hello--world--"), "hello-world");
   });
 });
 

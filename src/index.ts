@@ -41,7 +41,7 @@ import { critiquePlan } from "./plan-review.js";
 import { generatePlanSummary, confirmPlan } from "./plan-summary.js";
 import { formatPlanningMemoryContext } from "./plan-memory.js";
 import { extractTaskArray } from "./parse-tasks.js";
-import { loadGoals, saveGoals } from "./goals.js";
+import { loadGoals, saveGoals, createGoalsFromGroups } from "./goals.js";
 import { logsCommand } from "./logs.js";
 
 function getBackend(config: Config): TaskBackend {
@@ -173,6 +173,7 @@ async function planCommand(cliMode?: { fromSpec?: boolean; goal?: string; analyz
   await autoInit();
   const config = await loadConfig();
   const backend = getBackend(config);
+  const hootlDir = join(process.cwd(), ".hootl");
 
   const ctx = await uiSpinner("Gathering project context...", () =>
     gatherProjectContext(backend),
@@ -209,8 +210,9 @@ async function planCommand(cliMode?: { fromSpec?: boolean; goal?: string; analyz
   }
 
   const jsonSchemaInstruction =
-    `Return ONLY a JSON array of objects with "title", "description", "priority", and optionally "dependsOn" fields.\n` +
+    `Return ONLY a JSON array of objects with "title", "description", "priority", "group", and optionally "dependsOn" fields.\n` +
     `Priority must be one of: "critical", "high", "medium", "low".\n` +
+    `"group" is a short label (2-4 words) for the functional area this task belongs to (e.g. "Git Integration", "Budget System", "CLI Commands"). Tasks with the same group will be clustered into a goal.\n` +
     `If a task depends on another task in this list being completed first, include a "dependsOn" array with the 0-based indices of those prerequisite tasks (e.g. "dependsOn": [0, 2] means this task depends on the 1st and 3rd tasks). Tasks with no dependencies should omit this field or use an empty array.\n`;
 
   let prompt: string;
@@ -281,7 +283,7 @@ async function planCommand(cliMode?: { fromSpec?: boolean; goal?: string; analyz
     return;
   }
 
-  let tasks: Array<{ title: string; description: string; priority?: string; type?: string; dependsOn?: number[] }>;
+  let tasks: Array<{ title: string; description: string; priority?: string; type?: string; dependsOn?: number[]; group?: string }>;
   try {
     const parsed = extractTaskArray(result.output);
     if (!parsed) {
@@ -363,7 +365,7 @@ async function planCommand(cliMode?: { fromSpec?: boolean; goal?: string; analyz
           if (!Array.isArray(parsed)) {
             throw new Error("Revision response is not an array");
           }
-          tasks = parsed as Array<{ title: string; description: string; priority?: string; type?: string; dependsOn?: number[] }>;
+          tasks = parsed as Array<{ title: string; description: string; priority?: string; type?: string; dependsOn?: number[]; group?: string }>;
         } catch {
           uiError("Could not parse revised tasks from Claude response.");
           uiWarn("Keeping the original plan.");
@@ -432,6 +434,15 @@ async function planCommand(cliMode?: { fromSpec?: boolean; goal?: string; analyz
     priorityCounts.set(label, (priorityCounts.get(label) ?? 0) + 1);
 
     uiInfo(`Created task ${created.id}: ${created.title} [${label}]`);
+  }
+
+  // Pass 1.5: Create goals from group labels and assign tasks
+  const goalResult = await createGoalsFromGroups(tasks, indexToId, backend, hootlDir);
+  for (const goalId of goalResult.created) {
+    uiInfo(`Created goal: ${goalId}`);
+  }
+  if (goalResult.assigned > 0) {
+    uiInfo(`Assigned ${goalResult.assigned} task(s) to goals.`);
   }
 
   // Pass 2: Wire up dependencies now that all IDs are known
