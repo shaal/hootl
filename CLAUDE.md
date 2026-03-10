@@ -40,6 +40,7 @@ src/
   idle-wait.ts        Idle retry logic for auto command when sibling instances hold all tasks
   hooks.ts            Hook execution engine (filter, prompt resolution, run, orchestrate)
   logger.ts           Structured JSONL event logger (run_start, phase_start/end, state_change, decision, error, hook_run, budget_check, rollback)
+  raw-output.ts       Black box recorder: saves raw claude -p output to task logs/ directory
   notify.ts           OS notifications (macOS osascript, Linux notify-send) for task events
   instances.ts        Instance registry: PID-based tracking of active hootl processes
   status.ts           Status summary writer (grouped by state)

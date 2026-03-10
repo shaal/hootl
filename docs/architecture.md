@@ -408,6 +408,20 @@ The plan system prompt (`templates/plan.md`) enforces two key constraints:
 1. **Concrete first** -- Task 1 must deliver the specific thing the user asked for, even if hardcoded. Abstraction and generalization come in later tasks. This prevents the planner from jumping to framework design before solving the actual problem.
 2. **Plan size scrutiny** -- Plans exceeding 5-6 tasks should be questioned. Large plans often indicate premature abstraction. Tasks that only serve generalization or future-proofing should be pushed to the end or dropped.
 
+## Raw Output Logging (Black Box Recorder)
+
+After each `invokeClaude()` call in the completion loop, the full raw output is saved to
+`.hootl/tasks/<id>/logs/<phase>-<attempt>.txt` (e.g., `plan-1.txt`, `execute-2.txt`,
+`review-1.txt`, `preflight-0.txt`). Hook outputs are saved as
+`hook-<trigger>-<attempt>-<hookIndex>.txt`. Re-verification outputs use `re-verify-<count>.txt`.
+
+This preserves the exact Claude response for debugging, separate from processed context files
+(plan.md, progress.md, test_results.md) which may be truncated, parsed, or overwritten.
+The `logs/` subdirectory is created automatically inside each task directory.
+
+Save calls are positioned before error handling so output is preserved even when phases fail.
+All saves are wrapped in try/catch so logging failures never crash the loop.
+
 ## Plan Self-Review (Critique Pass)
 
 After the planner generates tasks, a second `claude -p` call critiques the plan before writing tasks to disk (`src/plan-review.ts`). The critique checks:

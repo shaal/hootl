@@ -32,9 +32,6 @@ export async function readFileOrEmpty(path: string): Promise<string> {
   }
 }
 
-// Re-export saveRawOutput from its dedicated module for backward compatibility
-export { saveRawOutput } from "./raw-output.js";
-
 export interface Checkpoint {
   phase: string;
   attempt: number;
