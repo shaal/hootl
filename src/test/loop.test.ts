@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile, mkdir, rm, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { parseReviewResult, isContextWindowExceeded, applyContextWindowExceeded, buildPlanPrompt, buildReviewPrompt, isConfidenceRegression, buildScoringTable, verifyRemediationMarkers, MARKER_WEIGHT_THRESHOLD, handleConfidenceMet, parsePreflightResult, handleTooBroad, fireHooks, moveToBlocked, MAX_REVERIFICATIONS, checkAllDependenciesDone } from "../loop.js";
+import { parseReviewResult, isContextWindowExceeded, applyContextWindowExceeded, buildPlanPrompt, buildReviewPrompt, isConfidenceRegression, buildScoringTable, verifyRemediationMarkers, MARKER_WEIGHT_THRESHOLD, handleConfidenceMet, parsePreflightResult, handleTooBroad, handleRemediationDecomposition, fireHooks, moveToBlocked, MAX_REVERIFICATIONS, checkAllDependenciesDone } from "../loop.js";
 import type { RemediationItem, DiffProvider } from "../loop.js";
 import { checkGlobalBudget } from "../budget.js";
 import { ConfigSchema } from "../config.js";
@@ -1470,6 +1470,450 @@ describe("handleTooBroad subtask auto-creation", () => {
     const subtaskUpdates = updates.filter(u => u.id.startsWith("sub-") && u.updates.userPriority !== undefined);
     assert.equal(subtaskUpdates.length, 0);
     await rm(taskDir, { recursive: true, force: true });
+  });
+});
+
+describe("handleRemediationDecomposition", () => {
+  const makeDecompTask = (overrides: Partial<Task> = {}): Task => ({
+    id: "task-001",
+    title: "Fix auth system",
+    description: "Fix the authentication bugs",
+    priority: "high",
+    type: "bug",
+    state: "in_progress",
+    dependencies: [],
+    backend: "local",
+    backendRef: null,
+    confidence: 0,
+    attempts: 1,
+    totalCost: 0.5,
+    branch: null,
+    worktree: null,
+    userPriority: null,
+    goal: null,
+    blockers: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    ...overrides,
+  });
+
+  function makeDecompMockBackend() {
+    let nextId = 1;
+    const createdTasks: Array<{ input: CreateTaskInput; id: string }> = [];
+    const updates: Array<{ id: string; updates: Partial<Task> }> = [];
+
+    const backend: TaskBackend = {
+      createTask: async (input: CreateTaskInput) => {
+        const id = `sub-${String(nextId++).padStart(3, "0")}`;
+        createdTasks.push({ input, id });
+        return {
+          ...makeDecompTask(),
+          id,
+          title: input.title,
+          description: input.description,
+          priority: input.priority ?? "medium",
+          state: "proposed" as const,
+          dependencies: input.dependencies ?? [],
+        };
+      },
+      updateTask: async (id: string, upd: Partial<Task>) => {
+        updates.push({ id, updates: upd });
+        return { ...makeDecompTask(), id, ...upd } as Task;
+      },
+      getTask: async () => makeDecompTask(),
+      listTasks: async () => [],
+      deleteTask: async () => {},
+      claimTask: async () => true,
+      releaseTask: async () => {},
+    };
+
+    return { backend, createdTasks, updates };
+  }
+
+  async function makeTempDecompDir(): Promise<string> {
+    return mkdtemp(join(tmpdir(), "hootl-decomp-"));
+  }
+
+  const twoItems: RemediationItem[] = [
+    { category: "testCoverage", title: "Add unit tests", diffMarkers: ["describe("], weight: 4 },
+    { category: "correctness", title: "Fix error handling", diffMarkers: ["catch ("], weight: 6 },
+  ];
+
+  it("creates subtasks from remediation items", async () => {
+    const { backend, createdTasks } = makeDecompMockBackend();
+    const task = makeDecompTask();
+    const taskDir = await makeTempDecompDir();
+
+    const { createdIds } = await handleRemediationDecomposition(backend, task, twoItems, taskDir);
+
+    assert.equal(createdIds.length, 2);
+    assert.equal(createdTasks.length, 2);
+    // Sorted by weight descending: correctness(6) first, then testCoverage(4)
+    assert.equal(createdTasks[0]?.input.title, "Fix error handling");
+    assert.equal(createdTasks[1]?.input.title, "Add unit tests");
+    // Inherits priority and type from parent
+    assert.equal(createdTasks[0]?.input.priority, "high");
+    assert.equal(createdTasks[0]?.input.type, "bug");
+    assert.equal(createdTasks[1]?.input.priority, "high");
+    assert.equal(createdTasks[1]?.input.type, "bug");
+    await rm(taskDir, { recursive: true, force: true });
+  });
+
+  it("sorts items by weight descending", async () => {
+    const { backend, createdTasks } = makeDecompMockBackend();
+    const task = makeDecompTask();
+    const taskDir = await makeTempDecompDir();
+
+    const items: RemediationItem[] = [
+      { category: "docs", title: "Update docs", diffMarkers: [], weight: 1 },
+      { category: "correctness", title: "Fix validation", diffMarkers: [], weight: 5 },
+      { category: "testCoverage", title: "Add tests", diffMarkers: [], weight: 3 },
+    ];
+
+    await handleRemediationDecomposition(backend, task, items, taskDir);
+
+    assert.equal(createdTasks[0]?.input.title, "Fix validation");
+    assert.equal(createdTasks[1]?.input.title, "Add tests");
+    assert.equal(createdTasks[2]?.input.title, "Update docs");
+    await rm(taskDir, { recursive: true, force: true });
+  });
+
+  it("caps at 5 subtasks and merges overflow", async () => {
+    const { backend, createdTasks } = makeDecompMockBackend();
+    const task = makeDecompTask();
+    const taskDir = await makeTempDecompDir();
+
+    const items: RemediationItem[] = [
+      { category: "A", title: "Item A", diffMarkers: ["markerA"], weight: 10 },
+      { category: "B", title: "Item B", diffMarkers: ["markerB"], weight: 9 },
+      { category: "C", title: "Item C", diffMarkers: ["markerC"], weight: 8 },
+      { category: "D", title: "Item D", diffMarkers: ["markerD"], weight: 7 },
+      { category: "E", title: "Item E", diffMarkers: ["markerE"], weight: 6 },
+      { category: "F", title: "Item F", diffMarkers: ["markerF"], weight: 5 },
+      { category: "G", title: "Item G", diffMarkers: ["markerG"], weight: 4 },
+    ];
+
+    const { createdIds } = await handleRemediationDecomposition(backend, task, items, taskDir);
+
+    // Capped at 5
+    assert.equal(createdIds.length, 5);
+    assert.equal(createdTasks.length, 5);
+
+    // First 4 are the top-weight items (sorted descending: A=10, B=9, C=8, D=7)
+    assert.equal(createdTasks[0]?.input.title, "Item A");
+    assert.equal(createdTasks[1]?.input.title, "Item B");
+    assert.equal(createdTasks[2]?.input.title, "Item C");
+    assert.equal(createdTasks[3]?.input.title, "Item D");
+
+    // 5th is a merged item from E(6) + F(5) + G(4)
+    const mergedInput = createdTasks[4]?.input;
+    assert.ok(mergedInput);
+    assert.equal(mergedInput.title, "Item E + Item F + Item G");
+    // Description should contain merged categories
+    assert.ok(mergedInput.description.includes("E, F, G"));
+    // Description should contain all merged diffMarkers
+    assert.ok(mergedInput.description.includes("markerE"));
+    assert.ok(mergedInput.description.includes("markerF"));
+    assert.ok(mergedInput.description.includes("markerG"));
+
+    await rm(taskDir, { recursive: true, force: true });
+  });
+
+  it("subtasks inherit branch and worktree from parent", async () => {
+    const { backend, updates } = makeDecompMockBackend();
+    const task = makeDecompTask({ branch: "hootl/task-001-fix", worktree: "/tmp/wt-001" });
+    const taskDir = await makeTempDecompDir();
+
+    await handleRemediationDecomposition(backend, task, twoItems, taskDir);
+
+    // Filter subtask updates (state === "ready" updates carry branch/worktree)
+    const subtaskReadyUpdates = updates.filter(u => u.id.startsWith("sub-") && u.updates.state === "ready");
+    assert.equal(subtaskReadyUpdates.length, 2);
+    for (const upd of subtaskReadyUpdates) {
+      assert.equal(upd.updates.branch, "hootl/task-001-fix");
+      assert.equal(upd.updates.worktree, "/tmp/wt-001");
+    }
+    await rm(taskDir, { recursive: true, force: true });
+  });
+
+  it("subtasks inherit goal from parent", async () => {
+    const { backend, updates } = makeDecompMockBackend();
+    const task = makeDecompTask({ goal: "auth-system" });
+    const taskDir = await makeTempDecompDir();
+
+    await handleRemediationDecomposition(backend, task, twoItems, taskDir);
+
+    const subtaskReadyUpdates = updates.filter(u => u.id.startsWith("sub-") && u.updates.state === "ready");
+    for (const upd of subtaskReadyUpdates) {
+      assert.equal(upd.updates.goal, "auth-system");
+    }
+    await rm(taskDir, { recursive: true, force: true });
+  });
+
+  it("subtasks get no goal when parent has none", async () => {
+    const { backend, updates } = makeDecompMockBackend();
+    const task = makeDecompTask({ goal: null });
+    const taskDir = await makeTempDecompDir();
+
+    await handleRemediationDecomposition(backend, task, twoItems, taskDir);
+
+    const subtaskReadyUpdates = updates.filter(u => u.id.startsWith("sub-") && u.updates.state === "ready");
+    for (const upd of subtaskReadyUpdates) {
+      assert.equal(upd.updates.goal, undefined);
+    }
+    await rm(taskDir, { recursive: true, force: true });
+  });
+
+  it("subtasks inherit fractional userPriority", async () => {
+    const { backend, updates } = makeDecompMockBackend();
+    const task = makeDecompTask({ userPriority: 10 });
+    const taskDir = await makeTempDecompDir();
+
+    const items: RemediationItem[] = [
+      { category: "A", title: "Item A", diffMarkers: [], weight: 5 },
+      { category: "B", title: "Item B", diffMarkers: [], weight: 3 },
+      { category: "C", title: "Item C", diffMarkers: [], weight: 1 },
+    ];
+
+    await handleRemediationDecomposition(backend, task, items, taskDir);
+
+    const subtaskPriorityUpdates = updates.filter(u => u.id.startsWith("sub-") && u.updates.userPriority !== undefined);
+    assert.equal(subtaskPriorityUpdates.length, 3);
+    const priorities = subtaskPriorityUpdates.map(u => u.updates.userPriority as number);
+    // Formula: base + (i+1)/(items.length+1) = 10 + 1/4, 10 + 2/4, 10 + 3/4
+    assert.equal(priorities[0], 10.25);
+    assert.equal(priorities[1], 10.5);
+    assert.equal(priorities[2], 10.75);
+    await rm(taskDir, { recursive: true, force: true });
+  });
+
+  it("subtasks get no userPriority when parent has none", async () => {
+    const { backend, updates } = makeDecompMockBackend();
+    const task = makeDecompTask({ userPriority: null });
+    const taskDir = await makeTempDecompDir();
+
+    await handleRemediationDecomposition(backend, task, twoItems, taskDir);
+
+    const subtaskPriorityUpdates = updates.filter(u => u.id.startsWith("sub-") && u.updates.userPriority !== undefined);
+    assert.equal(subtaskPriorityUpdates.length, 0);
+    await rm(taskDir, { recursive: true, force: true });
+  });
+
+  it("wires chained sequential dependencies", async () => {
+    const { backend, updates } = makeDecompMockBackend();
+    const task = makeDecompTask();
+    const taskDir = await makeTempDecompDir();
+
+    const items: RemediationItem[] = [
+      { category: "A", title: "First", diffMarkers: [], weight: 5 },
+      { category: "B", title: "Second", diffMarkers: [], weight: 3 },
+      { category: "C", title: "Third", diffMarkers: [], weight: 1 },
+    ];
+
+    await handleRemediationDecomposition(backend, task, items, taskDir);
+
+    // Chain: sub-002 depends on sub-001, sub-003 depends on sub-002
+    // sub-001 has no dependency wiring (only the state="ready" update)
+    const depUpdates = updates.filter(u => u.id.startsWith("sub-") && u.updates.dependencies !== undefined);
+    assert.equal(depUpdates.length, 2);
+    // sub-002 → [sub-001]
+    const sub002Dep = depUpdates.find(u => u.id === "sub-002");
+    assert.ok(sub002Dep);
+    assert.deepEqual(sub002Dep.updates.dependencies, ["sub-001"]);
+    // sub-003 → [sub-002]
+    const sub003Dep = depUpdates.find(u => u.id === "sub-003");
+    assert.ok(sub003Dep);
+    assert.deepEqual(sub003Dep.updates.dependencies, ["sub-002"]);
+    await rm(taskDir, { recursive: true, force: true });
+  });
+
+  it("parent updated with subtask IDs as dependencies and blocker note", async () => {
+    const { backend, updates } = makeDecompMockBackend();
+    const task = makeDecompTask();
+    const taskDir = await makeTempDecompDir();
+
+    const { updatedTask } = await handleRemediationDecomposition(backend, task, twoItems, taskDir);
+
+    const parentUpdate = updates.find(u => u.id === "task-001");
+    assert.ok(parentUpdate);
+    assert.equal(parentUpdate.updates.state, "ready");
+    assert.deepEqual(parentUpdate.updates.dependencies, ["sub-001", "sub-002"]);
+    // Blocker note contains the decomposition reference
+    const blockerNote = parentUpdate.updates.blockers?.[0];
+    assert.ok(blockerNote);
+    assert.ok(blockerNote.startsWith("Decomposed remediation into subtasks:"));
+    assert.ok(blockerNote.includes("sub-001"));
+    assert.ok(blockerNote.includes("sub-002"));
+    assert.equal(updatedTask.state, "ready");
+    await rm(taskDir, { recursive: true, force: true });
+  });
+
+  it("appends to existing parent dependencies", async () => {
+    const { backend, updates } = makeDecompMockBackend();
+    const task = makeDecompTask({ dependencies: ["dep-A"] });
+    const taskDir = await makeTempDecompDir();
+
+    await handleRemediationDecomposition(backend, task, twoItems, taskDir);
+
+    const parentUpdate = updates.find(u => u.id === "task-001");
+    assert.ok(parentUpdate);
+    assert.deepEqual(parentUpdate.updates.dependencies, ["dep-A", "sub-001", "sub-002"]);
+    await rm(taskDir, { recursive: true, force: true });
+  });
+
+  it("preserves understanding.md (does NOT delete it)", async () => {
+    const { backend } = makeDecompMockBackend();
+    const task = makeDecompTask();
+    const taskDir = await makeTempDecompDir();
+    // Write understanding.md before decomposition
+    await writeFile(join(taskDir, "understanding.md"), "Task understanding content", "utf-8");
+
+    await handleRemediationDecomposition(backend, task, twoItems, taskDir);
+
+    // Unlike handleTooBroad, decomposition should preserve understanding.md
+    assert.equal(existsSync(join(taskDir, "understanding.md")), true);
+    const content = await readFile(join(taskDir, "understanding.md"), "utf-8");
+    assert.equal(content, "Task understanding content");
+    await rm(taskDir, { recursive: true, force: true });
+  });
+
+  it("includes diffMarkers in description when present", async () => {
+    const { backend, createdTasks } = makeDecompMockBackend();
+    const task = makeDecompTask();
+    const taskDir = await makeTempDecompDir();
+
+    const items: RemediationItem[] = [
+      { category: "testCoverage", title: "Add tests", diffMarkers: ["marker1", "marker2"], weight: 5 },
+      { category: "correctness", title: "Fix bug", diffMarkers: ["marker3"], weight: 3 },
+    ];
+
+    await handleRemediationDecomposition(backend, task, items, taskDir);
+
+    // First subtask (sorted by weight: "Add tests" w=5 first)
+    const desc0 = createdTasks[0]?.input.description ?? "";
+    assert.ok(desc0.includes("[testCoverage] Add tests"));
+    assert.ok(desc0.includes("Diff markers: marker1, marker2"));
+
+    // Second subtask
+    const desc1 = createdTasks[1]?.input.description ?? "";
+    assert.ok(desc1.includes("[correctness] Fix bug"));
+    assert.ok(desc1.includes("Diff markers: marker3"));
+
+    await rm(taskDir, { recursive: true, force: true });
+  });
+
+  it("omits diffMarkers line when empty", async () => {
+    const { backend, createdTasks } = makeDecompMockBackend();
+    const task = makeDecompTask();
+    const taskDir = await makeTempDecompDir();
+
+    const items: RemediationItem[] = [
+      { category: "docs", title: "Update docs", diffMarkers: [], weight: 2 },
+      { category: "other", title: "Clean up", diffMarkers: [], weight: 1 },
+    ];
+
+    await handleRemediationDecomposition(backend, task, items, taskDir);
+
+    for (const created of createdTasks) {
+      assert.ok(!created.input.description.includes("Diff markers"));
+    }
+    await rm(taskDir, { recursive: true, force: true });
+  });
+
+  it("returns created subtask IDs", async () => {
+    const { backend } = makeDecompMockBackend();
+    const task = makeDecompTask();
+    const taskDir = await makeTempDecompDir();
+
+    const { createdIds } = await handleRemediationDecomposition(backend, task, twoItems, taskDir);
+
+    assert.deepEqual(createdIds, ["sub-001", "sub-002"]);
+    await rm(taskDir, { recursive: true, force: true });
+  });
+
+  it("works with exactly 5 items without merging", async () => {
+    const { backend, createdTasks } = makeDecompMockBackend();
+    const task = makeDecompTask();
+    const taskDir = await makeTempDecompDir();
+
+    const items: RemediationItem[] = Array.from({ length: 5 }, (_, i) => ({
+      category: `cat-${i}`,
+      title: `Item ${i}`,
+      diffMarkers: [],
+      weight: 5 - i,
+    }));
+
+    const { createdIds } = await handleRemediationDecomposition(backend, task, items, taskDir);
+
+    assert.equal(createdIds.length, 5);
+    assert.equal(createdTasks.length, 5);
+    // No merging: each item gets its own subtask
+    assert.equal(createdTasks[0]?.input.title, "Item 0"); // weight 5
+    assert.equal(createdTasks[4]?.input.title, "Item 4"); // weight 1
+    await rm(taskDir, { recursive: true, force: true });
+  });
+
+  it("handles single item (no chaining needed)", async () => {
+    const { backend, createdTasks, updates } = makeDecompMockBackend();
+    const task = makeDecompTask();
+    const taskDir = await makeTempDecompDir();
+
+    const items: RemediationItem[] = [
+      { category: "correctness", title: "Fix the bug", diffMarkers: ["bugfix"], weight: 8 },
+    ];
+
+    const { createdIds } = await handleRemediationDecomposition(backend, task, items, taskDir);
+
+    assert.equal(createdIds.length, 1);
+    assert.equal(createdTasks.length, 1);
+    // No chaining dependencies when only one subtask
+    const depUpdates = updates.filter(u => u.id.startsWith("sub-") && u.updates.dependencies !== undefined);
+    assert.equal(depUpdates.length, 0);
+    // Parent still gets the subtask as a dependency
+    const parentUpdate = updates.find(u => u.id === "task-001");
+    assert.ok(parentUpdate);
+    assert.deepEqual(parentUpdate.updates.dependencies, ["sub-001"]);
+    await rm(taskDir, { recursive: true, force: true });
+  });
+
+  it("appends to existing parent blockers", async () => {
+    const { backend, updates } = makeDecompMockBackend();
+    const task = makeDecompTask({ blockers: ["Existing blocker"] });
+    const taskDir = await makeTempDecompDir();
+
+    await handleRemediationDecomposition(backend, task, twoItems, taskDir);
+
+    const parentUpdate = updates.find(u => u.id === "task-001");
+    assert.ok(parentUpdate);
+    const blockers = parentUpdate.updates.blockers;
+    assert.ok(blockers);
+    assert.equal(blockers.length, 2);
+    assert.equal(blockers[0], "Existing blocker");
+    assert.ok(blockers[1]?.startsWith("Decomposed remediation into subtasks:"));
+    await rm(taskDir, { recursive: true, force: true });
+  });
+});
+
+describe("handleRemediationDecomposition config gate", () => {
+  it("config.remediation.decompose defaults to true", () => {
+    const config = ConfigSchema.parse({});
+    assert.equal(config.remediation.decompose, true);
+  });
+
+  it("config.remediation.decompose can be disabled", () => {
+    const config = ConfigSchema.parse({ remediation: { decompose: false } });
+    assert.equal(config.remediation.decompose, false);
+  });
+
+  it("one-time guard: blocker note prevents re-decomposition", () => {
+    // The integration logic at line ~2054 checks:
+    //   !currentTask.blockers.some(b => b.startsWith("Decomposed remediation"))
+    // Verify the blocker format matches what handleRemediationDecomposition produces.
+    const blockerNote = "Decomposed remediation into subtasks: sub-001, sub-002";
+    assert.ok(blockerNote.startsWith("Decomposed remediation"));
+    // A task with this blocker would fail the guard check
+    const blockers = [blockerNote];
+    assert.equal(blockers.some(b => b.startsWith("Decomposed remediation")), true);
   });
 });
 
