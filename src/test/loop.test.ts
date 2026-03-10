@@ -1,6 +1,6 @@
-import { describe, it } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, mkdir, rm, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { parseReviewResult, isContextWindowExceeded, applyContextWindowExceeded, buildPlanPrompt, buildReviewPrompt, isConfidenceRegression, buildScoringTable, verifyRemediationMarkers, MARKER_WEIGHT_THRESHOLD, handleConfidenceMet, parsePreflightResult, handleTooBroad, fireHooks, moveToBlocked, MAX_REVERIFICATIONS, checkAllDependenciesDone } from "../loop.js";
@@ -11,6 +11,11 @@ import type { TaskBackend, CreateTaskInput } from "../tasks/types.js";
 import type { Task } from "../tasks/types.js";
 import type { HookDeps } from "../hooks.js";
 import type { InvokeResult } from "../invoke.js";
+import type { LogEntry } from "../logger.js";
+import { _setSessionId, getSessionId } from "../logger.js";
+import { getProjectDir } from "../config.js";
+import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 
 describe("parseReviewResult", () => {
   it("extracts fields from clean JSON", () => {
@@ -2277,5 +2282,453 @@ describe("checkAllDependenciesDone", () => {
       getTask: async () => makeTask("done"),
     } as unknown as TaskBackend;
     assert.equal(await checkAllDependenciesDone(backend, []), true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// logEvent integration: verify structured events emitted during loop functions
+// ---------------------------------------------------------------------------
+
+/**
+ * Helper: reads events.jsonl, filters by sessionId, and returns parsed entries.
+ * Uses _setSessionId to isolate events from a specific test run.
+ */
+async function readEventsForSession(sessionId: string): Promise<LogEntry[]> {
+  const eventsPath = join(getProjectDir(), "logs", "events.jsonl");
+  try {
+    const raw = await readFile(eventsPath, "utf-8");
+    return raw
+      .split("\n")
+      .filter((line) => line.trim().length > 0)
+      .map((line) => JSON.parse(line) as LogEntry)
+      .filter((entry) => entry.sessionId === sessionId);
+  } catch {
+    return [];
+  }
+}
+
+describe("logEvent integration in handleConfidenceMet", () => {
+  const makeTask = (overrides: Partial<Task> = {}): Task => ({
+    id: "task-log-001",
+    title: "Log test task",
+    description: "Testing logEvent integration",
+    priority: "medium",
+    type: "feature",
+    state: "in_progress",
+    dependencies: [],
+    backend: "local",
+    backendRef: null,
+    confidence: 95,
+    attempts: 1,
+    totalCost: 0.10,
+    branch: "hootl/task-log-001-test",
+    worktree: null,
+    userPriority: null,
+    goal: null,
+    blockers: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    ...overrides,
+  });
+
+  function makeMockBackend(): { backend: TaskBackend; updates: Array<{ id: string; updates: Partial<Task> }> } {
+    const updates: Array<{ id: string; updates: Partial<Task> }> = [];
+    const backend = {
+      updateTask: async (id: string, upd: Partial<Task>) => {
+        updates.push({ id, updates: upd });
+        return { ...makeTask(), ...upd } as Task;
+      },
+      createTask: async () => makeTask(),
+      getTask: async () => makeTask(),
+      listTasks: async () => [],
+      deleteTask: async () => {},
+      claimTask: async () => true,
+      releaseTask: async () => {},
+    } as TaskBackend;
+    return { backend, updates };
+  }
+
+  const noopHookDeps: HookDeps = {
+    invoke: async () => ({ output: '{"pass": true}', costUsd: 0, exitCode: 0, durationMs: 50 } as InvokeResult),
+    log: async () => {},
+    warn: () => {},
+    commit: async () => false,
+  };
+
+  let originalSessionId: string;
+
+  beforeEach(() => {
+    originalSessionId = getSessionId();
+  });
+
+  afterEach(() => {
+    _setSessionId(originalSessionId);
+  });
+
+  it("emits state_change and decision events for none mode (confidence_met_none)", async () => {
+    const testSessionId = `test-none-${randomUUID()}`;
+    _setSessionId(testSessionId);
+
+    const dir = await mkdtemp(join(tmpdir(), "hootl-log-none-"));
+    try {
+      const { backend } = makeMockBackend();
+      const config = ConfigSchema.parse({ git: { onConfidence: "none" } });
+      await handleConfidenceMet(
+        makeTask(), config, backend, "hootl/task-log-001-test", "main", dir, {}, noopHookDeps,
+      );
+
+      const events = await readEventsForSession(testSessionId);
+      const stateChanges = events.filter((e) => e.type === "state_change");
+      const decisions = events.filter((e) => e.type === "decision");
+
+      // Should have a state_change from in_progress to review
+      assert.ok(stateChanges.length >= 1, "should emit at least one state_change event");
+      const toReview = stateChanges.find(
+        (e) => e.type === "state_change" && e.data.to === "review",
+      );
+      assert.ok(toReview !== undefined, "should emit state_change to review");
+
+      // Should have a confidence_met_none decision
+      const noneDecision = decisions.find(
+        (e) => e.type === "decision" && e.data.decision === "confidence_met_none",
+      );
+      assert.ok(noneDecision !== undefined, "should emit confidence_met_none decision");
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+
+  it("emits state_change and decision events for merge mode (merge_failed fallback)", async () => {
+    const testSessionId = `test-merge-${randomUUID()}`;
+    _setSessionId(testSessionId);
+
+    const dir = await mkdtemp(join(tmpdir(), "hootl-log-merge-"));
+    try {
+      const { backend } = makeMockBackend();
+      const config = ConfigSchema.parse({ git: { onConfidence: "merge" } });
+      // Without a real git repo, mergeBranch fails and falls back to review
+      await handleConfidenceMet(
+        makeTask(), config, backend, "hootl/task-log-001-test", "main", dir, {}, noopHookDeps,
+      );
+
+      const events = await readEventsForSession(testSessionId);
+      const decisions = events.filter((e) => e.type === "decision");
+
+      // merge fails (no real git) so should emit merge_failed decision
+      const mergeFailed = decisions.find(
+        (e) => e.type === "decision" && e.data.decision === "merge_failed",
+      );
+      assert.ok(mergeFailed !== undefined, "should emit merge_failed decision on merge failure");
+
+      const stateChanges = events.filter((e) => e.type === "state_change");
+      const toReview = stateChanges.find(
+        (e) => e.type === "state_change" && e.data.to === "review" && e.data.reason === "Merge failed",
+      );
+      assert.ok(toReview !== undefined, "should emit state_change to review with merge failed reason");
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+
+  it("emits hook_run events during hook execution", async () => {
+    const testSessionId = `test-hookrun-${randomUUID()}`;
+    _setSessionId(testSessionId);
+
+    const dir = await mkdtemp(join(tmpdir(), "hootl-log-hookrun-"));
+    try {
+      const { backend } = makeMockBackend();
+      const config = ConfigSchema.parse({
+        git: { onConfidence: "none" },
+        hooks: [
+          { trigger: "on_confidence_met", prompt: "check quality", blocking: false },
+        ],
+      });
+      const hookDeps: HookDeps = {
+        invoke: async () => ({
+          output: '{"pass": true, "issues": [], "remediationActions": []}',
+          costUsd: 0.03,
+          exitCode: 0,
+          durationMs: 30,
+        } as InvokeResult),
+        log: async () => {},
+        warn: () => {},
+      };
+      await handleConfidenceMet(
+        makeTask(), config, backend, "hootl/task-log-001-test", "main", dir, {}, hookDeps,
+      );
+
+      const events = await readEventsForSession(testSessionId);
+      const hookRuns = events.filter((e) => e.type === "hook_run");
+      assert.ok(hookRuns.length >= 1, "should emit at least one hook_run event");
+      const hookEvent = hookRuns[0]!;
+      assert.equal(hookEvent.type, "hook_run");
+      if (hookEvent.type === "hook_run") {
+        assert.equal(hookEvent.data.trigger, "on_confidence_met");
+        assert.equal(hookEvent.data.passed, true);
+        assert.equal(hookEvent.data.costUsd, 0.03);
+      }
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+
+  it("emits hook_run with fixes_applied when hook returns remediationActions", async () => {
+    const testSessionId = `test-hookfixes-${randomUUID()}`;
+    _setSessionId(testSessionId);
+
+    const dir = await mkdtemp(join(tmpdir(), "hootl-log-hookfixes-"));
+    try {
+      const { backend } = makeMockBackend();
+      const config = ConfigSchema.parse({
+        git: { onConfidence: "none" },
+        hooks: [
+          { trigger: "on_confidence_met", skill: "simplify", blocking: true },
+        ],
+      });
+      let invokeCount = 0;
+      const hookDeps: HookDeps = {
+        invoke: async () => {
+          invokeCount++;
+          if (invokeCount === 1) {
+            return {
+              output: '{"pass": true, "issues": [], "fixes_applied": ["extracted helper function"]}',
+              costUsd: 0.05,
+              exitCode: 0,
+              durationMs: 100,
+            } as InvokeResult;
+          }
+          // Re-verify review
+          if (invokeCount === 2) {
+            return {
+              output: JSON.stringify({ confidence: 97, summary: "Good", issues: [], blockers: [], remediationPlan: "" }),
+              costUsd: 0.02,
+              exitCode: 0,
+              durationMs: 80,
+            } as InvokeResult;
+          }
+          // Re-run hook — no more fixes
+          return {
+            output: '{"pass": true, "issues": [], "fixes_applied": []}',
+            costUsd: 0.01,
+            exitCode: 0,
+            durationMs: 50,
+          } as InvokeResult;
+        },
+        log: async () => {},
+        warn: () => {},
+        commit: async () => false,
+      };
+      await handleConfidenceMet(
+        makeTask(), config, backend, "hootl/task-log-001-test", "main", dir, {}, hookDeps,
+      );
+
+      const events = await readEventsForSession(testSessionId);
+      const hookRuns = events.filter((e) => e.type === "hook_run");
+
+      // First hook_run should have fixes_applied
+      assert.ok(hookRuns.length >= 1, "should emit hook_run events");
+      const firstHookRun = hookRuns[0]!;
+      if (firstHookRun.type === "hook_run") {
+        assert.deepEqual(firstHookRun.data.fixes_applied, ["extracted helper function"]);
+      }
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+
+  it("emits re_verification decision during re-verify loop", async () => {
+    const testSessionId = `test-reverify-${randomUUID()}`;
+    _setSessionId(testSessionId);
+
+    const dir = await mkdtemp(join(tmpdir(), "hootl-log-reverify-"));
+    try {
+      const { backend } = makeMockBackend();
+      const config = ConfigSchema.parse({
+        git: { onConfidence: "none" },
+        hooks: [
+          { trigger: "on_confidence_met", skill: "simplify", blocking: true },
+        ],
+      });
+      let invokeCount = 0;
+      const hookDeps: HookDeps = {
+        invoke: async () => {
+          invokeCount++;
+          if (invokeCount === 1) {
+            return {
+              output: '{"pass": true, "issues": [], "fixes_applied": ["refactored code"]}',
+              costUsd: 0.03,
+              exitCode: 0,
+              durationMs: 100,
+            } as InvokeResult;
+          }
+          if (invokeCount === 2) {
+            return {
+              output: JSON.stringify({ confidence: 96, summary: "All good", issues: [], blockers: [], remediationPlan: "" }),
+              costUsd: 0.02,
+              exitCode: 0,
+              durationMs: 80,
+            } as InvokeResult;
+          }
+          return {
+            output: '{"pass": true, "issues": [], "fixes_applied": []}',
+            costUsd: 0.01,
+            exitCode: 0,
+            durationMs: 50,
+          } as InvokeResult;
+        },
+        log: async () => {},
+        warn: () => {},
+        commit: async () => false,
+      };
+      await handleConfidenceMet(
+        makeTask(), config, backend, "hootl/task-log-001-test", "main", dir, {}, hookDeps,
+      );
+
+      const events = await readEventsForSession(testSessionId);
+      const reVerifyDecisions = events.filter(
+        (e) => e.type === "decision" && e.data.decision === "re_verification",
+      );
+      assert.ok(reVerifyDecisions.length >= 1, "should emit at least one re_verification decision");
+      const firstReVerify = reVerifyDecisions[0]!;
+      if (firstReVerify.type === "decision") {
+        assert.ok(firstReVerify.data.details?.includes("1/"), "should include iteration count");
+      }
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+
+  it("emits pr_created decision and state_change to review for pr mode", async () => {
+    const testSessionId = `test-pr-created-${randomUUID()}`;
+    _setSessionId(testSessionId);
+
+    const dir = await mkdtemp(join(tmpdir(), "hootl-log-pr-"));
+    try {
+      const { backend } = makeMockBackend();
+      const config = ConfigSchema.parse({ git: { onConfidence: "pr" } });
+      // pushBranch will fail (no remote), but the pr_created events are emitted
+      // regardless because the code always transitions to review in pr mode.
+      await handleConfidenceMet(
+        makeTask(), config, backend, "hootl/task-log-001-test", "main", dir, {}, noopHookDeps,
+      );
+
+      const events = await readEventsForSession(testSessionId);
+
+      // Should have a state_change to review with reason "PR created"
+      const stateChanges = events.filter((e) => e.type === "state_change");
+      const toReview = stateChanges.find(
+        (e) => e.type === "state_change" && e.data.to === "review" && e.data.reason === "PR created",
+      );
+      assert.ok(toReview !== undefined, "should emit state_change to review with PR created reason");
+
+      // Should have a pr_created decision
+      const decisions = events.filter((e) => e.type === "decision");
+      const prCreated = decisions.find(
+        (e) => e.type === "decision" && e.data.decision === "pr_created",
+      );
+      assert.ok(prCreated !== undefined, "should emit pr_created decision");
+      if (prCreated !== undefined && prCreated.type === "decision") {
+        assert.ok(
+          prCreated.data.details?.includes("hootl/task-log-001-test"),
+          "pr_created decision details should include branch name",
+        );
+      }
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+});
+
+describe("logEvent integration in moveToBlocked", () => {
+  const makeTask = (overrides: Partial<Task> = {}): Task => ({
+    id: "task-log-mb",
+    title: "Move to blocked log test",
+    description: "Testing logEvent in moveToBlocked",
+    priority: "medium",
+    type: "feature",
+    state: "in_progress",
+    dependencies: [],
+    backend: "local",
+    backendRef: null,
+    confidence: 50,
+    attempts: 3,
+    totalCost: 0.50,
+    branch: "hootl/task-log-mb",
+    worktree: null,
+    userPriority: null,
+    goal: null,
+    blockers: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    ...overrides,
+  });
+
+  function makeMockBackend(): TaskBackend {
+    return {
+      updateTask: async (_id: string, upd: Partial<Task>) => ({ ...makeTask(), ...upd } as Task),
+      createTask: async () => makeTask(),
+      getTask: async () => makeTask(),
+      listTasks: async () => [],
+      deleteTask: async () => {},
+      claimTask: async () => true,
+      releaseTask: async () => {},
+    } as TaskBackend;
+  }
+
+  let originalSessionId: string;
+
+  beforeEach(() => {
+    originalSessionId = getSessionId();
+  });
+
+  afterEach(() => {
+    _setSessionId(originalSessionId);
+  });
+
+  it("emits state_change event with blocker reason", async () => {
+    const testSessionId = `test-blocked-${randomUUID()}`;
+    _setSessionId(testSessionId);
+
+    const backend = makeMockBackend();
+    const config = ConfigSchema.parse({ hooks: [] });
+    const hookDeps: HookDeps = {
+      invoke: async () => ({ output: '{"pass": true}', costUsd: 0, exitCode: 0, durationMs: 0 } as InvokeResult),
+      log: async () => {},
+      warn: () => {},
+    };
+
+    await moveToBlocked(backend, makeTask(), ["Budget exhausted"], "hootl/task-log-mb", "main", 50, config, hookDeps);
+
+    const events = await readEventsForSession(testSessionId);
+    const stateChanges = events.filter((e) => e.type === "state_change");
+    assert.ok(stateChanges.length >= 1, "should emit at least one state_change event");
+    const toBlocked = stateChanges.find(
+      (e) => e.type === "state_change" && e.data.to === "blocked",
+    );
+    assert.ok(toBlocked !== undefined, "should emit state_change to blocked");
+    if (toBlocked !== undefined && toBlocked.type === "state_change") {
+      assert.ok(toBlocked.data.reason?.includes("Budget exhausted"), "reason should include blocker text");
+    }
+  });
+
+  it("includes taskId in all emitted events", async () => {
+    const testSessionId = `test-blocked-id-${randomUUID()}`;
+    _setSessionId(testSessionId);
+
+    const backend = makeMockBackend();
+    const config = ConfigSchema.parse({ hooks: [] });
+    const hookDeps: HookDeps = {
+      invoke: async () => ({ output: '{"pass": true}', costUsd: 0, exitCode: 0, durationMs: 0 } as InvokeResult),
+      log: async () => {},
+      warn: () => {},
+    };
+
+    await moveToBlocked(backend, makeTask(), ["Test failure"], "hootl/task-log-mb", "main", 50, config, hookDeps);
+
+    const events = await readEventsForSession(testSessionId);
+    assert.ok(events.length > 0, "should emit at least one event");
+    for (const event of events) {
+      assert.equal(event.taskId, "task-log-mb", "all events should carry the correct taskId");
+    }
   });
 });
