@@ -1485,8 +1485,8 @@ export async function runCompletionLoop(
       if (!dirtyTree) {
         let lastReviewSha: string | null = null;
         try {
-          const stored = (await readFileOrEmpty(lastReviewShaPath)).trim();
-          if (stored.length > 0) lastReviewSha = stored;
+          const storedSha = (await readFileOrEmpty(lastReviewShaPath)).trim();
+          if (storedSha.length > 0) lastReviewSha = storedSha;
         } catch { /* ignore */ }
         let headSha: string | null = null;
         try { headSha = await getHeadSha(worktreePath); } catch { /* ignore */ }

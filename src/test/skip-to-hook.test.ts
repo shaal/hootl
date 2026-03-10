@@ -362,4 +362,86 @@ process.stdout.write(JSON.stringify({
       }
     } catch { /* best effort */ }
   });
+
+  it("does NOT skip when there are new commits since last review", async () => {
+    const task = await backend.createTask({
+      title: "New-commits task",
+      description: "Task with new commits after last review SHA was recorded",
+    });
+
+    await backend.updateTask(task.id, {
+      state: "in_progress",
+      confidence: 95,
+      attempts: 0,
+    });
+
+    // Create task branch with an initial commit
+    const branchName = `hootl/${task.id}-new-commits-task`;
+    await execa("git", ["checkout", "-b", branchName], { cwd: tmpDir });
+    await writeFile(join(tmpDir, "new-commits-feat.txt"), "initial work");
+    await execa("git", ["add", "new-commits-feat.txt"], { cwd: tmpDir });
+    await execa("git", ["commit", "-m", "initial feature work"], { cwd: tmpDir });
+
+    await backend.updateTask(task.id, { branch: branchName });
+
+    // Record the HEAD SHA as the last review SHA (simulating a previous review)
+    const { stdout: reviewSha } = await execa("git", ["rev-parse", "HEAD"], { cwd: tmpDir });
+
+    const taskDir = join(tasksDir, task.id);
+    await writeFile(join(taskDir, "understanding.md"), "Task understood.");
+    await writeFile(join(taskDir, "last_confidence.txt"), "95");
+    await writeFile(join(taskDir, "last_review_sha.txt"), reviewSha.trim());
+
+    // Add another commit AFTER the review SHA was recorded — HEAD now differs
+    await writeFile(join(tmpDir, "new-commits-feat.txt"), "additional work after review");
+    await execa("git", ["add", "new-commits-feat.txt"], { cwd: tmpDir });
+    await execa("git", ["commit", "-m", "post-review changes"], { cwd: tmpDir });
+
+    // Verify HEAD differs from stored SHA
+    const { stdout: newHead } = await execa("git", ["rev-parse", "HEAD"], { cwd: tmpDir });
+    assert.notEqual(newHead.trim(), reviewSha.trim(), "HEAD should differ from stored review SHA");
+
+    await execa("git", ["checkout", "main"], { cwd: tmpDir });
+
+    const stateFile = join(stateDir, "count-new-commits");
+    process.env["HOOTL_FAKE_CLAUDE_STATE"] = stateFile;
+
+    const config = ConfigSchema.parse({
+      git: { onConfidence: "none" },
+      hooks: [{ trigger: "on_confidence_met" as const, prompt: "ok", blocking: false }],
+      budgets: { maxAttemptsPerTask: 1 },
+    });
+
+    await runCompletionLoop(await backend.getTask(task.id), backend, config);
+
+    // The loop should have run plan+execute+review — NOT the fast path
+    const callCount = parseInt(await readFile(stateFile, "utf-8"), 10);
+    assert.ok(callCount > 1,
+      `Expected > 1 claude calls (loop should run full cycle), got ${callCount}`);
+
+    // Verify NO skip_to_hook decision was logged for THIS task
+    const logsDir = join(tmpDir, ".hootl", "logs");
+    const logFiles = await readdir(logsDir);
+    const eventFiles = logFiles.filter(f => f.endsWith(".jsonl"));
+    let foundSkipEvent = false;
+    for (const f of eventFiles) {
+      const content = await readFile(join(logsDir, f), "utf-8");
+      for (const line of content.split("\n")) {
+        if (line.includes('"skip_to_hook"') && line.includes(task.id)) {
+          foundSkipEvent = true;
+          break;
+        }
+      }
+    }
+    assert.ok(!foundSkipEvent, "Should NOT have a skip_to_hook decision event when HEAD differs from last review SHA");
+
+    // Clean up
+    try {
+      await execa("git", ["checkout", "main"], { cwd: tmpDir });
+      const updated = await backend.getTask(task.id);
+      if (updated.branch) {
+        await execa("git", ["branch", "-D", updated.branch], { cwd: tmpDir });
+      }
+    } catch { /* best effort */ }
+  });
 });

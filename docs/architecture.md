@@ -19,6 +19,8 @@ Each task begins with a one-time preflight validation, then runs through repeate
 
 **Auto-promote (subtask completion shortcut)**: After preflight completes, before entering the attempt loop, the system checks whether the task can be auto-promoted. If `dependencies.length > 0` AND all dependencies are in `done` state AND the branch has no diff from the base branch (`hasBranchDiff()` in `src/git.ts`), the task is promoted directly — confidence is set to 100, state is set based on `git.onConfidence` mode (`done` for merge, `review` otherwise), and the function returns immediately. This skips plan/execute/review entirely, saving budget on parent tasks whose subtasks already completed all the work. The check is conservative: any git or backend error causes it to fall through to the normal loop.
 
+**Skip-to-hook fast path**: At the top of each attempt iteration (after budget and max-attempt checks, before incrementing the attempt counter), the system checks whether the task can skip plan+execute entirely and jump straight to `handleConfidenceMet()`. This triggers when three conditions are all true: (1) `task.confidence >= config.confidence.target`, (2) the working tree is clean (`hasUncommittedChanges()` returns false), and (3) the current HEAD SHA matches the SHA stored in `last_review_sha.txt` (meaning no new commits have been made since the last review). When all conditions are met, a `skip_to_hook` decision event is logged, and execution jumps directly to the `on_confidence_met` hook flow. This avoids wasting time and budget re-verifying unchanged code — for example, when a task was blocked by infrastructure issues and is being re-run without any code changes.
+
 The loop continues until:
 - Confidence >= target (default 95%) --> handled by `handleConfidenceMet()` (see below)
 - Confidence regression detected --> task moves to `blocked` state (changes rolled back)
@@ -28,7 +30,7 @@ The loop continues until:
 
 **Context window exceeded**: After the plan phase, if `contextWindowPercent >= budgets.contextWindowLimit` (default 60%), the attempt restarts (plan is already saved to disk, so no work lost). There is intentionally **no** context window check after the execute phase — the review must always run. Each phase is a separate `claude -p` call with a fresh context window, so execute's usage doesn't affect review quality. Skipping review would create a plan→execute loop with no confidence evaluation, where the task can only exit via budget exhaustion.
 
-Context bridges between fresh `claude -p` calls via files in `.hootl/tasks/<id>/`: `understanding.md`, `plan.md`, `progress.md`, `test_results.md`, `blockers.md`, `last_confidence.txt`, `checkpoint.json`.
+Context bridges between fresh `claude -p` calls via files in `.hootl/tasks/<id>/`: `understanding.md`, `plan.md`, `progress.md`, `test_results.md`, `blockers.md`, `last_confidence.txt`, `last_review_sha.txt`, `checkpoint.json`.
 
 ## Crash Recovery
 
