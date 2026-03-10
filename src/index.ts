@@ -43,6 +43,7 @@ import { formatPlanningMemoryContext } from "./plan-memory.js";
 import { extractTaskArray } from "./parse-tasks.js";
 import { loadGoals, saveGoals, createGoalsFromGroups } from "./goals.js";
 import { logsCommand } from "./logs.js";
+import { JSON_SCHEMA_INSTRUCTION } from "./plan-prompt.js";
 
 function getBackend(config: Config): TaskBackend {
   const tasksDir = join(process.cwd(), ".hootl", "tasks");
@@ -209,11 +210,7 @@ async function planCommand(cliMode?: { fromSpec?: boolean; goal?: string; analyz
     ]);
   }
 
-  const jsonSchemaInstruction =
-    `Return ONLY a JSON array of objects with "title", "description", "priority", "group", and optionally "dependsOn" fields.\n` +
-    `Priority must be one of: "critical", "high", "medium", "low".\n` +
-    `"group" is a short label (2-4 words) for the functional area this task belongs to (e.g. "Git Integration", "Budget System", "CLI Commands"). Tasks with the same group will be clustered into a goal.\n` +
-    `If a task depends on another task in this list being completed first, include a "dependsOn" array with the 0-based indices of those prerequisite tasks (e.g. "dependsOn": [0, 2] means this task depends on the 1st and 3rd tasks). Tasks with no dependencies should omit this field or use an empty array.\n`;
+  const jsonSchemaInstruction = JSON_SCHEMA_INSTRUCTION;
 
   let prompt: string;
 

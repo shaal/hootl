@@ -395,6 +395,17 @@ The plan command gathers project context via `src/context.ts` before calling Cla
 
 This keeps prompts small (~2K chars) while giving Claude full access to explore the codebase. The "From spec" mode compares the spec against existing code to generate gap-filling tasks with priorities.
 
+### Auto-Clustering Tasks into Goals
+
+All planning modes include a `"group"` field in the JSON schema instruction sent to Claude. Each task's group is a short label (2–4 words) describing its functional area (e.g. "Git Integration", "Budget System", "CLI Commands"). After tasks are created but before dependencies are wired, `createGoalsFromGroups()` in `src/goals.ts` processes the batch:
+
+1. Collects unique group labels from the parsed tasks.
+2. Converts each label to a slug ID via `slugifyGoalId()` (e.g. "Git Integration" → `git-integration`).
+3. Loads existing goals from `.hootl/goals.json` and creates new goal entries only for slugs that don't already exist, preserving any pre-existing goals with matching IDs.
+4. Assigns each task's `goal` field to its corresponding slug via `backend.updateTask()`.
+
+This means tasks planned via any mode (from-spec, break-down-a-goal, analyze, suggest) are automatically organized under goal headings in `hootl status` output without any manual grouping step.
+
 ## Auto-detected Task Dependencies
 
 When the planner generates a batch of tasks, dependencies are automatically wired up via a two-pass process in `planCommand()`:

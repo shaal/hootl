@@ -4,6 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createGoalsFromGroups, loadGoals, saveGoals } from "../goals.js";
+import { JSON_SCHEMA_INSTRUCTION } from "../plan-prompt.js";
 
 /** Minimal mock backend that records updateTask calls */
 function mockBackend(): {
@@ -256,5 +257,48 @@ describe("createGoalsFromGroups", () => {
     assert.equal(goals.length, 1);
     // First occurrence title used
     assert.equal(goals[0]?.title, "Git Integration");
+  });
+});
+
+describe("JSON_SCHEMA_INSTRUCTION prompt construction", () => {
+  it("includes the group field in the list of task JSON fields", () => {
+    assert.ok(
+      JSON_SCHEMA_INSTRUCTION.includes('"group"'),
+      "JSON schema instruction must mention the \"group\" field",
+    );
+  });
+
+  it("describes group as a short functional-area label", () => {
+    assert.ok(
+      JSON_SCHEMA_INSTRUCTION.includes("functional area"),
+      "JSON schema instruction must describe group as a functional area label",
+    );
+  });
+
+  it("mentions that same-group tasks are clustered into a goal", () => {
+    assert.ok(
+      JSON_SCHEMA_INSTRUCTION.includes("clustered into a goal"),
+      "JSON schema instruction must explain goal clustering behavior",
+    );
+  });
+
+  it("includes all required task JSON fields", () => {
+    for (const field of ["title", "description", "priority", "group"]) {
+      assert.ok(
+        JSON_SCHEMA_INSTRUCTION.includes(`"${field}"`),
+        `JSON schema instruction must include the "${field}" field`,
+      );
+    }
+  });
+
+  it("documents the dependsOn field as optional", () => {
+    assert.ok(
+      JSON_SCHEMA_INSTRUCTION.includes("dependsOn"),
+      "JSON schema instruction must mention the dependsOn field",
+    );
+    assert.ok(
+      JSON_SCHEMA_INSTRUCTION.includes("optionally"),
+      "JSON schema instruction must indicate dependsOn is optional",
+    );
   });
 });
