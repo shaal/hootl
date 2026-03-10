@@ -258,6 +258,32 @@ After the execute phase commits its work and before the review phase runs, the l
 
 This is a programmatic gate that prevents the executor from cherry-picking easy items (e.g., documentation) while skipping hard ones (e.g., integration tests). The `DiffProvider` interface allows dependency injection for testing. Items with `weight < 2.0` or empty `diffMarkers` are not checked.
 
+### Remediation Decomposition
+
+When the execute phase **fails** (exit code != 0) while working from a remediation plan, and there are 2+ structured `remediationItems`, the loop decomposes the items into sequential subtasks instead of retrying the entire plan (`handleRemediationDecomposition()` in `loop.ts`).
+
+**Trigger conditions** (all must be true):
+1. `config.remediation.decompose` is `true` (default)
+2. A remediation plan was active (`hasRemediationPlan`)
+3. There are 2+ `remediationItems` from the last review
+4. Attempts remain (`currentTask.attempts < maxAttemptsPerTask`)
+5. The task hasn't already been decomposed (one-time guard via blocker note prefix `"Decomposed remediation"`)
+
+**Subtask creation**:
+- Items are sorted by `weight` descending (highest-impact first)
+- Capped at 5 subtasks; overflow items are merged into the 5th slot (combined titles, diffMarkers, summed weights)
+- Each subtask inherits the parent's `branch`, `worktree`, `goal`, `priority`, and `type`
+- Subtasks are chained with sequential dependencies (subtask[i] depends on subtask[i-1]) to ensure one-at-a-time execution on the shared branch
+- Fractional `userPriority` is assigned for ordering (same pattern as `handleTooBroad`)
+
+**Parent update**:
+- Subtask IDs are appended to parent's `dependencies`
+- Blocker note added: `"Decomposed remediation into subtasks: task-090, task-091, ..."`
+- `understanding.md` is preserved (unlike `handleTooBroad` which deletes it — the parent's understanding is still valid)
+- The completion loop breaks; subtasks will execute independently
+
+**Re-review**: When all subtasks complete and the parent resumes, the parent's branch contains the cumulative work from all subtasks. Auto-promote detects `hasBranchDiff === true` and does NOT auto-promote — the parent proceeds through the normal plan/execute/review loop for final assessment.
+
 ## Global Daily Budget Enforcement
 
 The global daily budget ($50.00 default) prevents runaway spend across all tasks. It is checked at two points:
@@ -274,7 +300,7 @@ Three layers, merged with deep-merge (later wins):
 2. `.hootl/config.json` (project)
 3. `HOOTL_*` environment variables
 
-Key defaults: contextWindowLimit=60%, perTask=$10.00, global=$50.00, maxAttempts=10, confidenceTarget=95%. `git.onConfidence` defaults to null (inferred from `auto.defaultLevel`). Env var: `HOOTL_GIT_ON_CONFIDENCE`. `git.useWorktrees` defaults to `false`. Env var: `HOOTL_GIT_USE_WORKTREES`. `notifications.webhook` — webhook URL for state transition notifications (default: null). Env var: `HOOTL_NOTIFICATIONS_WEBHOOK`.
+Key defaults: contextWindowLimit=60%, perTask=$10.00, global=$50.00, maxAttempts=10, confidenceTarget=95%. `git.onConfidence` defaults to null (inferred from `auto.defaultLevel`). Env var: `HOOTL_GIT_ON_CONFIDENCE`. `git.useWorktrees` defaults to `false`. Env var: `HOOTL_GIT_USE_WORKTREES`. `notifications.webhook` — webhook URL for state transition notifications (default: null). Env var: `HOOTL_NOTIFICATIONS_WEBHOOK`. `remediation.decompose` — decompose failed remediation plans into subtasks (default: true). Env var: `HOOTL_REMEDIATION_DECOMPOSE`.
 
 ## Hooks & Skills
 

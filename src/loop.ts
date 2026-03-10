@@ -2048,12 +2048,14 @@ export async function runCompletionLoop(
         });
       }
 
-      // Remediation decomposition: if we have a remediation plan with 2+ items,
+      // Remediation decomposition: if we have 2+ remediation items from the last review,
       // decompose into subtasks instead of retrying the entire plan.
+      // Note: we check lastRemediationItems (not hasRemediationPlan) because
+      // hasRemediationPlan is reset to false when the plan phase is skipped,
+      // which happens BEFORE the execute phase — so it's already false here.
       // One-time guard: the blocker note prevents re-decomposition if the parent loops back.
       if (
         config.remediation.decompose &&
-        hasRemediationPlan &&
         lastRemediationItems.length >= 2 &&
         currentTask.attempts < config.budgets.maxAttemptsPerTask &&
         !currentTask.blockers.some((b) => b.startsWith("Decomposed remediation"))
