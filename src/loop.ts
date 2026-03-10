@@ -3,7 +3,7 @@ import { execa } from "execa";
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { invokeClaude, logCost } from "./invoke.js";
+import { type InvokeResult, invokeClaude, logCost } from "./invoke.js";
 import { type Config, type OnConfidenceMode, getProjectDir, resolveOnConfidenceMode } from "./config.js";
 import { type Task, type TaskBackend, type TaskPriority, type TaskType, TaskPriority as TaskPriorityEnum, TaskType as TaskTypeEnum } from "./tasks/types.js";
 import { uiInfo, uiWarn, uiError, uiSuccess, uiSpinner, errorMsg } from "./ui.js";
@@ -556,6 +556,7 @@ export interface CliFlags {
 }
 
 export const MAX_REVERIFICATIONS = 2;
+export const MAX_REVIEW_RETRIES = 2;
 
 async function handleBlockingHookFailure(
   results: HookResult[],
@@ -1833,53 +1834,94 @@ export async function runCompletionLoop(
         type: "phase_start",
         data: { phase: "review", attempt },
       });
-      const reviewResult = await uiSpinner("Reviewing...", () =>
-        invokeClaude({
-          prompt: reviewUserPrompt,
-          systemPrompt: reviewSystemPrompt,
-          maxTurns: 20,
-          verbose,
-          ...(worktreePath ? { cwd: worktreePath } : {}),
-        }),
-      );
+      let reviewResult: InvokeResult | undefined;
+      let reviewRetryCostUsd = 0;
+      let reviewRetryDurationMs = 0;
 
-      await guardBranch();
+      for (let reviewAttempt = 0; reviewAttempt <= MAX_REVIEW_RETRIES; reviewAttempt++) {
+        if (reviewAttempt > 0) {
+          uiWarn(`Review returned empty output — retry ${reviewAttempt}/${MAX_REVIEW_RETRIES}`);
+        }
+        // Reduce maxTurns on retries to prevent context exhaustion
+        const maxTurns = reviewAttempt === 0 ? 20 : 10;
 
-      // Save raw output immediately — before error checks — so failed phases are debuggable
-      await saveRawOutput(taskDir, "review", attempt, reviewResult.output);
+        reviewResult = await uiSpinner("Reviewing...", () =>
+          invokeClaude({
+            prompt: reviewUserPrompt,
+            systemPrompt: reviewSystemPrompt,
+            maxTurns,
+            verbose,
+            ...(worktreePath ? { cwd: worktreePath } : {}),
+          }),
+        );
 
-      if (reviewResult.exitCode !== 0) {
-        if (!abortSignal?.aborted) uiError(`Review phase failed (exit code ${reviewResult.exitCode})`);
-        throw new Error(`Review phase failed: ${reviewResult.errorReason || `exit code ${reviewResult.exitCode}`}`);
+        await guardBranch();
+
+        // Save raw output for each attempt (review-retry1, review-retry2)
+        await saveRawOutput(
+          taskDir,
+          reviewAttempt > 0 ? `review-retry${reviewAttempt}` : "review",
+          attempt,
+          reviewResult.output,
+        );
+
+        if (reviewResult.exitCode !== 0) {
+          if (!abortSignal?.aborted) uiError(`Review phase failed (exit code ${reviewResult.exitCode})`);
+          throw new Error(`Review phase failed: ${reviewResult.errorReason || `exit code ${reviewResult.exitCode}`}`);
+        }
+
+        if (reviewResult.output.trim() !== "") {
+          break; // Got valid output
+        }
+
+        // Accumulate cost/duration for empty retries — the final attempt
+        // (whether empty or successful) is accounted for post-loop to avoid double-counting
+        if (reviewAttempt < MAX_REVIEW_RETRIES) {
+          phaseCost += reviewResult.costUsd;
+          await logCost(costLogDir, task.id, "review", reviewResult.costUsd);
+        }
+        reviewRetryCostUsd += reviewResult.costUsd;
+        reviewRetryDurationMs += reviewResult.durationMs;
       }
 
-      if (reviewResult.output.trim() === "") {
-        if (!abortSignal?.aborted) uiWarn("Review phase returned empty output — retrying");
-        throw new Error("Review phase returned empty output");
+      // reviewResult is always assigned — loop runs at least once
+      const finalReviewResult = reviewResult!;
+
+      // After retries: if still empty, proceed with confidence 0 instead of throwing
+      if (finalReviewResult.output.trim() === "") {
+        uiWarn("Review returned empty output after all retries — proceeding with confidence 0");
+        await logEvent(costLogDir, {
+          taskId: task.id,
+          type: "decision",
+          data: { decision: "review_empty_fallback", details: `All ${MAX_REVIEW_RETRIES + 1} review attempts returned empty output` },
+        });
       }
 
       await writeFile(
         join(taskDir, "test_results.md"),
-        reviewResult.output,
+        finalReviewResult.output,
         "utf-8",
       );
-      await logCost(costLogDir, task.id, "review", reviewResult.costUsd);
+      await logCost(costLogDir, task.id, "review", finalReviewResult.costUsd);
+      // phase_end aggregates cost/duration across all retry attempts
+      const totalReviewCostUsd = reviewRetryCostUsd + finalReviewResult.costUsd;
+      const totalReviewDurationMs = reviewRetryDurationMs + finalReviewResult.durationMs;
       await logEvent(costLogDir, {
         taskId: task.id,
         type: "phase_end",
         data: {
           phase: "review",
           attempt,
-          costUsd: reviewResult.costUsd,
-          durationMs: reviewResult.durationMs,
-          exitCode: reviewResult.exitCode,
-          outputLength: reviewResult.output.length,
+          costUsd: totalReviewCostUsd,
+          durationMs: totalReviewDurationMs,
+          exitCode: finalReviewResult.exitCode,
+          outputLength: finalReviewResult.output.length,
         },
       });
-      phaseCost += reviewResult.costUsd;
+      phaseCost += finalReviewResult.costUsd;
 
       // Parse review output
-      const review = parseReviewResult(reviewResult.output);
+      const review = parseReviewResult(finalReviewResult.output);
 
       // Update task with new confidence and accumulated cost
       currentTask = await backend.updateTask(task.id, {
@@ -2072,12 +2114,15 @@ export async function runCompletionLoop(
         break; // Exit the completion loop — subtasks will handle it
       }
 
-      // Transient errors (empty output, timeouts) → continue looping
+      // Transient errors (timeouts) → continue looping
       // Only break on permanent errors or if we're out of attempts
       // Note: timeouts and rate limits are already retried with exponential
       // backoff inside invokeClaude() (up to 3 retries). This is the fallback
       // if all invoke-level retries were exhausted.
-      const isTransient = message.includes("empty output") || message.includes("timed out");
+      // Note: "empty output" is NOT transient here — review empty output is
+      // handled by the review retry loop + confidence-0 fallback. Plan/execute
+      // empty output should break and preserve the task for the next run.
+      const isTransient = message.includes("timed out");
       if (!isTransient) {
         // Permanent error — keep task in_progress so it can resume later
         break;
