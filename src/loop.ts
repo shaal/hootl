@@ -1578,7 +1578,7 @@ export async function runCompletionLoop(
 
         if (planResult.exitCode !== 0) {
           if (!abortSignal?.aborted) uiError(`Plan phase failed (exit code ${planResult.exitCode})`);
-          throw new Error(`Plan phase failed: ${planResult.output}`);
+          throw new Error(`Plan phase failed: ${planResult.errorReason || `exit code ${planResult.exitCode}`}`);
         }
 
         if (planResult.output.trim() === "") {
@@ -1657,7 +1657,7 @@ export async function runCompletionLoop(
 
       if (executeResult.exitCode !== 0) {
         if (!abortSignal?.aborted) uiError(`Execute phase failed (exit code ${executeResult.exitCode})`);
-        throw new Error(`Execute phase failed: ${executeResult.output}`);
+        throw new Error(`Execute phase failed: ${executeResult.errorReason || `exit code ${executeResult.exitCode}`}`);
       }
 
       if (executeResult.output.trim() === "") {
@@ -1781,7 +1781,7 @@ export async function runCompletionLoop(
 
       if (reviewResult.exitCode !== 0) {
         if (!abortSignal?.aborted) uiError(`Review phase failed (exit code ${reviewResult.exitCode})`);
-        throw new Error(`Review phase failed: ${reviewResult.output}`);
+        throw new Error(`Review phase failed: ${reviewResult.errorReason || `exit code ${reviewResult.exitCode}`}`);
       }
 
       if (reviewResult.output.trim() === "") {

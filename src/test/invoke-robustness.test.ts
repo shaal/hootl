@@ -188,6 +188,7 @@ function makeResult(overrides: Partial<InvokeResult>): InvokeResult {
     exitCode: 1,
     durationMs: 100,
     contextWindowPercent: 0,
+    errorReason: "",
     ...overrides,
   };
 }
@@ -197,72 +198,94 @@ describe("isTransientError", () => {
     assert.equal(isTransientError(makeResult({ exitCode: 124 })), true);
   });
 
-  it("returns true for output containing 'timed out'", () => {
+  it("returns true for errorReason containing 'timed out'", () => {
     assert.equal(
-      isTransientError(makeResult({ output: "claude -p timed out after 300s" })),
+      isTransientError(makeResult({ errorReason: "claude -p timed out after 300s" })),
       true,
     );
   });
 
-  it("returns true for output containing 'rate limit'", () => {
+  it("returns true for errorReason containing 'rate limit'", () => {
     assert.equal(
-      isTransientError(makeResult({ output: "Error: rate limit exceeded" })),
+      isTransientError(makeResult({ errorReason: "Error: rate limit exceeded" })),
       true,
     );
   });
 
-  it("returns true for output containing '429'", () => {
+  it("returns true for errorReason containing '429'", () => {
     assert.equal(
-      isTransientError(makeResult({ output: "HTTP 429 Too Many Requests" })),
+      isTransientError(makeResult({ errorReason: "HTTP 429 Too Many Requests" })),
       true,
     );
   });
 
   it("returns true for ECONNREFUSED", () => {
     assert.equal(
-      isTransientError(makeResult({ output: "connect ECONNREFUSED 127.0.0.1:443" })),
+      isTransientError(makeResult({ errorReason: "connect ECONNREFUSED 127.0.0.1:443" })),
       true,
     );
   });
 
   it("returns true for ENOTFOUND", () => {
     assert.equal(
-      isTransientError(makeResult({ output: "getaddrinfo ENOTFOUND api.anthropic.com" })),
+      isTransientError(makeResult({ errorReason: "getaddrinfo ENOTFOUND api.anthropic.com" })),
       true,
     );
   });
 
   it("returns true for ETIMEDOUT", () => {
     assert.equal(
-      isTransientError(makeResult({ output: "connect ETIMEDOUT 1.2.3.4:443" })),
+      isTransientError(makeResult({ errorReason: "connect ETIMEDOUT 1.2.3.4:443" })),
       true,
     );
   });
 
   it("returns true for ECONNRESET", () => {
     assert.equal(
-      isTransientError(makeResult({ output: "read ECONNRESET" })),
+      isTransientError(makeResult({ errorReason: "read ECONNRESET" })),
       true,
     );
   });
 
   it("returns false for exit code 0 (success)", () => {
     assert.equal(
-      isTransientError(makeResult({ exitCode: 0, output: "rate limit" })),
+      isTransientError(makeResult({ exitCode: 0, errorReason: "rate limit" })),
       false,
     );
   });
 
   it("returns false for non-transient exit code 1 with generic error", () => {
     assert.equal(
-      isTransientError(makeResult({ exitCode: 1, output: "Error: invalid argument" })),
+      isTransientError(makeResult({ exitCode: 1, errorReason: "Error: invalid argument" })),
       false,
     );
   });
 
   it("is case-insensitive for error message matching", () => {
     assert.equal(
-      isTransientError(makeResult({ output: "RATE LIMIT exceeded" })),
+      isTransientError(makeResult({ errorReason: "RATE LIMIT exceeded" })),
+      true,
+    );
+  });
+
+  it("ignores transient patterns in output (prevents false positives from source code)", () => {
+    // Claude reads invoke.ts which contains "timed out", "rate limit", "429" etc.
+    // as literal strings — these should NOT trigger transient detection
+    assert.equal(
+      isTransientError(makeResult({
+        output: 'if (output.includes("timed out")) return true;\nif (output.includes("rate limit") || output.includes("429")) return true;',
+        errorReason: "",
+      })),
+      false,
+    );
+  });
+
+  it("detects transient error from errorReason even when output is empty", () => {
+    assert.equal(
+      isTransientError(makeResult({
+        output: "",
+        errorReason: "Error: rate limit exceeded",
+      })),
       true,
     );
   });

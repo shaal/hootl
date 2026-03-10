@@ -22,6 +22,11 @@ export interface InvokeResult {
   exitCode: number;
   durationMs: number;
   contextWindowPercent: number;
+  /** Structured error info (stderr + is_error text) for transient detection.
+   *  Unlike `output` (which contains Claude's work product), this only holds
+   *  error-channel data and is safe to pattern-match for retryable failures.
+   *  Always set by production code; optional to avoid breaking test mocks. */
+  errorReason?: string;
 }
 
 export function buildArgs(options: InvokeOptions): string[] {
@@ -185,7 +190,14 @@ async function invokeClaudeStandard(
     }
   } catch { /* ignore */ }
 
-  return { output, costUsd, exitCode: isError ? 1 : exitCode, durationMs, contextWindowPercent };
+  // Build errorReason from error-channel signals only (stderr + is_error text),
+  // NOT from Claude's work output which may contain source code with false-positive matches.
+  let errorReason = result.stderr;
+  if (isError) {
+    errorReason = output + (errorReason ? "\n" + errorReason : "");
+  }
+
+  return { output, costUsd, exitCode: isError ? 1 : exitCode, durationMs, contextWindowPercent, errorReason };
 }
 
 async function invokeClaudeVerbose(
@@ -301,7 +313,13 @@ async function invokeClaudeVerbose(
     } catch { /* ignore */ }
   }
 
-  return { output, costUsd, exitCode: isError ? 1 : exitCode, durationMs, contextWindowPercent };
+  // Build errorReason from error-channel signals only (stderr + is_error text).
+  let errorReason = result.stderr;
+  if (isError) {
+    errorReason = output + (errorReason ? "\n" + errorReason : "");
+  }
+
+  return { output, costUsd, exitCode: isError ? 1 : exitCode, durationMs, contextWindowPercent, errorReason };
 }
 
 /** Maximum number of retries for transient errors (timeouts, rate limits, network errors). */
@@ -322,18 +340,22 @@ export function defaultSleep(ms: number): Promise<void> {
 export function isTransientError(result: InvokeResult): boolean {
   if (result.exitCode === 0) return false;
 
-  const output = result.output.toLowerCase();
+  // Use errorReason (stderr + is_error text) instead of output (Claude's work product).
+  // The full output can contain source code that Claude was reading/writing, which
+  // may include strings like "timed out", "rate limit", "429", etc. as literal code,
+  // causing false positive transient detection and wasteful retries.
+  const reason = (result.errorReason || "").toLowerCase();
   // Timeout: exit code 124 or "timed out" message (set by the catch block)
   if (result.exitCode === 124) return true;
-  if (output.includes("timed out")) return true;
+  if (reason.includes("timed out")) return true;
   // Rate limits
-  if (output.includes("rate limit") || output.includes("429")) return true;
+  if (reason.includes("rate limit") || reason.includes("429")) return true;
   // Network errors
   if (
-    output.includes("econnrefused") ||
-    output.includes("enotfound") ||
-    output.includes("etimedout") ||
-    output.includes("econnreset")
+    reason.includes("econnrefused") ||
+    reason.includes("enotfound") ||
+    reason.includes("etimedout") ||
+    reason.includes("econnreset")
   ) return true;
 
   return false;
@@ -377,6 +399,7 @@ export async function invokeClaude(
         exitCode: isTimeout ? 124 : 1,
         durationMs,
         contextWindowPercent: 0,
+        errorReason: message,
       };
     }
 
@@ -391,7 +414,7 @@ export async function invokeClaude(
     if (attempt < MAX_RETRIES) {
       const retryNum = attempt + 1;
       process.stderr.write(
-        `Transient error (attempt ${retryNum}/${MAX_RETRIES + 1}), retrying in ${INITIAL_DELAY_MS * Math.pow(2, attempt)}ms: ${lastResult.output.slice(0, 100)}\n`
+        `Transient error (attempt ${retryNum}/${MAX_RETRIES + 1}), retrying in ${INITIAL_DELAY_MS * Math.pow(2, attempt)}ms: ${(lastResult.errorReason || lastResult.output).slice(0, 200)}\n`
       );
     }
   }
