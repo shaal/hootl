@@ -378,6 +378,10 @@ hootl reconcile --dry-run      Show what would change without modifying anything
 hootl prioritize               Interactive: select and order tasks via gum multi-select
 hootl prioritize t1 t2 t3      Set userPriority by argument order (t1=#1, t2=#2, t3=#3)
 hootl prioritize --clear       Remove all userPriority overrides
+hootl logs                     View recent events as a timeline (last 50)
+hootl logs --task <id>         Filter events for a specific task
+hootl logs --type <event_type> Filter by event type (e.g., error, state_change, decision)
+hootl logs --limit <n>         Number of recent events to show (default: 50)
 ```
 
 ## Plan Command Context Gathering

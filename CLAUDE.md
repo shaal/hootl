@@ -19,7 +19,7 @@ npm run test:build  # Build then run tests
 
 ```
 src/
-  index.ts            CLI entry point (commander). Commands: init, plan, run, status, reconcile, clarify, discuss, prioritize
+  index.ts            CLI entry point (commander). Commands: init, plan, run, status, reconcile, clarify, discuss, prioritize, logs
   parse-tasks.ts      Robust JSON array extraction from Claude plan responses (bracket-matching)
   dependencies.ts     Post-planning dependency inference and index-to-ID resolution
   selection.ts        Dependency-aware task selection (findRunnableTask)
@@ -39,6 +39,7 @@ src/
   plan-summary.ts     TL;DR plan summary with Accept/Revise/Cancel confirmation
   idle-wait.ts        Idle retry logic for auto command when sibling instances hold all tasks
   hooks.ts            Hook execution engine (filter, prompt resolution, run, orchestrate)
+  logs.ts             Log viewer: reads events.jsonl, filters by taskId/eventType, formats as human-readable timeline
   logger.ts           Structured JSONL event logger (run_start, phase_start/end, state_change, decision, error, hook_run, budget_check, rollback)
   raw-output.ts       Black box recorder: saves raw claude -p output to task logs/ directory
   notify.ts           OS notifications (macOS osascript, Linux notify-send) for task events
