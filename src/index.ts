@@ -42,6 +42,7 @@ import { generatePlanSummary, confirmPlan } from "./plan-summary.js";
 import { formatPlanningMemoryContext } from "./plan-memory.js";
 import { extractTaskArray } from "./parse-tasks.js";
 import { loadGoals, saveGoals } from "./goals.js";
+import { logsCommand } from "./logs.js";
 
 function getBackend(config: Config): TaskBackend {
   const tasksDir = join(process.cwd(), ".hootl", "tasks");
@@ -1585,6 +1586,25 @@ goalsCmd
 
       await backend.updateTask(taskId, { goal: goalId });
       uiSuccess(`Assigned task ${taskId} to goal "${goalId}".`);
+    } catch (err: unknown) {
+      uiError(errorMsg(err));
+      process.exitCode = 1;
+    }
+  });
+
+program
+  .command("logs")
+  .description("View event logs as a timeline")
+  .option("--task <id>", "Filter events for a specific task ID")
+  .option("--type <event_type>", "Filter by event type (e.g., error, state_change, decision)")
+  .option("--limit <n>", "Number of recent events to show (default: 50)")
+  .action(async (options: { task?: string; type?: string; limit?: string }) => {
+    try {
+      await logsCommand({
+        taskId: options.task,
+        eventType: options.type,
+        limit: options.limit ? parseInt(options.limit, 10) : undefined,
+      });
     } catch (err: unknown) {
       uiError(errorMsg(err));
       process.exitCode = 1;
