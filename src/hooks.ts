@@ -188,6 +188,20 @@ export async function runSkillHook(
   // that parseHookResult() needs to extract pass/fail status.
   invokeOptions.verbose = false;
   const result = await deps.invoke(invokeOptions);
+
+  // If Claude completed successfully but returned no text output (e.g.,
+  // envelope with no result field was stripped to ""), treat as pass —
+  // Claude ran the skill, found nothing to report.
+  if (result.exitCode === 0 && result.output.trim() === "") {
+    return {
+      success: true,
+      output: "",
+      issues: [],
+      remediationActions: [],
+      costUsd: result.costUsd,
+    };
+  }
+
   const parsed = parseHookResult(result.output);
 
   // Log diagnostic info when parsing fails — helps diagnose "no details provided" blocks
@@ -454,6 +468,18 @@ export async function runHook(
     verbose: false, // Hooks must use non-verbose mode for reliable JSON parsing
     ...(context.cwd ? { cwd: context.cwd } : {}),
   });
+
+  // If Claude completed successfully but returned no text output (e.g.,
+  // envelope with no result field was stripped to ""), treat as pass.
+  if (result.exitCode === 0 && result.output.trim() === "") {
+    return {
+      success: true,
+      output: "",
+      issues: [],
+      remediationActions: [],
+      costUsd: result.costUsd,
+    };
+  }
 
   const parsed = parseHookResult(result.output);
 

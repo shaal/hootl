@@ -809,6 +809,42 @@ describe("runHook", () => {
     assert.ok(call.systemPrompt?.includes("hootl/t2-auth"));
   });
 
+  it("treats empty output with exitCode 0 as pass (envelope stripped to empty)", async () => {
+    const deps = makeMockDeps({
+      invoke: async () => ({
+        output: "",
+        costUsd: 0.67,
+        exitCode: 0,
+        durationMs: 5000,
+        contextWindowPercent: 0,
+      }),
+    });
+    const hook = makeHook({ prompt: "Check quality" });
+    const ctx = makeContext();
+
+    const result = await runHook(hook, ctx, deps);
+    assert.equal(result.success, true);
+    assert.deepEqual(result.issues, []);
+    assert.equal(result.costUsd, 0.67);
+  });
+
+  it("treats empty output with non-zero exitCode as failure", async () => {
+    const deps = makeMockDeps({
+      invoke: async () => ({
+        output: "",
+        costUsd: 0.01,
+        exitCode: 1,
+        durationMs: 100,
+        contextWindowPercent: 0,
+      }),
+    });
+    const hook = makeHook({ prompt: "Check quality" });
+    const ctx = makeContext();
+
+    const result = await runHook(hook, ctx, deps);
+    assert.equal(result.success, false);
+  });
+
   it("gracefully handles non-JSON invoke output (defaults to pass)", async () => {
     const deps = makeMockDeps({
       invoke: async () => ({
@@ -1085,6 +1121,24 @@ describe("runSkillHook", () => {
     assert.deepEqual(result.issues, ["duplicated logic"]);
     assert.deepEqual(result.remediationActions, ["extract helper"]);
     assert.equal(result.costUsd, 0.05);
+  });
+
+  it("treats empty output with exitCode 0 as pass (envelope stripped to empty)", async () => {
+    const deps = makeMockDeps({
+      invoke: async () => ({
+        output: "",
+        costUsd: 0.67,
+        exitCode: 0,
+        durationMs: 5000,
+        contextWindowPercent: 0,
+      }),
+    });
+    const ctx = makeContext();
+
+    const result = await runSkillHook("simplify", ctx, deps);
+    assert.equal(result.success, true);
+    assert.deepEqual(result.issues, []);
+    assert.equal(result.costUsd, 0.67);
   });
 
   it("always sets verbose: false regardless of skill options", async () => {
