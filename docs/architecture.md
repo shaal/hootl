@@ -407,6 +407,7 @@ hootl auto                     Autonomous mode — run tasks until queue drains 
 hootl auto --level <level>     Automation level (conservative|moderate|proactive|full; default from config)
 hootl auto --merge             Force auto-merge on confidence met
 hootl auto --no-merge          Disable auto-merge/PR on confidence met
+hootl auto --goal <goalId>     Only run tasks belonging to this goal
 hootl status                   View tasks grouped by state
 hootl clarify                  Resolve blockers on blocked tasks
 hootl discuss [taskId]         Launch interactive Claude session, optionally with task context

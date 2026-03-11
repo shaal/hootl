@@ -22,7 +22,7 @@ src/
   index.ts            CLI entry point (commander). Commands: init, plan, run, status, reconcile, clarify, discuss, prioritize, logs
   parse-tasks.ts      Robust JSON array extraction from Claude plan responses (bracket-matching)
   dependencies.ts     Post-planning dependency inference and index-to-ID resolution
-  selection.ts        Dependency-aware task selection: getNextTask (consolidated entry point), sortByStrategy (effort-based tiebreaking within priority tiers), findRunnableTask
+  selection.ts        Dependency-aware task selection: getNextTask (consolidated entry point), sortByStrategy (effort-based tiebreaking within priority tiers), findRunnableTask, filterTasksByGoal, isGoalComplete, countBlockedInGoal
   discuss.ts          Interactive Claude session launcher (stdio: 'inherit' for full TTY control)
   config.ts           Zod-validated config. 3-layer merge: ~/.hootl/config.json < .hootl/config.json < env vars
   context.ts          Project context gathering for plan command (spec, structure, tasks, git log)
