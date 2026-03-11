@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { LocalTaskBackend } from "../tasks/local.js";
 import type { Task } from "../tasks/types.js";
 import { topoSortTasks } from "../selection.js";
+import { prioritizeGoal, prioritizeGoals } from "../prioritize.js";
 import { makeTask } from "./helpers.js";
 
 let tempDir: string;
@@ -139,10 +140,10 @@ describe("topoSortTasks", () => {
 });
 
 // ---------------------------------------------------------------------------
-// prioritizeGoal — integration tests with real backend
+// prioritizeGoal — calls the actual exported function with real backend
 // ---------------------------------------------------------------------------
 
-describe("prioritizeGoal behavior", () => {
+describe("prioritizeGoal", () => {
   let backend: LocalTaskBackend;
 
   beforeEach(async () => {
@@ -162,22 +163,18 @@ describe("prioritizeGoal behavior", () => {
     const t3 = await backend.createTask({ title: "Task 3", description: "D3" });
     await backend.updateTask(t3.id, { goal: "my-goal" });
 
-    // Use topoSortTasks + manual update to simulate what prioritizeGoal does
-    const allTasks = await backend.listTasks();
-    const goalTasks = allTasks.filter(t => t.goal === "my-goal" && t.state !== "done");
-    const sorted = topoSortTasks(goalTasks);
-    for (let i = 0; i < sorted.length; i++) {
-      await backend.updateTask(sorted[i]!.id, { userPriority: i + 1 });
-    }
+    const result = await prioritizeGoal(backend, "my-goal");
 
-    // Verify contiguous assignment
+    assert.equal(result.updated, 3);
+    assert.equal(result.assignments.length, 3);
+
+    // Verify contiguous assignment persisted to backend
     const updated1 = await backend.getTask(t1.id);
     const updated2 = await backend.getTask(t2.id);
     const updated3 = await backend.getTask(t3.id);
     assert.ok(updated1.userPriority !== null, "t1 should have userPriority");
     assert.ok(updated2.userPriority !== null, "t2 should have userPriority");
     assert.ok(updated3.userPriority !== null, "t3 should have userPriority");
-    // All three should have distinct sequential values
     const priorities = [updated1.userPriority!, updated2.userPriority!, updated3.userPriority!];
     priorities.sort((a, b) => a - b);
     assert.deepEqual(priorities, [1, 2, 3], "priorities should be contiguous 1, 2, 3");
@@ -194,13 +191,8 @@ describe("prioritizeGoal behavior", () => {
     });
     await backend.updateTask(tB.id, { goal: "dep-goal" });
 
-    // Simulate prioritizeGoal
-    const allTasks = await backend.listTasks();
-    const goalTasks = allTasks.filter(t => t.goal === "dep-goal" && t.state !== "done");
-    const sorted = topoSortTasks(goalTasks);
-    for (let i = 0; i < sorted.length; i++) {
-      await backend.updateTask(sorted[i]!.id, { userPriority: i + 1 });
-    }
+    const result = await prioritizeGoal(backend, "dep-goal");
+    assert.equal(result.updated, 2);
 
     const updatedA = await backend.getTask(tA.id);
     const updatedB = await backend.getTask(tB.id);
@@ -217,13 +209,7 @@ describe("prioritizeGoal behavior", () => {
     const outside = await backend.createTask({ title: "Outside", description: "O" });
     // outside has goal: null (default)
 
-    // Simulate prioritizeGoal (only affects "target-goal")
-    const allTasks = await backend.listTasks();
-    const goalTasks = allTasks.filter(t => t.goal === "target-goal" && t.state !== "done");
-    const sorted = topoSortTasks(goalTasks);
-    for (let i = 0; i < sorted.length; i++) {
-      await backend.updateTask(sorted[i]!.id, { userPriority: i + 1 });
-    }
+    await prioritizeGoal(backend, "target-goal");
 
     const updatedOutside = await backend.getTask(outside.id);
     assert.equal(updatedOutside.userPriority, null, "task outside the goal should remain unaffected");
@@ -239,13 +225,8 @@ describe("prioritizeGoal behavior", () => {
     const t3 = await backend.createTask({ title: "Proposed", description: "P" });
     await backend.updateTask(t3.id, { goal: "multi-state", state: "proposed" });
 
-    // Simulate prioritizeGoal (listTasks without state filter gets all)
-    const allTasks = await backend.listTasks();
-    const goalTasks = allTasks.filter(t => t.goal === "multi-state" && t.state !== "done");
-    const sorted = topoSortTasks(goalTasks);
-    for (let i = 0; i < sorted.length; i++) {
-      await backend.updateTask(sorted[i]!.id, { userPriority: i + 1 });
-    }
+    const result = await prioritizeGoal(backend, "multi-state");
+    assert.equal(result.updated, 3);
 
     const updated1 = await backend.getTask(t1.id);
     const updated2 = await backend.getTask(t2.id);
@@ -262,25 +243,53 @@ describe("prioritizeGoal behavior", () => {
     const done = await backend.createTask({ title: "Done", description: "D" });
     await backend.updateTask(done.id, { goal: "done-test", state: "done" });
 
-    const allTasks = await backend.listTasks();
-    const goalTasks = allTasks.filter(t => t.goal === "done-test" && t.state !== "done");
-    assert.equal(goalTasks.length, 1, "only active task should be included");
-
-    const sorted = topoSortTasks(goalTasks);
-    for (let i = 0; i < sorted.length; i++) {
-      await backend.updateTask(sorted[i]!.id, { userPriority: i + 1 });
-    }
+    const result = await prioritizeGoal(backend, "done-test");
+    assert.equal(result.updated, 1, "only active task should be updated");
 
     const updatedDone = await backend.getTask(done.id);
     assert.equal(updatedDone.userPriority, null, "done task should not get userPriority");
   });
+
+  it("throws for non-existent goal ID", async () => {
+    // Create a task with a different goal to ensure the backend isn't empty
+    const t = await backend.createTask({ title: "Other", description: "O" });
+    await backend.updateTask(t.id, { goal: "other-goal" });
+
+    await assert.rejects(
+      () => prioritizeGoal(backend, "nonexistent-goal"),
+      (err: Error) => {
+        assert.ok(err.message.includes("nonexistent-goal"), "error should mention the goal ID");
+        assert.ok(err.message.includes("No active tasks"), "error should describe the problem");
+        return true;
+      },
+    );
+
+    // Verify no tasks were modified
+    const updated = await backend.getTask(t.id);
+    assert.equal(updated.userPriority, null, "other-goal task should remain unaffected");
+  });
+
+  it("returns assignments list matching the topological order", async () => {
+    const tA = await backend.createTask({ title: "A", description: "A" });
+    await backend.updateTask(tA.id, { goal: "order-goal" });
+    const tB = await backend.createTask({ title: "B", description: "B", dependencies: [tA.id] });
+    await backend.updateTask(tB.id, { goal: "order-goal" });
+
+    const result = await prioritizeGoal(backend, "order-goal");
+
+    // assignments should be in dependency order: A first, B second
+    assert.equal(result.assignments[0]![0], tA.id, "first assignment should be the root task");
+    assert.equal(result.assignments[0]![1], 1, "first assignment priority should be 1");
+    assert.equal(result.assignments[1]![0], tB.id, "second assignment should be the dependent");
+    assert.equal(result.assignments[1]![1], 2, "second assignment priority should be 2");
+  });
 });
 
 // ---------------------------------------------------------------------------
-// prioritizeGoals — integration tests with real backend
+// prioritizeGoals — calls the actual exported function with real backend
 // ---------------------------------------------------------------------------
 
-describe("prioritizeGoals behavior", () => {
+describe("prioritizeGoals", () => {
   let backend: LocalTaskBackend;
 
   beforeEach(async () => {
@@ -303,27 +312,8 @@ describe("prioritizeGoals behavior", () => {
     const b2 = await backend.createTask({ title: "B2", description: "B" });
     await backend.updateTask(b2.id, { goal: "goal-b" });
 
-    // Simulate prioritizeGoals with order: goal-a, goal-b
-    const allTasks = await backend.listTasks();
-    const activeTasks = allTasks.filter(t => t.state !== "done");
-    const ordered: Task[] = [];
-    const assigned = new Set<string>();
-
-    for (const goalId of ["goal-a", "goal-b"]) {
-      const goalTasks = activeTasks.filter(t => t.goal === goalId && !assigned.has(t.id));
-      const sorted = topoSortTasks(goalTasks);
-      for (const task of sorted) {
-        ordered.push(task);
-        assigned.add(task.id);
-      }
-    }
-
-    const ungrouped = activeTasks.filter(t => !assigned.has(t.id));
-    ordered.push(...ungrouped);
-
-    for (let i = 0; i < ordered.length; i++) {
-      await backend.updateTask(ordered[i]!.id, { userPriority: i + 1 });
-    }
+    const result = await prioritizeGoals(backend, ["goal-a", "goal-b"]);
+    assert.equal(result.updated, 4);
 
     const updA1 = await backend.getTask(a1.id);
     const updA2 = await backend.getTask(a2.id);
@@ -344,27 +334,8 @@ describe("prioritizeGoals behavior", () => {
     const ungrouped = await backend.createTask({ title: "Ungrouped", description: "U" });
     // ungrouped has goal: null
 
-    // Simulate prioritizeGoals
-    const allTasks = await backend.listTasks();
-    const activeTasks = allTasks.filter(t => t.state !== "done");
-    const ordered: Task[] = [];
-    const assigned = new Set<string>();
-
-    for (const goalId of ["my-goal"]) {
-      const goalTasks = activeTasks.filter(t => t.goal === goalId && !assigned.has(t.id));
-      const sorted = topoSortTasks(goalTasks);
-      for (const task of sorted) {
-        ordered.push(task);
-        assigned.add(task.id);
-      }
-    }
-
-    const remaining = activeTasks.filter(t => !assigned.has(t.id));
-    ordered.push(...remaining);
-
-    for (let i = 0; i < ordered.length; i++) {
-      await backend.updateTask(ordered[i]!.id, { userPriority: i + 1 });
-    }
+    const result = await prioritizeGoals(backend, ["my-goal"]);
+    assert.equal(result.updated, 2, "both tasks should receive priorities");
 
     const updGrouped = await backend.getTask(grouped.id);
     const updUngrouped = await backend.getTask(ungrouped.id);
@@ -382,27 +353,8 @@ describe("prioritizeGoals behavior", () => {
     const unlisted = await backend.createTask({ title: "Unlisted goal", description: "U" });
     await backend.updateTask(unlisted.id, { goal: "unlisted-goal" });
 
-    // Only "listed-goal" in the goals list
-    const allTasks = await backend.listTasks();
-    const activeTasks = allTasks.filter(t => t.state !== "done");
-    const ordered: Task[] = [];
-    const assigned = new Set<string>();
-
-    for (const goalId of ["listed-goal"]) {
-      const goalTasks = activeTasks.filter(t => t.goal === goalId && !assigned.has(t.id));
-      const sorted = topoSortTasks(goalTasks);
-      for (const task of sorted) {
-        ordered.push(task);
-        assigned.add(task.id);
-      }
-    }
-
-    const remaining = activeTasks.filter(t => !assigned.has(t.id));
-    ordered.push(...remaining);
-
-    for (let i = 0; i < ordered.length; i++) {
-      await backend.updateTask(ordered[i]!.id, { userPriority: i + 1 });
-    }
+    const result = await prioritizeGoals(backend, ["listed-goal"]);
+    assert.equal(result.updated, 2);
 
     const updListed = await backend.getTask(listed.id);
     const updUnlisted = await backend.getTask(unlisted.id);
@@ -425,27 +377,8 @@ describe("prioritizeGoals behavior", () => {
     });
     await backend.updateTask(dep.id, { goal: "goal-a" });
 
-    // Simulate prioritizeGoals
-    const allTasks = await backend.listTasks();
-    const activeTasks = allTasks.filter(t => t.state !== "done");
-    const ordered: Task[] = [];
-    const assigned = new Set<string>();
-
-    for (const goalId of ["goal-a"]) {
-      const goalTasks = activeTasks.filter(t => t.goal === goalId && !assigned.has(t.id));
-      const sorted = topoSortTasks(goalTasks);
-      for (const task of sorted) {
-        ordered.push(task);
-        assigned.add(task.id);
-      }
-    }
-
-    const remaining = activeTasks.filter(t => !assigned.has(t.id));
-    ordered.push(...remaining);
-
-    for (let i = 0; i < ordered.length; i++) {
-      await backend.updateTask(ordered[i]!.id, { userPriority: i + 1 });
-    }
+    const result = await prioritizeGoals(backend, ["goal-a"]);
+    assert.equal(result.updated, 2);
 
     const updBase = await backend.getTask(base.id);
     const updDep = await backend.getTask(dep.id);
@@ -462,29 +395,169 @@ describe("prioritizeGoals behavior", () => {
     const t2 = await backend.createTask({ title: "T2", description: "D", dependencies: [t1.id] });
     await backend.updateTask(t2.id, { goal: "solo-goal" });
 
-    // Simulate prioritizeGoals with single goal
-    const allTasks = await backend.listTasks();
-    const activeTasks = allTasks.filter(t => t.state !== "done");
-    const ordered: Task[] = [];
-    const assigned = new Set<string>();
-
-    for (const goalId of ["solo-goal"]) {
-      const goalTasks = activeTasks.filter(t => t.goal === goalId && !assigned.has(t.id));
-      const sorted = topoSortTasks(goalTasks);
-      for (const task of sorted) {
-        ordered.push(task);
-        assigned.add(task.id);
-      }
-    }
-
-    for (let i = 0; i < ordered.length; i++) {
-      await backend.updateTask(ordered[i]!.id, { userPriority: i + 1 });
-    }
+    const result = await prioritizeGoals(backend, ["solo-goal"]);
 
     const upd1 = await backend.getTask(t1.id);
     const upd2 = await backend.getTask(t2.id);
 
     assert.equal(upd1.userPriority, 1, "t1 (no deps) should be priority 1");
     assert.equal(upd2.userPriority, 2, "t2 (depends on t1) should be priority 2");
+
+    // Verify result object
+    assert.equal(result.updated, 2);
+    assert.equal(result.assignments[0]![0], t1.id);
+    assert.equal(result.assignments[1]![0], t2.id);
+  });
+
+  it("handles empty goalIds array gracefully", async () => {
+    const t1 = await backend.createTask({ title: "Task", description: "D" });
+    await backend.updateTask(t1.id, { goal: "some-goal" });
+
+    const result = await prioritizeGoals(backend, []);
+
+    // All tasks are ungrouped and should still get priorities
+    assert.equal(result.updated, 1);
+    const updated = await backend.getTask(t1.id);
+    assert.equal(updated.userPriority, 1, "ungrouped task should get priority 1");
+  });
+
+  it("handles mixed goals where one has tasks and another doesn't", async () => {
+    // goal-a has tasks, goal-b has none
+    const a1 = await backend.createTask({ title: "A1", description: "A" });
+    await backend.updateTask(a1.id, { goal: "goal-a" });
+    const a2 = await backend.createTask({ title: "A2", description: "A" });
+    await backend.updateTask(a2.id, { goal: "goal-a" });
+
+    // No tasks for goal-b
+    const ungrouped = await backend.createTask({ title: "Ungrouped", description: "U" });
+
+    const result = await prioritizeGoals(backend, ["goal-a", "goal-b"]);
+
+    // goal-a tasks come first (2 tasks), then ungrouped (1 task)
+    // goal-b is simply empty — no error, no crash
+    assert.equal(result.updated, 3, "all active tasks should get priorities");
+
+    const updA1 = await backend.getTask(a1.id);
+    const updA2 = await backend.getTask(a2.id);
+    const updUngrouped = await backend.getTask(ungrouped.id);
+
+    // goal-a tasks before ungrouped
+    assert.ok(updA1.userPriority! < updUngrouped.userPriority!, "goal-a before ungrouped");
+    assert.ok(updA2.userPriority! < updUngrouped.userPriority!, "goal-a before ungrouped");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CLI mutual exclusivity — verifies the modes array filtering logic
+// ---------------------------------------------------------------------------
+
+describe("prioritize CLI mutual exclusivity", () => {
+  it("detects --goal combined with --clear as conflicting modes", () => {
+    // Replicate the exact logic from the CLI action handler in index.ts
+    const options = { clear: true, goal: "my-goal", goals: undefined };
+    const taskIds: string[] = [];
+
+    const modes = [
+      options.clear ? "--clear" : null,
+      options.goal ? "--goal" : null,
+      options.goals ? "--goals" : null,
+      taskIds.length > 0 ? "taskIds" : null,
+    ].filter(Boolean);
+
+    assert.ok(modes.length > 1, "should detect multiple modes");
+    assert.ok(modes.includes("--clear"), "should include --clear");
+    assert.ok(modes.includes("--goal"), "should include --goal");
+  });
+
+  it("detects --goal combined with positional taskIds as conflicting modes", () => {
+    const options = { clear: undefined, goal: "my-goal", goals: undefined };
+    const taskIds = ["task-001", "task-002"];
+
+    const modes = [
+      options.clear ? "--clear" : null,
+      options.goal ? "--goal" : null,
+      options.goals ? "--goals" : null,
+      taskIds.length > 0 ? "taskIds" : null,
+    ].filter(Boolean);
+
+    assert.ok(modes.length > 1, "should detect multiple modes");
+    assert.ok(modes.includes("--goal"), "should include --goal");
+    assert.ok(modes.includes("taskIds"), "should include taskIds");
+  });
+
+  it("detects --goals combined with --goal as conflicting modes", () => {
+    const options = { clear: undefined, goal: "my-goal", goals: ["g1", "g2"] };
+    const taskIds: string[] = [];
+
+    const modes = [
+      options.clear ? "--clear" : null,
+      options.goal ? "--goal" : null,
+      options.goals ? "--goals" : null,
+      taskIds.length > 0 ? "taskIds" : null,
+    ].filter(Boolean);
+
+    assert.ok(modes.length > 1, "should detect multiple modes");
+    assert.ok(modes.includes("--goal"), "should include --goal");
+    assert.ok(modes.includes("--goals"), "should include --goals");
+  });
+
+  it("detects --goals combined with --clear as conflicting modes", () => {
+    const options = { clear: true, goal: undefined, goals: ["g1"] };
+    const taskIds: string[] = [];
+
+    const modes = [
+      options.clear ? "--clear" : null,
+      options.goal ? "--goal" : null,
+      options.goals ? "--goals" : null,
+      taskIds.length > 0 ? "taskIds" : null,
+    ].filter(Boolean);
+
+    assert.ok(modes.length > 1, "should detect multiple modes");
+    assert.ok(modes.includes("--clear"), "should include --clear");
+    assert.ok(modes.includes("--goals"), "should include --goals");
+  });
+
+  it("allows single mode --goal without conflict", () => {
+    const options = { clear: undefined, goal: "my-goal", goals: undefined };
+    const taskIds: string[] = [];
+
+    const modes = [
+      options.clear ? "--clear" : null,
+      options.goal ? "--goal" : null,
+      options.goals ? "--goals" : null,
+      taskIds.length > 0 ? "taskIds" : null,
+    ].filter(Boolean);
+
+    assert.equal(modes.length, 1, "single mode should not be flagged as conflict");
+    assert.equal(modes[0], "--goal");
+  });
+
+  it("allows single mode --goals without conflict", () => {
+    const options = { clear: undefined, goal: undefined, goals: ["g1", "g2"] };
+    const taskIds: string[] = [];
+
+    const modes = [
+      options.clear ? "--clear" : null,
+      options.goal ? "--goal" : null,
+      options.goals ? "--goals" : null,
+      taskIds.length > 0 ? "taskIds" : null,
+    ].filter(Boolean);
+
+    assert.equal(modes.length, 1, "single mode should not be flagged as conflict");
+    assert.equal(modes[0], "--goals");
+  });
+
+  it("allows no mode (interactive fallback)", () => {
+    const options = { clear: undefined, goal: undefined, goals: undefined };
+    const taskIds: string[] = [];
+
+    const modes = [
+      options.clear ? "--clear" : null,
+      options.goal ? "--goal" : null,
+      options.goals ? "--goals" : null,
+      taskIds.length > 0 ? "taskIds" : null,
+    ].filter(Boolean);
+
+    assert.equal(modes.length, 0, "no mode selected should be valid for interactive fallback");
   });
 });

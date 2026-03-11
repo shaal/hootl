@@ -422,6 +422,8 @@ hootl reconcile --dry-run      Show what would change without modifying anything
 hootl prioritize               Interactive: select and order tasks via gum multi-select
 hootl prioritize t1 t2 t3      Set userPriority by argument order (t1=#1, t2=#2, t3=#3)
 hootl prioritize --clear       Remove all userPriority overrides
+hootl prioritize --goal <goalId>   Set contiguous priority on all tasks in a goal (dependency-aware)
+hootl prioritize --goals g1 g2 g3  Reorder goals relative to each other; ungrouped tasks at end
 hootl logs                     View recent events as a timeline (last 50)
 hootl logs --task <id>         Filter events for a specific task
 hootl logs --type <event_type> Filter by event type (e.g., error, state_change, decision)

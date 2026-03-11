@@ -28,7 +28,7 @@ import { autoInit } from "./init.js";
 import { registerInstance, deregisterInstanceSync } from "./instances.js";
 import { checkGlobalBudget } from "./budget.js";
 import { discussCommand } from "./discuss.js";
-import { findRunnableTask, findAndClaimTask, filterTasksByGoal, isGoalComplete, countBlockedInGoal, getNextTask, topoSortTasks } from "./selection.js";
+import { findRunnableTask, findAndClaimTask, filterTasksByGoal, isGoalComplete, countBlockedInGoal, getNextTask } from "./selection.js";
 import { syncReviewTasks } from "./sync.js";
 import { reconcileTasks, printReconcileReport } from "./reconcile.js";
 import { notifyWebhook } from "./notify.js";
@@ -45,6 +45,7 @@ import { extractTaskArray } from "./parse-tasks.js";
 import { loadGoals, saveGoals, createGoalsFromGroups, ensureGoalFromFlag } from "./goals.js";
 import { logsCommand } from "./logs.js";
 import { JSON_SCHEMA_INSTRUCTION } from "./plan-prompt.js";
+import { prioritizeGoal as prioritizeGoalCore, prioritizeGoals as prioritizeGoalsCore } from "./prioritize.js";
 
 function getBackend(config: Config): TaskBackend {
   const tasksDir = join(process.cwd(), ".hootl", "tasks");
@@ -960,22 +961,16 @@ async function prioritizeGoal(goalId: string): Promise<void> {
   const config = await loadConfig();
   const backend = getBackend(config);
 
-  const allTasks = await backend.listTasks();
-  const goalTasks = allTasks.filter(t => t.goal === goalId && t.state !== "done");
-
-  if (goalTasks.length === 0) {
-    uiError(`No active tasks found for goal "${goalId}".`);
+  try {
+    const result = await prioritizeGoalCore(backend, goalId);
+    for (const [taskId, priority] of result.assignments) {
+      uiInfo(`${taskId} → userPriority #${priority}`);
+    }
+    uiSuccess(`Set contiguous userPriority on ${result.updated} task(s) in goal "${goalId}".`);
+  } catch (err: unknown) {
+    uiError(err instanceof Error ? err.message : String(err));
     process.exitCode = 1;
-    return;
   }
-
-  const sorted = topoSortTasks(goalTasks);
-  for (let i = 0; i < sorted.length; i++) {
-    const task = sorted[i]!;
-    await backend.updateTask(task.id, { userPriority: i + 1 });
-    uiInfo(`${task.id} → userPriority #${i + 1} (${task.title})`);
-  }
-  uiSuccess(`Set contiguous userPriority on ${sorted.length} task(s) in goal "${goalId}".`);
 }
 
 async function prioritizeGoals(goalIds: string[]): Promise<void> {
@@ -983,42 +978,22 @@ async function prioritizeGoals(goalIds: string[]): Promise<void> {
   const config = await loadConfig();
   const backend = getBackend(config);
 
+  const result = await prioritizeGoalsCore(backend, goalIds);
+
+  // Print per-goal summary by counting tasks from the backend
   const allTasks = await backend.listTasks();
-  const activeTasks = allTasks.filter(t => t.state !== "done");
-
-  const ordered: Task[] = [];
-  const assigned = new Set<string>();
-
-  // Add tasks per goal in specified order, topologically sorted within each
+  const goalIdSet = new Set(goalIds);
   for (const goalId of goalIds) {
-    const goalTasks = activeTasks.filter(t => t.goal === goalId && !assigned.has(t.id));
-    const sorted = topoSortTasks(goalTasks);
-    for (const task of sorted) {
-      ordered.push(task);
-      assigned.add(task.id);
-    }
-  }
-
-  // Append ungrouped tasks (goal is null or not in the specified list)
-  const ungrouped = activeTasks.filter(t => !assigned.has(t.id));
-  // Preserve existing order for ungrouped tasks
-  ordered.push(...ungrouped);
-
-  for (let i = 0; i < ordered.length; i++) {
-    const task = ordered[i]!;
-    await backend.updateTask(task.id, { userPriority: i + 1 });
-  }
-
-  // Print summary
-  for (const goalId of goalIds) {
-    const count = ordered.filter(t => t.goal === goalId).length;
+    const count = allTasks.filter(t => t.goal === goalId && t.state !== "done").length;
     uiInfo(`Goal "${goalId}": ${count} task(s)`);
   }
-  const ungroupedCount = ungrouped.length;
+  const ungroupedCount = allTasks.filter(
+    t => t.state !== "done" && (t.goal === null || !goalIdSet.has(t.goal)),
+  ).length;
   if (ungroupedCount > 0) {
     uiInfo(`Ungrouped: ${ungroupedCount} task(s)`);
   }
-  uiSuccess(`Set userPriority on ${ordered.length} task(s) across ${goalIds.length} goal(s).`);
+  uiSuccess(`Set userPriority on ${result.updated} task(s) across ${goalIds.length} goal(s).`);
 }
 
 async function prioritizeCommand(taskIds?: string[], clear?: boolean): Promise<void> {
