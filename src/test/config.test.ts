@@ -29,7 +29,6 @@ describe("ConfigSchema", () => {
     assert.equal(config.taskBackend, "local");
     assert.equal(config.permissionMode, "default");
 
-    assert.equal(config.budgets.perTask, 10.0);
     assert.equal(config.budgets.global, 50.0);
     assert.equal(config.budgets.maxAttemptsPerTask, 10);
     assert.equal(config.budgets.contextWindowLimit, 60);
@@ -188,7 +187,7 @@ describe("loadConfig", () => {
     assert.equal(config.taskBackend, "beads");
     assert.equal(config.budgets.contextWindowLimit, 80);
     // Non-overridden defaults remain
-    assert.equal(config.budgets.perTask, 10.0);
+    assert.equal(config.budgets.global, 50.0);
     assert.equal(config.confidence.target, 95);
   });
 });
@@ -428,14 +427,14 @@ describe("setNestedValue", () => {
 
   it("sets a nested key", () => {
     const obj: Record<string, unknown> = {};
-    setNestedValue(obj, "budgets.perTask", 10);
-    assert.deepEqual(obj, { budgets: { perTask: 10 } });
+    setNestedValue(obj, "budgets.global", 50);
+    assert.deepEqual(obj, { budgets: { global: 50 } });
   });
 
   it("preserves existing sibling keys", () => {
     const obj: Record<string, unknown> = { budgets: { contextWindowLimit: 60 } };
-    setNestedValue(obj, "budgets.perTask", 10);
-    assert.deepEqual(obj, { budgets: { contextWindowLimit: 60, perTask: 10 } });
+    setNestedValue(obj, "budgets.global", 50);
+    assert.deepEqual(obj, { budgets: { contextWindowLimit: 60, global: 50 } });
   });
 
   it("creates intermediate objects for deep paths", () => {
@@ -501,11 +500,11 @@ describe("saveGlobalConfig", () => {
     await writeFile(join(hootlDir, "config.json"), "{}\n", "utf-8");
 
     await saveProjectConfig((raw) => {
-      setNestedValue(raw, "budgets.perTask", 10);
+      setNestedValue(raw, "budgets.global", 50);
     }, projectDir);
 
     const content = JSON.parse(await readFile(join(hootlDir, "config.json"), "utf-8")) as Record<string, unknown>;
-    assert.deepEqual(content, { budgets: { perTask: 10 } });
+    assert.deepEqual(content, { budgets: { global: 50 } });
   });
 
   it("saveProjectConfig reads existing config and applies mutation", async () => {
@@ -518,13 +517,13 @@ describe("saveGlobalConfig", () => {
     );
 
     await saveProjectConfig((raw) => {
-      setNestedValue(raw, "budgets.perTask", 10);
+      setNestedValue(raw, "budgets.global", 50);
     }, projectDir);
 
     const content = JSON.parse(await readFile(join(hootlDir, "config.json"), "utf-8")) as Record<string, unknown>;
     const budgets = content["budgets"] as Record<string, unknown>;
     assert.equal(budgets["contextWindowLimit"], 60);
-    assert.equal(budgets["perTask"], 10);
+    assert.equal(budgets["global"], 50);
     assert.equal(content["taskBackend"], "local");
   });
 

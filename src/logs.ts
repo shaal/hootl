@@ -95,7 +95,7 @@ function formatTime(timestamp: string): string {
 function summarizeEvent(entry: LogEntry): string {
   switch (entry.type) {
     case "run_start":
-      return `budget=$${entry.data.config.budgetPerTask}/task, target=${entry.data.config.confidenceTarget}%`;
+      return `budget=$${entry.data.config.budgetGlobal}/day, target=${entry.data.config.confidenceTarget}%`;
     case "phase_start":
       return `${entry.data.phase} attempt #${entry.data.attempt}`;
     case "phase_end": {

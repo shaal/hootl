@@ -166,7 +166,6 @@ process.stdout.write(JSON.stringify({
       assert.equal(firstEvent.data.config.confidenceTarget, 95, "config snapshot should include confidence target");
       assert.equal(firstEvent.data.config.onConfidenceMode, "none", "config snapshot should include onConfidenceMode");
       assert.equal(firstEvent.data.config.maxAttempts, 2, "config snapshot should include maxAttempts");
-      assert.equal(typeof firstEvent.data.config.budgetPerTask, "number", "budgetPerTask should be a number");
       assert.equal(typeof firstEvent.data.config.budgetGlobal, "number", "budgetGlobal should be a number");
       assert.equal(typeof firstEvent.data.config.useWorktrees, "boolean", "useWorktrees should be a boolean");
     }

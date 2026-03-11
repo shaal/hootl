@@ -1131,7 +1131,6 @@ export async function runCompletionLoop(
     type: "run_start",
     data: {
       config: {
-        budgetPerTask: config.budgets.perTask,
         budgetGlobal: config.budgets.global,
         confidenceTarget: config.confidence.target,
         onConfidenceMode: resolveOnConfidenceMode(config, cliFlags.merge, cliFlags.noMerge),
@@ -1489,24 +1488,6 @@ export async function runCompletionLoop(
   let budgetWarningFired = false;
 
   while (true) {
-    // Check budget
-    if (currentTask.totalCost >= config.budgets.perTask) {
-      await logEvent(costLogDir, {
-        taskId: task.id,
-        type: "decision",
-        data: { decision: "budget_exceeded", details: `Per-task: $${currentTask.totalCost.toFixed(2)} >= $${config.budgets.perTask.toFixed(2)}` },
-      });
-      uiWarn(
-        `Task ${task.id} exceeded per-task budget ($${currentTask.totalCost.toFixed(2)} >= $${config.budgets.perTask.toFixed(2)}). Moving to blocked.`,
-      );
-      const updatedBudgetTask = await moveToBlocked(
-        backend, currentTask, [...currentTask.blockers, "Per-task budget exhausted"],
-        taskBranch, baseBranch, currentTask.confidence, config, hookDeps, worktreePath,
-      );
-      await recordMemory(updatedBudgetTask, getProjectDir());
-      break;
-    }
-
     // Check global daily budget
     const globalBudgetCheck = await checkGlobalBudget(costLogDir, config.budgets.global);
     await logEvent(costLogDir, {

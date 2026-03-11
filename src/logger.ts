@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 // ── Event type discriminated union ──────────────────────────────────────────
 
 export type LogEvent =
-  | { taskId: string; type: "run_start"; data: { config: { budgetPerTask: number; budgetGlobal: number; confidenceTarget: number; onConfidenceMode: string; maxAttempts: number; useWorktrees: boolean } } }
+  | { taskId: string; type: "run_start"; data: { config: { budgetGlobal: number; confidenceTarget: number; onConfidenceMode: string; maxAttempts: number; useWorktrees: boolean } } }
   | { taskId: string; type: "phase_start"; data: { phase: string; attempt: number } }
   | { taskId: string; type: "phase_end"; data: { phase: string; attempt: number; costUsd: number; durationMs?: number; exitCode?: number; outputLength?: number } }
   | { taskId: string; type: "state_change"; data: { from: string; to: string; reason?: string } }

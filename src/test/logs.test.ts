@@ -36,7 +36,7 @@ function makeEnoentDeps(): ReadLogsDeps {
 
 const runStartEntry: LogEntry = makeEntry({
   type: "run_start",
-  data: { config: { budgetPerTask: 5, budgetGlobal: 50, confidenceTarget: 80, onConfidenceMode: "merge", maxAttempts: 5, useWorktrees: true } },
+  data: { config: { budgetGlobal: 50, confidenceTarget: 80, onConfidenceMode: "merge", maxAttempts: 5, useWorktrees: true } },
 });
 
 const phaseStartEntry: LogEntry = makeEntry({
@@ -215,7 +215,7 @@ describe("formatTimeline", () => {
     const lines = formatTimeline([runStartEntry]);
     assert.equal(lines.length, 1);
     assert.ok(lines[0]!.includes("run_start"));
-    assert.ok(lines[0]!.includes("budget=$5/task"));
+    assert.ok(lines[0]!.includes("budget=$50/day"));
     assert.ok(lines[0]!.includes("target=80%"));
   });
 

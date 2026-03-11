@@ -126,7 +126,6 @@ describe("logEvent", () => {
       type: "run_start",
       data: {
         config: {
-          budgetPerTask: 5,
           budgetGlobal: 50,
           confidenceTarget: 80,
           onConfidenceMode: "merge",
@@ -140,7 +139,6 @@ describe("logEvent", () => {
     const entry = parseEntry(tracking);
     assert.equal(entry.type, "run_start");
     assert.equal(entry.taskId, "t8");
-    assert.equal(entry.data.config.budgetPerTask, 5);
     assert.equal(entry.data.config.budgetGlobal, 50);
     assert.equal(entry.data.config.confidenceTarget, 80);
     assert.equal(entry.data.config.onConfidenceMode, "merge");

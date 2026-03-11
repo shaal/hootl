@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 
 const BudgetSchema = z.object({
-  perTask: z.number().default(10.00),
   global: z.number().default(50.00),
   maxAttemptsPerTask: z.number().default(10),
   contextWindowLimit: z.number().default(60),
@@ -98,7 +97,6 @@ export async function loadJsonFile(path: string): Promise<Record<string, unknown
 const ENV_MAP: Record<string, string[]> = {
   HOOTL_TASK_BACKEND: ["taskBackend"],
   HOOTL_BUDGET_CONTEXT_WINDOW_LIMIT: ["budgets", "contextWindowLimit"],
-  HOOTL_BUDGET_PER_TASK: ["budgets", "perTask"],
   HOOTL_BUDGET_GLOBAL: ["budgets", "global"],
   HOOTL_BUDGET_MAX_ATTEMPTS: ["budgets", "maxAttemptsPerTask"],
   HOOTL_CONFIDENCE_TARGET: ["confidence", "target"],
@@ -240,7 +238,7 @@ export function resolveOnConfidenceMode(
 
 /**
  * Sets a value at a dotted path within an object, creating intermediate objects as needed.
- * e.g. setNestedValue({}, "budgets.perTask", 10) → { budgets: { perTask: 10 } }
+ * e.g. setNestedValue({}, "budgets.global", 50) → { budgets: { global: 50 } }
  */
 export function setNestedValue(
   obj: Record<string, unknown>,

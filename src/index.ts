@@ -1172,7 +1172,7 @@ async function configCommand(options: { set?: string; global?: boolean }): Promi
   // Parse key=value (split on first = only)
   const eqIndex = options.set.indexOf("=");
   if (eqIndex === -1) {
-    uiError("Invalid format. Use --set key=value (e.g. --set budgets.perTask=10)");
+    uiError("Invalid format. Use --set key=value (e.g. --set budgets.global=50)");
     process.exitCode = 1;
     return;
   }
