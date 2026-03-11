@@ -15,6 +15,10 @@ import {
   getHeadSha,
   resetToSha,
   mergeBranch,
+  attemptMerge,
+  abortMerge,
+  completeMerge,
+  resolveConflicts,
   deleteBranch,
   pushBranch,
   createDraftPR,
@@ -27,7 +31,7 @@ import {
   branchExists,
   hasBranchDiff,
 } from "../git.js";
-import type { CommitMessageDeps, StaleBranchOpts } from "../git.js";
+import type { CommitMessageDeps, MergeResolveDeps, StaleBranchOpts } from "../git.js";
 import type { InvokeResult } from "../invoke.js";
 
 // ---------------------------------------------------------------------------
@@ -513,6 +517,574 @@ describe("git integration", () => {
         try { await execa("git", ["merge", "--abort"], { cwd: tmpDir }); } catch { /* ok */ }
         try { await execa("git", ["checkout", "main"], { cwd: tmpDir }); } catch { /* ok */ }
         process.chdir(originalCwd);
+      }
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Staged merge flow: attemptMerge / abortMerge / completeMerge
+  // ---------------------------------------------------------------------------
+
+  describe("attemptMerge", () => {
+    it("returns success on clean merge", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "hootl-am-"));
+      try {
+        await execa("git", ["init", "-b", "main"], { cwd: dir });
+        await execa("git", ["config", "user.name", "Test"], { cwd: dir });
+        await execa("git", ["config", "user.email", "t@t.com"], { cwd: dir });
+        await writeFile(join(dir, "base.txt"), "base");
+        await execa("git", ["add", "-A"], { cwd: dir });
+        await execa("git", ["commit", "-m", "init"], { cwd: dir });
+
+        // Create a feature branch with a non-conflicting change
+        await execa("git", ["checkout", "-b", "feature-clean"], { cwd: dir });
+        await writeFile(join(dir, "feature.txt"), "feature content");
+        await execa("git", ["add", "-A"], { cwd: dir });
+        await execa("git", ["commit", "-m", "feature work"], { cwd: dir });
+        await execa("git", ["checkout", "main"], { cwd: dir });
+
+        const result = await attemptMerge("feature-clean", "main", dir);
+        assert.deepEqual(result, { status: "success" });
+
+        // Verify file exists on main after merge
+        assert.equal(existsSync(join(dir, "feature.txt")), true);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("returns conflict with file list on merge conflict", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "hootl-am-"));
+      try {
+        await execa("git", ["init", "-b", "main"], { cwd: dir });
+        await execa("git", ["config", "user.name", "Test"], { cwd: dir });
+        await execa("git", ["config", "user.email", "t@t.com"], { cwd: dir });
+        await writeFile(join(dir, "conflict.txt"), "original");
+        await execa("git", ["add", "-A"], { cwd: dir });
+        await execa("git", ["commit", "-m", "init"], { cwd: dir });
+
+        // Branch side
+        await execa("git", ["checkout", "-b", "feature-conflict"], { cwd: dir });
+        await writeFile(join(dir, "conflict.txt"), "branch side content");
+        await execa("git", ["add", "-A"], { cwd: dir });
+        await execa("git", ["commit", "-m", "branch change"], { cwd: dir });
+
+        // Main side (conflicting)
+        await execa("git", ["checkout", "main"], { cwd: dir });
+        await writeFile(join(dir, "conflict.txt"), "main side content");
+        await execa("git", ["add", "-A"], { cwd: dir });
+        await execa("git", ["commit", "-m", "main change"], { cwd: dir });
+
+        const result = await attemptMerge("feature-conflict", "main", dir);
+        assert.equal(result.status, "conflict");
+        if (result.status === "conflict") {
+          assert.ok(result.conflictedFiles.includes("conflict.txt"));
+        }
+
+        // Verify conflict markers are readable in the file (merge left in progress)
+        const content = await readFile(join(dir, "conflict.txt"), "utf-8");
+        assert.ok(content.includes("<<<<<<<"), "should have conflict markers");
+      } finally {
+        try { await execa("git", ["merge", "--abort"], { cwd: dir }); } catch { /* ok */ }
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("returns error when checkout fails", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "hootl-am-"));
+      try {
+        await execa("git", ["init", "-b", "main"], { cwd: dir });
+        await execa("git", ["config", "user.name", "Test"], { cwd: dir });
+        await execa("git", ["config", "user.email", "t@t.com"], { cwd: dir });
+        await writeFile(join(dir, "base.txt"), "base");
+        await execa("git", ["add", "-A"], { cwd: dir });
+        await execa("git", ["commit", "-m", "init"], { cwd: dir });
+
+        const result = await attemptMerge("feature", "nonexistent-branch", dir);
+        assert.equal(result.status, "error");
+        if (result.status === "error") {
+          assert.ok(result.message.includes("checkout failed"));
+        }
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe("abortMerge", () => {
+    it("aborts an in-progress merge and returns to task branch", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "hootl-abort-"));
+      try {
+        await execa("git", ["init", "-b", "main"], { cwd: dir });
+        await execa("git", ["config", "user.name", "Test"], { cwd: dir });
+        await execa("git", ["config", "user.email", "t@t.com"], { cwd: dir });
+        await writeFile(join(dir, "conflict.txt"), "original");
+        await execa("git", ["add", "-A"], { cwd: dir });
+        await execa("git", ["commit", "-m", "init"], { cwd: dir });
+
+        // Create conflicting changes
+        await execa("git", ["checkout", "-b", "task-branch"], { cwd: dir });
+        await writeFile(join(dir, "conflict.txt"), "task side");
+        await execa("git", ["add", "-A"], { cwd: dir });
+        await execa("git", ["commit", "-m", "task change"], { cwd: dir });
+
+        await execa("git", ["checkout", "main"], { cwd: dir });
+        await writeFile(join(dir, "conflict.txt"), "main side");
+        await execa("git", ["add", "-A"], { cwd: dir });
+        await execa("git", ["commit", "-m", "main change"], { cwd: dir });
+
+        // Trigger the conflict
+        const mergeResult = await attemptMerge("task-branch", "main", dir);
+        assert.equal(mergeResult.status, "conflict");
+
+        // Abort and return to task branch
+        await abortMerge("task-branch", dir);
+
+        // Verify we're back on the task branch
+        const branchResult = await execa("git", ["branch", "--show-current"], { cwd: dir });
+        assert.equal(branchResult.stdout.trim(), "task-branch");
+
+        // Verify no merge in progress (conflict.txt should have task side content)
+        const content = await readFile(join(dir, "conflict.txt"), "utf-8");
+        assert.equal(content, "task side");
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("no-ops when no merge in progress", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "hootl-abort-"));
+      try {
+        await execa("git", ["init", "-b", "main"], { cwd: dir });
+        await execa("git", ["config", "user.name", "Test"], { cwd: dir });
+        await execa("git", ["config", "user.email", "t@t.com"], { cwd: dir });
+        await writeFile(join(dir, "base.txt"), "base");
+        await execa("git", ["add", "-A"], { cwd: dir });
+        await execa("git", ["commit", "-m", "init"], { cwd: dir });
+
+        // Should not throw
+        await abortMerge("main", dir);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe("completeMerge", () => {
+    it("stages files and commits merge", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "hootl-cm-"));
+      try {
+        await execa("git", ["init", "-b", "main"], { cwd: dir });
+        await execa("git", ["config", "user.name", "Test"], { cwd: dir });
+        await execa("git", ["config", "user.email", "t@t.com"], { cwd: dir });
+        await writeFile(join(dir, "conflict.txt"), "original");
+        await execa("git", ["add", "-A"], { cwd: dir });
+        await execa("git", ["commit", "-m", "init"], { cwd: dir });
+
+        // Create conflicting changes
+        await execa("git", ["checkout", "-b", "task-cm"], { cwd: dir });
+        await writeFile(join(dir, "conflict.txt"), "task content");
+        await execa("git", ["add", "-A"], { cwd: dir });
+        await execa("git", ["commit", "-m", "task side"], { cwd: dir });
+
+        await execa("git", ["checkout", "main"], { cwd: dir });
+        await writeFile(join(dir, "conflict.txt"), "main content");
+        await execa("git", ["add", "-A"], { cwd: dir });
+        await execa("git", ["commit", "-m", "main side"], { cwd: dir });
+
+        // Start a merge (will conflict)
+        const mergeResult = await attemptMerge("task-cm", "main", dir);
+        assert.equal(mergeResult.status, "conflict");
+
+        // Manually resolve the conflict
+        await writeFile(join(dir, "conflict.txt"), "resolved content");
+
+        // Complete the merge
+        const success = await completeMerge(["conflict.txt"], "test merge commit", dir);
+        assert.equal(success, true);
+
+        // Verify the commit message appears in log
+        const log = await execa("git", ["log", "--oneline", "-1"], { cwd: dir });
+        assert.ok(log.stdout.includes("test merge commit"));
+
+        // Verify the resolved content
+        const content = await readFile(join(dir, "conflict.txt"), "utf-8");
+        assert.equal(content, "resolved content");
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("returns false on failure", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "hootl-cm-"));
+      try {
+        await execa("git", ["init", "-b", "main"], { cwd: dir });
+        await execa("git", ["config", "user.name", "Test"], { cwd: dir });
+        await execa("git", ["config", "user.email", "t@t.com"], { cwd: dir });
+        await writeFile(join(dir, "base.txt"), "base");
+        await execa("git", ["add", "-A"], { cwd: dir });
+        await execa("git", ["commit", "-m", "init"], { cwd: dir });
+
+        // Attempt completeMerge with no merge in progress — git commit will fail
+        const success = await completeMerge(["nonexistent.txt"], "should fail", dir);
+        assert.equal(success, false);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Claude-assisted conflict resolution: resolveConflicts
+  // ---------------------------------------------------------------------------
+
+  describe("resolveConflicts", () => {
+    it("resolves single file conflict via Claude", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "hootl-rc-"));
+      try {
+        await execa("git", ["init", "-b", "main"], { cwd: dir });
+        await execa("git", ["config", "user.name", "Test"], { cwd: dir });
+        await execa("git", ["config", "user.email", "t@t.com"], { cwd: dir });
+        await writeFile(join(dir, "file.txt"), "original");
+        await execa("git", ["add", "-A"], { cwd: dir });
+        await execa("git", ["commit", "-m", "init"], { cwd: dir });
+
+        // Create conflicting changes
+        await execa("git", ["checkout", "-b", "task-rc"], { cwd: dir });
+        await writeFile(join(dir, "file.txt"), "task version");
+        await execa("git", ["add", "-A"], { cwd: dir });
+        await execa("git", ["commit", "-m", "task change"], { cwd: dir });
+
+        await execa("git", ["checkout", "main"], { cwd: dir });
+        await writeFile(join(dir, "file.txt"), "main version");
+        await execa("git", ["add", "-A"], { cwd: dir });
+        await execa("git", ["commit", "-m", "main change"], { cwd: dir });
+
+        // Start the conflict
+        const mergeResult = await attemptMerge("task-rc", "main", dir);
+        assert.equal(mergeResult.status, "conflict");
+
+        // Mock invoke to return resolved content
+        const deps: MergeResolveDeps = {
+          invoke: async () => ({
+            output: "merged version combining both changes",
+            costUsd: 0.05,
+            exitCode: 0,
+            durationMs: 200,
+            contextWindowPercent: 10,
+          }),
+        };
+
+        const result = await resolveConflicts(
+          ["file.txt"], "task-rc", "main", "Test task", "Test description", deps, dir,
+        );
+
+        assert.equal(result.success, true);
+        assert.deepEqual(result.resolvedFiles, ["file.txt"]);
+        assert.equal(result.costUsd, 0.05);
+
+        // Verify the file has the resolved content
+        const content = await readFile(join(dir, "file.txt"), "utf-8");
+        assert.equal(content, "merged version combining both changes");
+
+        // Verify the merge is committed (not in progress)
+        const log = await execa("git", ["log", "--oneline", "-1"], { cwd: dir });
+        assert.ok(log.stdout.includes("conflict resolved by hootl"));
+      } finally {
+        try { await execa("git", ["merge", "--abort"], { cwd: dir }); } catch { /* ok */ }
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("resolves multiple conflicted files", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "hootl-rc-"));
+      try {
+        await execa("git", ["init", "-b", "main"], { cwd: dir });
+        await execa("git", ["config", "user.name", "Test"], { cwd: dir });
+        await execa("git", ["config", "user.email", "t@t.com"], { cwd: dir });
+        await writeFile(join(dir, "a.txt"), "original a");
+        await writeFile(join(dir, "b.txt"), "original b");
+        await execa("git", ["add", "-A"], { cwd: dir });
+        await execa("git", ["commit", "-m", "init"], { cwd: dir });
+
+        // Branch side
+        await execa("git", ["checkout", "-b", "task-multi"], { cwd: dir });
+        await writeFile(join(dir, "a.txt"), "task a");
+        await writeFile(join(dir, "b.txt"), "task b");
+        await execa("git", ["add", "-A"], { cwd: dir });
+        await execa("git", ["commit", "-m", "task changes"], { cwd: dir });
+
+        // Main side (conflicting both)
+        await execa("git", ["checkout", "main"], { cwd: dir });
+        await writeFile(join(dir, "a.txt"), "main a");
+        await writeFile(join(dir, "b.txt"), "main b");
+        await execa("git", ["add", "-A"], { cwd: dir });
+        await execa("git", ["commit", "-m", "main changes"], { cwd: dir });
+
+        const mergeResult = await attemptMerge("task-multi", "main", dir);
+        assert.equal(mergeResult.status, "conflict");
+
+        let callCount = 0;
+        const deps: MergeResolveDeps = {
+          invoke: async () => {
+            callCount++;
+            return {
+              output: `resolved content for file ${callCount}`,
+              costUsd: 0.03,
+              exitCode: 0,
+              durationMs: 100,
+              contextWindowPercent: 5,
+            };
+          },
+        };
+
+        const result = await resolveConflicts(
+          ["a.txt", "b.txt"], "task-multi", "main", "Multi task", "desc", deps, dir,
+        );
+
+        assert.equal(result.success, true);
+        assert.equal(result.resolvedFiles.length, 2);
+        assert.ok(result.resolvedFiles.includes("a.txt"));
+        assert.ok(result.resolvedFiles.includes("b.txt"));
+        assert.equal(result.costUsd, 0.06); // 0.03 * 2
+      } finally {
+        try { await execa("git", ["merge", "--abort"], { cwd: dir }); } catch { /* ok */ }
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("fails when Claude output still contains conflict markers", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "hootl-rc-"));
+      try {
+        await execa("git", ["init", "-b", "main"], { cwd: dir });
+        await execa("git", ["config", "user.name", "Test"], { cwd: dir });
+        await execa("git", ["config", "user.email", "t@t.com"], { cwd: dir });
+        await writeFile(join(dir, "file.txt"), "original");
+        await execa("git", ["add", "-A"], { cwd: dir });
+        await execa("git", ["commit", "-m", "init"], { cwd: dir });
+
+        await execa("git", ["checkout", "-b", "task-markers"], { cwd: dir });
+        await writeFile(join(dir, "file.txt"), "task side");
+        await execa("git", ["add", "-A"], { cwd: dir });
+        await execa("git", ["commit", "-m", "task"], { cwd: dir });
+
+        await execa("git", ["checkout", "main"], { cwd: dir });
+        await writeFile(join(dir, "file.txt"), "main side");
+        await execa("git", ["add", "-A"], { cwd: dir });
+        await execa("git", ["commit", "-m", "main"], { cwd: dir });
+
+        const mergeResult = await attemptMerge("task-markers", "main", dir);
+        assert.equal(mergeResult.status, "conflict");
+
+        // Mock returns content with conflict markers still present
+        const deps: MergeResolveDeps = {
+          invoke: async () => ({
+            output: "<<<<<<< HEAD\nmain side\n=======\ntask side\n>>>>>>> task-markers",
+            costUsd: 0.02,
+            exitCode: 0,
+            durationMs: 100,
+            contextWindowPercent: 5,
+          }),
+        };
+
+        const result = await resolveConflicts(
+          ["file.txt"], "task-markers", "main", "Test", "desc", deps, dir,
+        );
+
+        assert.equal(result.success, false);
+        assert.equal(result.costUsd, 0.02); // Cost still tracked
+      } finally {
+        try { await execa("git", ["merge", "--abort"], { cwd: dir }); } catch { /* ok */ }
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("fails when Claude returns empty output", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "hootl-rc-"));
+      try {
+        await execa("git", ["init", "-b", "main"], { cwd: dir });
+        await execa("git", ["config", "user.name", "Test"], { cwd: dir });
+        await execa("git", ["config", "user.email", "t@t.com"], { cwd: dir });
+        await writeFile(join(dir, "file.txt"), "original");
+        await execa("git", ["add", "-A"], { cwd: dir });
+        await execa("git", ["commit", "-m", "init"], { cwd: dir });
+
+        await execa("git", ["checkout", "-b", "task-empty"], { cwd: dir });
+        await writeFile(join(dir, "file.txt"), "task side");
+        await execa("git", ["add", "-A"], { cwd: dir });
+        await execa("git", ["commit", "-m", "task"], { cwd: dir });
+
+        await execa("git", ["checkout", "main"], { cwd: dir });
+        await writeFile(join(dir, "file.txt"), "main side");
+        await execa("git", ["add", "-A"], { cwd: dir });
+        await execa("git", ["commit", "-m", "main"], { cwd: dir });
+
+        const mergeResult = await attemptMerge("task-empty", "main", dir);
+        assert.equal(mergeResult.status, "conflict");
+
+        const deps: MergeResolveDeps = {
+          invoke: async () => ({
+            output: "   ",
+            costUsd: 0.01,
+            exitCode: 0,
+            durationMs: 50,
+            contextWindowPercent: 2,
+          }),
+        };
+
+        const result = await resolveConflicts(
+          ["file.txt"], "task-empty", "main", "Test", "desc", deps, dir,
+        );
+
+        assert.equal(result.success, false);
+        assert.equal(result.costUsd, 0.01);
+      } finally {
+        try { await execa("git", ["merge", "--abort"], { cwd: dir }); } catch { /* ok */ }
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("skips binary files by extension", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "hootl-rc-"));
+      try {
+        await execa("git", ["init", "-b", "main"], { cwd: dir });
+        await execa("git", ["config", "user.name", "Test"], { cwd: dir });
+        await execa("git", ["config", "user.email", "t@t.com"], { cwd: dir });
+        await writeFile(join(dir, "code.txt"), "original");
+        await writeFile(join(dir, "image.png"), "fake png");
+        await execa("git", ["add", "-A"], { cwd: dir });
+        await execa("git", ["commit", "-m", "init"], { cwd: dir });
+
+        await execa("git", ["checkout", "-b", "task-bin"], { cwd: dir });
+        await writeFile(join(dir, "code.txt"), "task code");
+        await execa("git", ["add", "-A"], { cwd: dir });
+        await execa("git", ["commit", "-m", "task"], { cwd: dir });
+
+        await execa("git", ["checkout", "main"], { cwd: dir });
+        await writeFile(join(dir, "code.txt"), "main code");
+        await execa("git", ["add", "-A"], { cwd: dir });
+        await execa("git", ["commit", "-m", "main"], { cwd: dir });
+
+        const mergeResult = await attemptMerge("task-bin", "main", dir);
+        assert.equal(mergeResult.status, "conflict");
+
+        const deps: MergeResolveDeps = {
+          invoke: async () => ({
+            output: "resolved code content",
+            costUsd: 0.04,
+            exitCode: 0,
+            durationMs: 150,
+            contextWindowPercent: 8,
+          }),
+        };
+
+        // Pass both binary and text files — binary should be skipped
+        const result = await resolveConflicts(
+          ["code.txt", "image.png"], "task-bin", "main", "Test", "desc", deps, dir,
+        );
+
+        assert.equal(result.success, true);
+        assert.deepEqual(result.resolvedFiles, ["code.txt"]);
+        assert.ok(!result.resolvedFiles.includes("image.png"));
+      } finally {
+        try { await execa("git", ["merge", "--abort"], { cwd: dir }); } catch { /* ok */ }
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("returns failure when all files are binary", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "hootl-rc-"));
+      try {
+        await execa("git", ["init", "-b", "main"], { cwd: dir });
+        await execa("git", ["config", "user.name", "Test"], { cwd: dir });
+        await execa("git", ["config", "user.email", "t@t.com"], { cwd: dir });
+        await writeFile(join(dir, "base.txt"), "base");
+        await execa("git", ["add", "-A"], { cwd: dir });
+        await execa("git", ["commit", "-m", "init"], { cwd: dir });
+
+        const deps: MergeResolveDeps = {
+          invoke: async () => ({
+            output: "should not be called",
+            costUsd: 0.99,
+            exitCode: 0,
+            durationMs: 50,
+            contextWindowPercent: 2,
+          }),
+        };
+
+        // All binary files — no text to resolve
+        const result = await resolveConflicts(
+          ["image.png", "font.woff", "archive.zip"], "task", "main", "Test", "desc", deps, dir,
+        );
+
+        assert.equal(result.success, false);
+        assert.deepEqual(result.resolvedFiles, []);
+        assert.equal(result.costUsd, 0); // invoke should never be called
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("accumulates cost across files even on failure", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "hootl-rc-"));
+      try {
+        await execa("git", ["init", "-b", "main"], { cwd: dir });
+        await execa("git", ["config", "user.name", "Test"], { cwd: dir });
+        await execa("git", ["config", "user.email", "t@t.com"], { cwd: dir });
+        await writeFile(join(dir, "a.txt"), "original a");
+        await writeFile(join(dir, "b.txt"), "original b");
+        await execa("git", ["add", "-A"], { cwd: dir });
+        await execa("git", ["commit", "-m", "init"], { cwd: dir });
+
+        await execa("git", ["checkout", "-b", "task-cost"], { cwd: dir });
+        await writeFile(join(dir, "a.txt"), "task a");
+        await writeFile(join(dir, "b.txt"), "task b");
+        await execa("git", ["add", "-A"], { cwd: dir });
+        await execa("git", ["commit", "-m", "task"], { cwd: dir });
+
+        await execa("git", ["checkout", "main"], { cwd: dir });
+        await writeFile(join(dir, "a.txt"), "main a");
+        await writeFile(join(dir, "b.txt"), "main b");
+        await execa("git", ["add", "-A"], { cwd: dir });
+        await execa("git", ["commit", "-m", "main"], { cwd: dir });
+
+        const mergeResult = await attemptMerge("task-cost", "main", dir);
+        assert.equal(mergeResult.status, "conflict");
+
+        let callCount = 0;
+        const deps: MergeResolveDeps = {
+          invoke: async () => {
+            callCount++;
+            if (callCount === 1) {
+              // First file resolves successfully
+              return {
+                output: "resolved a",
+                costUsd: 0.03,
+                exitCode: 0,
+                durationMs: 100,
+                contextWindowPercent: 5,
+              };
+            }
+            // Second file returns content with conflict markers (failure)
+            return {
+              output: "<<<<<<< still broken\n=======\n>>>>>>> branch",
+              costUsd: 0.04,
+              exitCode: 0,
+              durationMs: 100,
+              contextWindowPercent: 5,
+            };
+          },
+        };
+
+        const result = await resolveConflicts(
+          ["a.txt", "b.txt"], "task-cost", "main", "Test", "desc", deps, dir,
+        );
+
+        assert.equal(result.success, false);
+        assert.equal(result.costUsd, 0.07); // Both invocations' costs accumulated
+      } finally {
+        try { await execa("git", ["merge", "--abort"], { cwd: dir }); } catch { /* ok */ }
+        await rm(dir, { recursive: true, force: true });
       }
     });
   });

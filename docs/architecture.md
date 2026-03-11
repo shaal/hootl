@@ -156,7 +156,7 @@ Git helpers: `getHeadSha()` returns the 40-char HEAD SHA; `resetToSha(sha)` runs
 
 When a task reaches the confidence target, `handleConfidenceMet()` in `src/loop.ts` determines what to do based on the `git.onConfidence` config:
 
-- **`merge`** — Merges the task branch into the base branch (`git checkout <base> && git merge <branch>`), deletes the task branch, moves task to `done`. Zero-friction solo dev flow.
+- **`merge`** — Merges the task branch into the base branch via the staged merge flow (see below), deletes the task branch, moves task to `done`. Zero-friction solo dev flow.
 - **`pr`** — Pushes the branch to remote, creates a draft PR via `gh pr create --draft` with task context. Moves task to `review`. Falls back gracefully if `gh` is not installed.
 - **`none`** — Current behavior: just moves task to `review` state.
 

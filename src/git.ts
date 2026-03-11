@@ -1,10 +1,11 @@
 import { existsSync, realpathSync } from "node:fs";
-import { unlink } from "node:fs/promises";
-import { join } from "node:path";
+import { readFile as fsReadFile, writeFile as fsWriteFile, unlink } from "node:fs/promises";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { execa } from "execa";
 import { uiInfo, uiWarn, errorMsg } from "./ui.js";
 import { invokeClaude } from "./invoke.js";
-import type { InvokeResult } from "./invoke.js";
+import type { InvokeOptions, InvokeResult } from "./invoke.js";
 
 /** Dependency injection interface for generateCommitMessage (testability). */
 export interface CommitMessageDeps {
@@ -282,27 +283,254 @@ export async function getBaseBranch(): Promise<string> {
   return getCurrentBranch();
 }
 
-export async function mergeBranch(taskBranch: string, baseBranch: string, cwd?: string): Promise<boolean> {
+// ---------------------------------------------------------------------------
+// Staged merge flow — attemptMerge / abortMerge / completeMerge
+// ---------------------------------------------------------------------------
+
+export type MergeAttemptResult =
+  | { status: "success" }
+  | { status: "conflict"; conflictedFiles: string[] }
+  | { status: "error"; message: string };
+
+/**
+ * Attempts to merge taskBranch into baseBranch. Returns a rich result so the
+ * caller can inspect conflicted files before deciding whether to abort or resolve.
+ * On success the working tree is on baseBranch with the merge committed.
+ * On conflict the merge is left in progress so conflict markers can be read.
+ */
+export async function attemptMerge(taskBranch: string, baseBranch: string, cwd?: string): Promise<MergeAttemptResult> {
   const execOpts = cwd ? { cwd } : {};
   try {
     await execa("git", ["checkout", baseBranch], execOpts);
+  } catch (err: unknown) {
+    return { status: "error", message: `checkout failed: ${errorMsg(err)}` };
+  }
+  try {
     await execa("git", ["merge", taskBranch], execOpts);
+    return { status: "success" };
+  } catch (mergeErr: unknown) {
+    // Check for conflicted files via the unmerged filter
+    try {
+      const diffResult = await execa("git", ["diff", "--name-only", "--diff-filter=U"], execOpts);
+      const files = diffResult.stdout
+        .split("\n")
+        .map((f) => f.trim())
+        .filter((f) => f.length > 0);
+      if (files.length > 0) {
+        return { status: "conflict", conflictedFiles: files };
+      }
+    } catch {
+      // diff command failed — treat as generic error
+    }
+    return { status: "error", message: `merge failed: ${errorMsg(mergeErr)}` };
+  }
+}
+
+/**
+ * Aborts an in-progress merge and switches back to taskBranch. Best-effort — never throws.
+ */
+export async function abortMerge(taskBranch: string, cwd?: string): Promise<void> {
+  const execOpts = cwd ? { cwd } : {};
+  try {
+    await execa("git", ["merge", "--abort"], execOpts);
+  } catch {
+    // merge --abort may fail if there's no merge in progress
+  }
+  try {
+    await execa("git", ["checkout", taskBranch], execOpts);
+  } catch {
+    // best effort to get back to task branch
+  }
+}
+
+/**
+ * Stages resolved files and completes a merge commit. Returns true on success.
+ */
+export async function completeMerge(files: string[], message: string, cwd?: string): Promise<boolean> {
+  const execOpts = cwd ? { cwd } : {};
+  try {
+    await execa("git", ["add", "--", ...files], execOpts);
+    await execa("git", ["commit", "-m", message], execOpts);
     return true;
   } catch (err: unknown) {
-    uiWarn(`Merge failed: ${errorMsg(err)}`);
-    // Abort any in-progress merge and try to get back to a clean state
-    try {
-      await execa("git", ["merge", "--abort"], execOpts);
-    } catch {
-      // merge --abort may fail if there's no merge in progress
-    }
-    try {
-      await execa("git", ["checkout", taskBranch], execOpts);
-    } catch {
-      // best effort to get back to task branch
-    }
+    uiWarn(`completeMerge failed: ${errorMsg(err)}`);
     return false;
   }
+}
+
+/**
+ * Convenience wrapper preserving the original boolean return API.
+ * Existing callers (and tests) continue to work unchanged.
+ */
+export async function mergeBranch(taskBranch: string, baseBranch: string, cwd?: string): Promise<boolean> {
+  const result = await attemptMerge(taskBranch, baseBranch, cwd);
+  if (result.status === "success") return true;
+  uiWarn(`Merge failed: ${result.status === "error" ? result.message : `conflict in ${result.conflictedFiles.join(", ")}`}`);
+  await abortMerge(taskBranch, cwd);
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Claude-assisted merge conflict resolution
+// ---------------------------------------------------------------------------
+
+/** Known binary file extensions — skip Claude resolution for these. */
+const BINARY_EXTENSIONS = new Set([
+  ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp", ".svg",
+  ".woff", ".woff2", ".ttf", ".eot", ".otf",
+  ".zip", ".gz", ".tar", ".bz2", ".7z", ".rar",
+  ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+  ".mp3", ".mp4", ".avi", ".mov", ".mkv", ".wav", ".flac",
+  ".exe", ".dll", ".so", ".dylib", ".o", ".a",
+  ".class", ".jar", ".pyc", ".wasm",
+]);
+
+function isBinaryPath(filePath: string): boolean {
+  const ext = filePath.slice(filePath.lastIndexOf(".")).toLowerCase();
+  return BINARY_EXTENSIONS.has(ext);
+}
+
+/**
+ * Checks whether a file contains null bytes (likely binary).
+ * Returns true if the file is binary, false if text.
+ */
+async function isBinaryContent(filePath: string): Promise<boolean> {
+  try {
+    const content = await fsReadFile(filePath);
+    // Check first 8KB for null bytes
+    const checkLength = Math.min(content.length, 8192);
+    for (let i = 0; i < checkLength; i++) {
+      if (content[i] === 0) return true;
+    }
+    return false;
+  } catch {
+    return true; // If we can't read it, treat as binary (skip resolution)
+  }
+}
+
+/** Dependency injection interface for resolveConflicts (testability). */
+export interface MergeResolveDeps {
+  invoke: (options: InvokeOptions) => Promise<InvokeResult>;
+}
+
+/**
+ * Attempts to resolve merge conflicts using Claude. For each conflicted text file,
+ * reads the conflict markers, invokes Claude to produce resolved content, writes it
+ * back, and completes the merge.
+ *
+ * Returns { success, costUsd, resolvedFiles }. On any failure the caller should
+ * run abortMerge().
+ */
+export async function resolveConflicts(
+  conflictedFiles: string[],
+  taskBranch: string,
+  baseBranch: string,
+  taskTitle: string,
+  taskDescription: string,
+  deps?: MergeResolveDeps,
+  cwd?: string,
+): Promise<{ success: boolean; costUsd: number; resolvedFiles: string[] }> {
+  let costUsd = 0;
+  const resolvedFiles: string[] = [];
+
+  // Load the conflict resolution system prompt
+  let systemPrompt: string;
+  try {
+    const thisFile = fileURLToPath(import.meta.url);
+    const templatesDir = join(dirname(thisFile), "..", "templates");
+    systemPrompt = await fsReadFile(join(templatesDir, "resolve-conflicts.md"), "utf-8");
+  } catch (err: unknown) {
+    uiWarn(`Could not load resolve-conflicts template: ${errorMsg(err)}`);
+    return { success: false, costUsd, resolvedFiles };
+  }
+
+  const invoke = deps?.invoke ?? invokeClaude;
+  const root = cwd ?? process.cwd();
+
+  // Filter to text files only
+  const textFiles: string[] = [];
+  for (const file of conflictedFiles) {
+    if (isBinaryPath(file)) {
+      uiWarn(`Skipping binary file from conflict resolution: ${file}`);
+      continue;
+    }
+    const fullPath = join(root, file);
+    if (await isBinaryContent(fullPath)) {
+      uiWarn(`Skipping binary file from conflict resolution: ${file}`);
+      continue;
+    }
+    textFiles.push(file);
+  }
+
+  if (textFiles.length === 0) {
+    uiWarn("No text files to resolve — all conflicts are in binary files");
+    return { success: false, costUsd, resolvedFiles };
+  }
+
+  for (const file of textFiles) {
+    const fullPath = join(root, file);
+    let content: string;
+    try {
+      content = await fsReadFile(fullPath, "utf-8");
+    } catch (err: unknown) {
+      uiWarn(`Could not read conflicted file ${file}: ${errorMsg(err)}`);
+      return { success: false, costUsd, resolvedFiles };
+    }
+
+    const prompt = [
+      `# Merge Conflict Resolution`,
+      ``,
+      `## Task`,
+      `- **Title:** ${taskTitle}`,
+      `- **Description:** ${taskDescription}`,
+      `- **Task branch:** ${taskBranch}`,
+      `- **Base branch:** ${baseBranch}`,
+      ``,
+      `## Conflicted File: ${file}`,
+      ``,
+      `The file below contains conflict markers. Resolve all conflicts and output the complete resolved file content.`,
+      ``,
+      content,
+    ].join("\n");
+
+    try {
+      const result = await invoke({
+        prompt,
+        systemPrompt,
+        maxTurns: 1,
+        ...(cwd ? { cwd } : {}),
+      });
+      costUsd += result.costUsd;
+
+      const resolved = result.output.trim();
+      if (!resolved || resolved.includes("<<<<<<<") || resolved.includes("=======\n") || resolved.includes(">>>>>>>")) {
+        uiWarn(`Claude resolution for ${file} still contains conflict markers or is empty`);
+        return { success: false, costUsd, resolvedFiles };
+      }
+
+      await fsWriteFile(fullPath, resolved, "utf-8");
+
+      // Stage the resolved file
+      const execOpts = cwd ? { cwd } : {};
+      await execa("git", ["add", "--", file], execOpts);
+      resolvedFiles.push(file);
+    } catch (err: unknown) {
+      uiWarn(`Claude resolution failed for ${file}: ${errorMsg(err)}`);
+      return { success: false, costUsd, resolvedFiles };
+    }
+  }
+
+  // Complete the merge commit
+  const commitMessage = `Merge branch '${taskBranch}' into ${baseBranch} (conflict resolved by hootl)`;
+  const execOpts = cwd ? { cwd } : {};
+  try {
+    await execa("git", ["commit", "-m", commitMessage], execOpts);
+  } catch (err: unknown) {
+    uiWarn(`Merge commit failed after conflict resolution: ${errorMsg(err)}`);
+    return { success: false, costUsd, resolvedFiles: [] };
+  }
+
+  return { success: true, costUsd, resolvedFiles };
 }
 
 export async function deleteBranch(branchName: string, cwd?: string): Promise<void> {

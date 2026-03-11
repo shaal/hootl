@@ -59,6 +59,7 @@ templates/
   execute.md           System prompt for execution phase
   review.md            System prompt for review phase
   validate-simplify.md System prompt template for the simplify skill (default on_confidence_met hook)
+  resolve-conflicts.md System prompt for Claude-assisted merge conflict resolution
 docs/
   spec.md              Full project specification
   architecture.md      Detailed architecture documentation
@@ -132,6 +133,7 @@ All interactive TUI calls go through helpers in `src/ui.ts` (`uiChoose`, `uiConf
 - Switches back to base branch (main/master) when loop finishes
 - `getMergedOrGoneBranches()` uses `--format "%(refname:short)"` for robust branch name parsing (avoids regex on `*` prefix)
 - Stale branch detection: `config.git.staleBranchThreshold` (default: 5) — when an existing task branch is behind the base branch by more than this many commits, the branch is deleted and recreated from current base. Stale task artifacts (understanding.md, plan.md, progress.md, blockers.md, test_results.md, last_confidence.txt) are cleaned up. Configurable via `HOOTL_GIT_STALE_BRANCH_THRESHOLD` env var.
+- **Staged merge flow**: When `onConfidence` is `merge`, the system uses a 3-step staged flow instead of a single `mergeBranch()` call: (1) `attemptMerge()` returns a discriminated union (`success` | `conflict` with file list | `error` with message), leaving conflicts in progress so markers can be read; (2) on conflict, `resolveConflicts()` invokes Claude per-file to produce resolved content, writes it, stages it, and commits the merge; (3) on any resolution failure, `abortMerge()` cleans up and falls back to review state. Binary files (detected by extension via `BINARY_EXTENSIONS` set and by null-byte content scan) are skipped from resolution. The `MergeResolveDeps` DI interface (`{ invoke: (options: InvokeOptions) => Promise<InvokeResult> }`) allows injecting a mock Claude for testing. The convenience wrapper `mergeBranch()` preserves the original boolean return API for callers that don't need conflict resolution.
 
 ## Dependencies
 

@@ -7,7 +7,7 @@ import { type InvokeResult, invokeClaude, logCost } from "./invoke.js";
 import { type Config, type OnConfidenceMode, getProjectDir, resolveOnConfidenceMode } from "./config.js";
 import { type Task, type TaskBackend, type TaskPriority, type TaskType, TaskPriority as TaskPriorityEnum, TaskType as TaskTypeEnum } from "./tasks/types.js";
 import { uiInfo, uiWarn, uiError, uiSuccess, uiSpinner, errorMsg } from "./ui.js";
-import { isGitRepo, createTaskBranch, commitTaskChanges, switchBranch, getBaseBranch, getHeadSha, resetToSha, mergeBranch, deleteBranch, pushBranch, createDraftPR, hasUncommittedChanges, slugify, createWorktree, removeWorktree, getDirtyFiles, ensureBranch, hasBranchDiff } from "./git.js";
+import { isGitRepo, createTaskBranch, commitTaskChanges, switchBranch, getBaseBranch, getHeadSha, resetToSha, attemptMerge, abortMerge, resolveConflicts, deleteBranch, pushBranch, createDraftPR, hasUncommittedChanges, slugify, createWorktree, removeWorktree, getDirtyFiles, ensureBranch, hasBranchDiff } from "./git.js";
 import { checkGlobalBudget } from "./budget.js";
 import { notify, notifyWebhook } from "./notify.js";
 import { generateMemoryEntry, appendMemoryEntry } from "./plan-memory.js";
@@ -771,10 +771,11 @@ export async function handleConfidenceMet(
 
   if (mode === "merge" && taskBranch !== null && baseBranch !== null) {
     // Merge from the main working tree (not the worktree), since we need to checkout baseBranch
-    const merged = await mergeBranch(taskBranch, baseBranch);
-    if (merged) {
-      // Clean up worktree before branch deletion — git refuses to delete a branch
-      // that's checked out in a worktree
+    const logsDir = join(getProjectDir(), "logs");
+    const mergeResult = await attemptMerge(taskBranch, baseBranch);
+
+    // Helper: shared success path after a clean or resolved merge
+    const handleMergeSuccess = async (): Promise<{ state: "done"; mergedSuccessfully: true }> => {
       if (worktreePath) {
         try {
           await removeWorktree(worktreePath);
@@ -785,12 +786,12 @@ export async function handleConfidenceMet(
       }
       await deleteBranch(taskBranch);
       await backend.updateTask(task.id, { state: "done" });
-      await logEvent(join(getProjectDir(), "logs"), {
+      await logEvent(logsDir, {
         taskId: task.id,
         type: "state_change",
         data: { from: "in_progress", to: "done", reason: "Merge successful" },
       });
-      await logEvent(join(getProjectDir(), "logs"), {
+      await logEvent(logsDir, {
         taskId: task.id,
         type: "decision",
         data: { decision: "merge_success", details: `Merged ${taskBranch} into ${baseBranch}` },
@@ -806,30 +807,93 @@ export async function handleConfidenceMet(
         timestamp: new Date().toISOString(),
       }, config);
       return { state: "done", mergedSuccessfully: true };
+    };
+
+    // Helper: shared fallback path when merge cannot be completed
+    const handleMergeFallback = async (reason: string): Promise<{ state: "review"; mergedSuccessfully: false }> => {
+      uiWarn(`${reason} — falling back to review state.`);
+      await backend.updateTask(task.id, { state: "review" });
+      await logEvent(logsDir, {
+        taskId: task.id,
+        type: "state_change",
+        data: { from: "in_progress", to: "review", reason: "Merge failed" },
+      });
+      await logEvent(logsDir, {
+        taskId: task.id,
+        type: "decision",
+        data: { decision: "merge_failed", details: `Merge of ${taskBranch} into ${baseBranch} failed, falling back to review` },
+      });
+      await notify("Task Ready for Review", `${task.id}: ${task.title}`, config);
+      void notifyWebhook({
+        taskId: task.id,
+        title: task.title,
+        oldState: "in_progress",
+        newState: "review",
+        confidence: task.confidence,
+        timestamp: new Date().toISOString(),
+      }, config);
+      return { state: "review", mergedSuccessfully: false };
+    };
+
+    if (mergeResult.status === "success") {
+      return handleMergeSuccess();
     }
-    // Merge failed — fall through to 'none' behavior
-    uiWarn("Merge failed — falling back to review state.");
-    await backend.updateTask(task.id, { state: "review" });
-    await logEvent(join(getProjectDir(), "logs"), {
-      taskId: task.id,
-      type: "state_change",
-      data: { from: "in_progress", to: "review", reason: "Merge failed" },
-    });
-    await logEvent(join(getProjectDir(), "logs"), {
-      taskId: task.id,
-      type: "decision",
-      data: { decision: "merge_failed", details: `Merge of ${taskBranch} into ${baseBranch} failed, falling back to review` },
-    });
-    await notify("Task Ready for Review", `${task.id}: ${task.title}`, config);
-    void notifyWebhook({
-      taskId: task.id,
-      title: task.title,
-      oldState: "in_progress",
-      newState: "review",
-      confidence: task.confidence,
-      timestamp: new Date().toISOString(),
-    }, config);
-    return { state: "review", mergedSuccessfully: false };
+
+    if (mergeResult.status === "conflict") {
+      // Attempt Claude-assisted conflict resolution
+      await logEvent(logsDir, {
+        taskId: task.id,
+        type: "decision",
+        data: {
+          decision: "merge_conflict_resolution_attempted",
+          details: `Conflicted files: ${mergeResult.conflictedFiles.join(", ")}`,
+        },
+      });
+
+      const resolution = await resolveConflicts(
+        mergeResult.conflictedFiles,
+        taskBranch,
+        baseBranch,
+        task.title,
+        task.description ?? "",
+        { invoke: hookDeps?.invoke ?? invokeClaude },
+      );
+
+      // Track cost against task
+      if (resolution.costUsd > 0) {
+        await backend.updateTask(task.id, {
+          totalCost: task.totalCost + resolution.costUsd,
+        });
+      }
+
+      if (resolution.success) {
+        await logEvent(logsDir, {
+          taskId: task.id,
+          type: "decision",
+          data: {
+            decision: "merge_conflict_resolved",
+            details: `Resolved ${resolution.resolvedFiles.length} file(s): ${resolution.resolvedFiles.join(", ")}`,
+          },
+        });
+        return handleMergeSuccess();
+      }
+
+      // Resolution failed — abort and fall back
+      await logEvent(logsDir, {
+        taskId: task.id,
+        type: "decision",
+        data: {
+          decision: "merge_conflict_resolution_failed",
+          details: "Claude resolution failed, aborting merge",
+        },
+      });
+      await abortMerge(taskBranch);
+      return handleMergeFallback("Merge conflict resolution failed");
+    }
+
+    // status === "error" — non-conflict error
+    await abortMerge(taskBranch);
+    return handleMergeFallback("Merge failed");
   }
 
   if (mode === "pr" && taskBranch !== null) {

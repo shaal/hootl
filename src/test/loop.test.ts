@@ -967,6 +967,258 @@ describe("handleConfidenceMet", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// handleConfidenceMet — merge conflict resolution integration
+// ---------------------------------------------------------------------------
+
+describe("handleConfidenceMet — merge conflict resolution", () => {
+  const makeHcmTask = (overrides: Partial<Task> = {}) => makeTask({ ...confidenceMetDefaults, ...overrides });
+
+  function makeMockBackend(): { backend: TaskBackend; state: { lastUpdate: { id: string; updates: Partial<Task> } | null; allUpdates: Array<{ id: string; updates: Partial<Task> }> } } {
+    const state = { lastUpdate: null as { id: string; updates: Partial<Task> } | null, allUpdates: [] as Array<{ id: string; updates: Partial<Task> }> };
+    const backend = {
+      updateTask: async (id: string, updates: Partial<Task>) => {
+        state.lastUpdate = { id, updates };
+        state.allUpdates.push({ id, updates });
+        return { ...makeHcmTask(), ...updates } as Task;
+      },
+      createTask: async () => makeHcmTask(),
+      getTask: async () => makeHcmTask(),
+      listTasks: async () => [],
+      deleteTask: async () => {},
+      claimTask: async () => true,
+      releaseTask: async () => {},
+    } as TaskBackend;
+    return { backend, state };
+  }
+
+  /** Create a git repo with a merge conflict ready to resolve. */
+  async function setupConflictRepo(dir: string): Promise<void> {
+    await mkdir(dir, { recursive: true });
+    const { execa } = await import("execa");
+    await execa("git", ["init", "-b", "main"], { cwd: dir });
+    await execa("git", ["config", "user.name", "Test"], { cwd: dir });
+    await execa("git", ["config", "user.email", "t@t.com"], { cwd: dir });
+    await writeFile(join(dir, "shared.txt"), "original");
+    await execa("git", ["add", "-A"], { cwd: dir });
+    await execa("git", ["commit", "-m", "init"], { cwd: dir });
+
+    // Task branch with a change
+    await execa("git", ["checkout", "-b", "hootl/task-001-test"], { cwd: dir });
+    await writeFile(join(dir, "shared.txt"), "task side content");
+    await execa("git", ["add", "-A"], { cwd: dir });
+    await execa("git", ["commit", "-m", "task change"], { cwd: dir });
+
+    // Main branch with a conflicting change
+    await execa("git", ["checkout", "main"], { cwd: dir });
+    await writeFile(join(dir, "shared.txt"), "main side content");
+    await execa("git", ["add", "-A"], { cwd: dir });
+    await execa("git", ["commit", "-m", "main change"], { cwd: dir });
+
+    // Go back to task branch (handleConfidenceMet expects to be on the task branch initially)
+    await execa("git", ["checkout", "hootl/task-001-test"], { cwd: dir });
+  }
+
+  it("resolves merge conflicts via Claude and completes merge to done", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hootl-hcm-merge-"));
+    try {
+      await setupConflictRepo(dir);
+
+      // Need to set cwd so git operations work against our test repo
+      const originalCwd = process.cwd();
+      process.chdir(dir);
+      try {
+        const { backend, state: mockState } = makeMockBackend();
+        // Use a non-matching hook trigger to bypass the on_confidence_met hook system,
+        // keeping these tests focused purely on merge conflict resolution.
+        const config = ConfigSchema.parse({ git: { onConfidence: "merge" }, hooks: [{ trigger: "on_blocked", prompt: "noop" }] });
+
+        const hookDeps: HookDeps = {
+          invoke: async () => ({
+            output: "resolved content combining both sides",
+            costUsd: 0.05,
+            exitCode: 0,
+            durationMs: 200,
+          } as InvokeResult),
+          log: async () => {},
+          warn: () => {},
+          commit: async () => false,
+        };
+
+        const result = await handleConfidenceMet(
+          makeHcmTask({ totalCost: 0.10 }),
+          config,
+          backend,
+          "hootl/task-001-test",
+          "main",
+          dir,
+          {},
+          hookDeps,
+        );
+
+        assert.equal(result.state, "done");
+        assert.equal(result.mergedSuccessfully, true);
+
+        // Verify cost was tracked
+        const costUpdate = mockState.allUpdates.find((u) => u.updates.totalCost !== undefined);
+        assert.ok(costUpdate !== undefined, "should have a cost update");
+        // Use approximate comparison to avoid IEEE 754 floating-point precision issues (0.10 + 0.05 !== 0.15)
+        assert.ok(
+          Math.abs((costUpdate?.updates.totalCost ?? 0) - 0.15) < 1e-10,
+          `expected totalCost ≈ 0.15, got ${costUpdate?.updates.totalCost}`,
+        );
+
+        // Verify state set to done
+        assert.equal(mockState.lastUpdate?.updates.state, "done");
+
+        // Verify relevant decision events were logged to JSONL
+        const eventsFile = join(dir, ".hootl", "logs", "events.jsonl");
+        const eventsContent = await readFile(eventsFile, "utf-8");
+        const loggedEvents = eventsContent.trim().split("\n").map((line) => JSON.parse(line) as LogEntry);
+
+        const attemptEvent = loggedEvents.find(
+          (e) => e.type === "decision" && (e.data as Record<string, unknown>).decision === "merge_conflict_resolution_attempted",
+        );
+        assert.ok(attemptEvent !== undefined, "should log merge_conflict_resolution_attempted");
+
+        const resolvedEvent = loggedEvents.find(
+          (e) => e.type === "decision" && (e.data as Record<string, unknown>).decision === "merge_conflict_resolved",
+        );
+        assert.ok(resolvedEvent !== undefined, "should log merge_conflict_resolved");
+      } finally {
+        process.chdir(originalCwd);
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to review when conflict resolution fails", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hootl-hcm-merge-"));
+    try {
+      await setupConflictRepo(dir);
+
+      const originalCwd = process.cwd();
+      process.chdir(dir);
+      try {
+        const { backend, state: mockState } = makeMockBackend();
+        const config = ConfigSchema.parse({ git: { onConfidence: "merge" }, hooks: [{ trigger: "on_blocked", prompt: "noop" }] });
+
+        const hookDeps: HookDeps = {
+          invoke: async () => ({
+            // Return content with conflict markers — resolution fails
+            output: "<<<<<<< HEAD\nmain side\n=======\ntask side\n>>>>>>> branch",
+            costUsd: 0.03,
+            exitCode: 0,
+            durationMs: 100,
+          } as InvokeResult),
+          log: async () => {},
+          warn: () => {},
+          commit: async () => false,
+        };
+
+        const result = await handleConfidenceMet(
+          makeHcmTask(),
+          config,
+          backend,
+          "hootl/task-001-test",
+          "main",
+          dir,
+          {},
+          hookDeps,
+        );
+
+        assert.equal(result.state, "review");
+        assert.equal(result.mergedSuccessfully, false);
+        assert.equal(mockState.lastUpdate?.updates.state, "review");
+
+        // Verify the merge_conflict_resolution_failed event was logged to JSONL
+        const eventsFile = join(dir, ".hootl", "logs", "events.jsonl");
+        const eventsContent = await readFile(eventsFile, "utf-8");
+        const loggedEvents = eventsContent.trim().split("\n").map((line) => JSON.parse(line) as LogEntry);
+
+        const failedEvent = loggedEvents.find(
+          (e) => e.type === "decision" && (e.data as Record<string, unknown>).decision === "merge_conflict_resolution_failed",
+        );
+        assert.ok(failedEvent !== undefined, "should log merge_conflict_resolution_failed");
+
+        // Verify merge was aborted — we should be back on the task branch
+        const { execa } = await import("execa");
+        const branchResult = await execa("git", ["branch", "--show-current"], { cwd: dir });
+        assert.equal(branchResult.stdout.trim(), "hootl/task-001-test");
+      } finally {
+        process.chdir(originalCwd);
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to review on non-conflict merge error", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hootl-hcm-merge-"));
+    try {
+      // Set up a repo but DON'T create the task branch — merge will fail with an error (not a conflict)
+      await mkdir(dir, { recursive: true });
+      const { execa } = await import("execa");
+      await execa("git", ["init", "-b", "main"], { cwd: dir });
+      await execa("git", ["config", "user.name", "Test"], { cwd: dir });
+      await execa("git", ["config", "user.email", "t@t.com"], { cwd: dir });
+      await writeFile(join(dir, "base.txt"), "base");
+      await execa("git", ["add", "-A"], { cwd: dir });
+      await execa("git", ["commit", "-m", "init"], { cwd: dir });
+
+      const originalCwd = process.cwd();
+      process.chdir(dir);
+      try {
+        const { backend, state: mockState } = makeMockBackend();
+        const config = ConfigSchema.parse({ git: { onConfidence: "merge" }, hooks: [{ trigger: "on_blocked", prompt: "noop" }] });
+
+        const hookDeps: HookDeps = {
+          invoke: async () => ({
+            output: "should not be called",
+            costUsd: 0,
+            exitCode: 0,
+            durationMs: 0,
+          } as InvokeResult),
+          log: async () => {},
+          warn: () => {},
+          commit: async () => false,
+        };
+
+        // Task branch doesn't exist — attemptMerge will fail on the merge step
+        const result = await handleConfidenceMet(
+          makeHcmTask(),
+          config,
+          backend,
+          "nonexistent-task-branch",
+          "main",
+          dir,
+          {},
+          hookDeps,
+        );
+
+        assert.equal(result.state, "review");
+        assert.equal(result.mergedSuccessfully, false);
+        assert.equal(mockState.lastUpdate?.updates.state, "review");
+
+        // Verify merge_failed decision event logged to JSONL
+        const eventsFile = join(dir, ".hootl", "logs", "events.jsonl");
+        const eventsContent = await readFile(eventsFile, "utf-8");
+        const loggedEvents = eventsContent.trim().split("\n").map((line) => JSON.parse(line) as LogEntry);
+
+        const failedEvent = loggedEvents.find(
+          (e) => e.type === "decision" && (e.data as Record<string, unknown>).decision === "merge_failed",
+        );
+        assert.ok(failedEvent !== undefined, "should log merge_failed decision event");
+      } finally {
+        process.chdir(originalCwd);
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("parsePreflightResult subtask priority", () => {
   it("parses subtasks with valid priority", () => {
     const input = JSON.stringify({
