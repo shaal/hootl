@@ -4,6 +4,7 @@ import { Command } from "commander";
 import { existsSync, unlinkSync } from "node:fs";
 import { writeFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { loadConfig, loadJsonFile, saveProjectConfig, saveGlobalConfig, setNestedValue, coerceEnvValue, HOOK_TRIGGERS, HookSchema, type Config } from "./config.js";
 import { LocalTaskBackend } from "./tasks/local.js";
@@ -170,7 +171,7 @@ program
     }
   });
 
-async function planCommand(cliMode?: { fromSpec?: boolean; goal?: string; analyze?: boolean; next?: boolean; guided?: boolean; noCritique?: boolean; yes?: boolean }): Promise<void> {
+export async function planCommand(cliMode?: { fromSpec?: boolean; goal?: string; analyze?: boolean; next?: boolean; guided?: boolean; noCritique?: boolean; yes?: boolean }): Promise<void> {
   await autoInit();
   const config = await loadConfig();
   const backend = getBackend(config);
@@ -1656,4 +1657,8 @@ program
     }
   });
 
-program.parse();
+// Only parse CLI args when running as the entrypoint — not when imported by tests.
+const isMain = process.argv[1] === fileURLToPath(import.meta.url);
+if (isMain) {
+  program.parse();
+}
