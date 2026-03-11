@@ -45,6 +45,7 @@ import { extractTaskArray } from "./parse-tasks.js";
 import { loadGoals, saveGoals, createGoalsFromGroups, ensureGoalFromFlag } from "./goals.js";
 import { logsCommand } from "./logs.js";
 import { JSON_SCHEMA_INSTRUCTION } from "./plan-prompt.js";
+import { prioritizeGoal as prioritizeGoalCore, prioritizeGoals as prioritizeGoalsCore } from "./prioritize.js";
 
 function getBackend(config: Config): TaskBackend {
   const tasksDir = join(process.cwd(), ".hootl", "tasks");
@@ -955,6 +956,46 @@ program
     }
   });
 
+async function prioritizeGoal(goalId: string): Promise<void> {
+  await autoInit();
+  const config = await loadConfig();
+  const backend = getBackend(config);
+
+  try {
+    const result = await prioritizeGoalCore(backend, goalId);
+    for (const [taskId, priority] of result.assignments) {
+      uiInfo(`${taskId} → userPriority #${priority}`);
+    }
+    uiSuccess(`Set contiguous userPriority on ${result.updated} task(s) in goal "${goalId}".`);
+  } catch (err: unknown) {
+    uiError(err instanceof Error ? err.message : String(err));
+    process.exitCode = 1;
+  }
+}
+
+async function prioritizeGoals(goalIds: string[]): Promise<void> {
+  await autoInit();
+  const config = await loadConfig();
+  const backend = getBackend(config);
+
+  const result = await prioritizeGoalsCore(backend, goalIds);
+
+  // Print per-goal summary by counting tasks from the backend
+  const allTasks = await backend.listTasks();
+  const goalIdSet = new Set(goalIds);
+  for (const goalId of goalIds) {
+    const count = allTasks.filter(t => t.goal === goalId && t.state !== "done").length;
+    uiInfo(`Goal "${goalId}": ${count} task(s)`);
+  }
+  const ungroupedCount = allTasks.filter(
+    t => t.state !== "done" && (t.goal === null || !goalIdSet.has(t.goal)),
+  ).length;
+  if (ungroupedCount > 0) {
+    uiInfo(`Ungrouped: ${ungroupedCount} task(s)`);
+  }
+  uiSuccess(`Set userPriority on ${result.updated} task(s) across ${goalIds.length} goal(s).`);
+}
+
 async function prioritizeCommand(taskIds?: string[], clear?: boolean): Promise<void> {
   await autoInit();
   const config = await loadConfig();
@@ -1039,12 +1080,33 @@ program
   .command("prioritize [taskIds...]")
   .description("Set user priority override on tasks")
   .option("--clear", "Remove all user priority overrides")
-  .action(async (taskIds: string[], options: { clear?: boolean }) => {
+  .option("--goal <goalId>", "Set contiguous priority on all tasks in a goal")
+  .option("--goals <goalIds...>", "Reorder goals relative to each other")
+  .action(async (taskIds: string[], options: { clear?: boolean; goal?: string; goals?: string[] }) => {
     try {
-      await prioritizeCommand(
-        taskIds.length > 0 ? taskIds : undefined,
-        options.clear,
-      );
+      // Mutual exclusivity check
+      const modes = [
+        options.clear ? "--clear" : null,
+        options.goal ? "--goal" : null,
+        options.goals ? "--goals" : null,
+        taskIds.length > 0 ? "taskIds" : null,
+      ].filter(Boolean);
+      if (modes.length > 1) {
+        uiError(`Cannot combine ${modes.join(" and ")}. Use one mode at a time.`);
+        process.exitCode = 1;
+        return;
+      }
+
+      if (options.goal) {
+        await prioritizeGoal(options.goal);
+      } else if (options.goals) {
+        await prioritizeGoals(options.goals);
+      } else {
+        await prioritizeCommand(
+          taskIds.length > 0 ? taskIds : undefined,
+          options.clear,
+        );
+      }
     } catch (err: unknown) {
       uiError(errorMsg(err));
       process.exitCode = 1;

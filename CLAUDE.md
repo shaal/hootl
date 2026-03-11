@@ -22,7 +22,7 @@ src/
   index.ts            CLI entry point (commander). Commands: init, plan, run, status, reconcile, clarify, discuss, prioritize, logs
   parse-tasks.ts      Robust JSON array extraction from Claude plan responses (bracket-matching)
   dependencies.ts     Post-planning dependency inference and index-to-ID resolution
-  selection.ts        Dependency-aware task selection: getNextTask (consolidated entry point), sortByStrategy (effort-based tiebreaking within priority tiers), findRunnableTask, filterTasksByGoal, isGoalComplete, countBlockedInGoal
+  selection.ts        Dependency-aware task selection: getNextTask (consolidated entry point), sortByStrategy (effort-based tiebreaking within priority tiers), findRunnableTask, filterTasksByGoal, isGoalComplete, countBlockedInGoal, topoSortTasks (Kahn's algorithm topological sort for goal prioritization)
   discuss.ts          Interactive Claude session launcher (stdio: 'inherit' for full TTY control)
   config.ts           Zod-validated config. 3-layer merge: ~/.hootl/config.json < .hootl/config.json < env vars
   context.ts          Project context gathering for plan command (spec, structure, tasks, git log)
@@ -33,6 +33,7 @@ src/
   git.ts              Git operations: task branches, auto-commit, branch switching, merged-branch detection, branch diff checking
   sync.ts             Review-task sync: auto-promotes tasks to done when branches are merged externally
   reconcile.ts        Reconcile command: detects tasks with work landed on main, marks done, cleans stale branches/worktrees
+  prioritize.ts       Goal-aware prioritization: prioritizeGoal (contiguous userPriority for a single goal), prioritizeGoals (reorder multiple goals relative to each other)
   goals.ts            Goals management: load/save goals.json, auto-create goals from plan group labels (slugifyGoalId, createGoalsFromGroups), --goal flag auto-create/reuse (ensureGoalFromFlag)
   guided.ts           Interactive goal clarification (generates questions via Claude, collects answers via gum)
   ui.ts               Terminal UI helpers using `gum` with stdin fallback
