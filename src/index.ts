@@ -1658,7 +1658,9 @@ program
   });
 
 // Only parse CLI args when running as the entrypoint — not when imported by tests.
-const isMain = process.argv[1] === fileURLToPath(import.meta.url);
+// Use realpathSync to resolve symlinks (e.g. npm-linked bin stubs).
+import { realpathSync } from "node:fs";
+const isMain = realpathSync(process.argv[1] ?? "") === realpathSync(fileURLToPath(import.meta.url));
 if (isMain) {
   program.parse();
 }
