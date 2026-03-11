@@ -29,10 +29,62 @@ const defaultDeps: ReconcileDeps = {
 };
 
 /**
+ * Extract subtask IDs from a decomposition blocker message.
+ * Matches both "Decomposed into subtasks: ..." and "Decomposed remediation into subtasks: ...".
+ */
+const DECOMPOSED_PATTERN = /^Decomposed(?:\s+\w+)?\s+into subtasks:\s*(.+)$/;
+
+export function extractDecomposedSubtaskIds(blocker: string): string[] {
+  const match = DECOMPOSED_PATTERN.exec(blocker);
+  if (!match?.[1]) return [];
+  return match[1].split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+/**
+ * Mark a task done and clean up its branch/worktree. Returns the action description string.
+ * Shared by Phase 1 (commit-based) and Phase 2 (subtask-based) reconciliation.
+ */
+async function markDoneAndCleanup(
+  task: { id: string; branch: string | null; worktree: string | null },
+  actionLabel: string,
+  backend: TaskBackend,
+  deps: ReconcileDeps,
+  dryRun: boolean,
+): Promise<string> {
+  const actions: string[] = [actionLabel];
+  if (task.branch !== null) actions.push("branch cleaned");
+  if (task.worktree !== null) actions.push("worktree cleaned");
+
+  if (!dryRun) {
+    await backend.updateTask(task.id, { state: "done" });
+
+    if (task.branch !== null) {
+      try {
+        await execa("git", ["branch", "-D", task.branch]);
+      } catch {
+        // Branch may not exist locally — that's fine
+      }
+    }
+
+    if (task.worktree !== null) {
+      try {
+        await deps.removeWorktree(task.worktree);
+        await backend.updateTask(task.id, { worktree: null });
+      } catch {
+        // Best-effort: worktree cleanup should never block state transitions
+      }
+    }
+  }
+
+  return actions.join(" + ");
+}
+
+/**
  * Scan all non-done tasks and check whether their work has already landed on main
  * via `git log --grep=<taskId>`. For each match, mark the task done, clean up its
- * stale branch and worktree. Also detect orphaned worktree directories whose tasks
- * are already done or no longer exist in the backend.
+ * stale branch and worktree. Also auto-promote decomposed parent tasks whose subtasks
+ * are all done. Also detect orphaned worktree directories whose tasks are already done
+ * or no longer exist in the backend.
  */
 export async function reconcileTasks(
   backend: TaskBackend,
@@ -75,38 +127,41 @@ export async function reconcileTasks(
 
     if (!hasCommits) continue;
 
-    // Build a description of what we'll do
-    const actions: string[] = ["marked done"];
-    if (task.branch !== null) actions.push("branch cleaned");
-    if (task.worktree !== null) actions.push("worktree cleaned");
-    const actionStr = actions.join(" + ");
-
-    if (!dryRun) {
-      await backend.updateTask(task.id, { state: "done" });
-
-      if (task.branch !== null) {
-        try {
-          await execa("git", ["branch", "-D", task.branch]);
-        } catch {
-          // Branch may not exist locally — that's fine
-        }
-      }
-
-      if (task.worktree !== null) {
-        try {
-          await deps.removeWorktree(task.worktree);
-          await backend.updateTask(task.id, { worktree: null });
-        } catch {
-          // Best-effort: worktree cleanup should never block state transitions
-        }
-      }
-    }
-
+    const actionStr = await markDoneAndCleanup(task, "marked done", backend, deps, dryRun);
     result.reconciled.push({ id: task.id, title: task.title, action: actionStr });
     doneIds.add(task.id);
   }
 
-  // Phase 2: Detect orphaned worktree directories
+  // Phase 2: Auto-promote decomposed parent tasks whose subtasks are all done.
+  // Loop until no more promotions happen (handles cascading decompositions).
+  // Terminates because each iteration promotes at least one task into doneIds, and the set is finite.
+  // Note: Phases 1 and 2 operate on disjoint populations (Phase 1: tasks with commits on main,
+  // Phase 2: blocked decomposed parents with no commits), so stale in-memory task objects are safe.
+  let promoted = true;
+  while (promoted) {
+    promoted = false;
+    for (const task of nonDoneTasks) {
+      if (doneIds.has(task.id)) continue;
+      if (task.state !== "blocked") continue;
+
+      // Collect subtask IDs from all decomposition blocker messages
+      const subtaskIds: string[] = [];
+      for (const blocker of task.blockers) {
+        subtaskIds.push(...extractDecomposedSubtaskIds(blocker));
+      }
+      if (subtaskIds.length === 0) continue;
+
+      // All referenced subtasks must be done
+      if (!subtaskIds.every((id) => doneIds.has(id))) continue;
+
+      const actionStr = await markDoneAndCleanup(task, "marked done (subtasks complete)", backend, deps, dryRun);
+      result.reconciled.push({ id: task.id, title: task.title, action: actionStr });
+      doneIds.add(task.id);
+      promoted = true;
+    }
+  }
+
+  // Phase 3: Detect orphaned worktree directories
   const hootlDir = join(process.cwd(), ".hootl");
   const worktreesDir = join(hootlDir, "worktrees");
 

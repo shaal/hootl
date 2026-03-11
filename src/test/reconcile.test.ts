@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execa } from "execa";
 import { LocalTaskBackend } from "../tasks/local.js";
-import { reconcileTasks, printReconcileReport } from "../reconcile.js";
+import { reconcileTasks, printReconcileReport, extractDecomposedSubtaskIds } from "../reconcile.js";
 import type { ReconcileResult, ReconcileDeps } from "../reconcile.js";
 
 /** No-op worktree removal for tests — suppresses git warnings from non-worktree dirs */
@@ -321,6 +321,185 @@ describe("reconcileTasks", () => {
       const updated = await backend.getTask(task.id);
       assert.equal(updated.state, "done");
     }
+  });
+});
+
+describe("extractDecomposedSubtaskIds", () => {
+  it("extracts IDs from 'Decomposed into subtasks' blocker", () => {
+    const ids = extractDecomposedSubtaskIds("Decomposed into subtasks: task-056, task-057, task-058");
+    assert.deepEqual(ids, ["task-056", "task-057", "task-058"]);
+  });
+
+  it("extracts IDs from 'Decomposed remediation into subtasks' blocker", () => {
+    const ids = extractDecomposedSubtaskIds("Decomposed remediation into subtasks: task-087, task-088");
+    assert.deepEqual(ids, ["task-087", "task-088"]);
+  });
+
+  it("returns empty array for non-decomposition blocker", () => {
+    const ids = extractDecomposedSubtaskIds("Some other blocker reason");
+    assert.deepEqual(ids, []);
+  });
+
+  it("returns empty array for empty string", () => {
+    assert.deepEqual(extractDecomposedSubtaskIds(""), []);
+  });
+});
+
+describe("reconcileTasks — decomposed parent promotion", () => {
+  let tmpDir: string;
+  let tasksDir: string;
+  let backend: LocalTaskBackend;
+  let originalCwd: string;
+
+  before(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), "hootl-reconcile-decomp-test-"));
+    tasksDir = join(tmpDir, ".hootl", "tasks");
+    await mkdir(tasksDir, { recursive: true });
+    backend = new LocalTaskBackend(tasksDir);
+
+    await execa("git", ["init", "-b", "main"], { cwd: tmpDir });
+    await execa("git", ["config", "user.name", "Test User"], { cwd: tmpDir });
+    await execa("git", ["config", "user.email", "test@test.com"], { cwd: tmpDir });
+    await writeFile(join(tmpDir, "README"), "init");
+    await execa("git", ["add", "-A"], { cwd: tmpDir });
+    await execa("git", ["commit", "-m", "initial commit"], { cwd: tmpDir });
+
+    originalCwd = process.cwd();
+    process.chdir(tmpDir);
+  });
+
+  after(async () => {
+    process.chdir(originalCwd);
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it("promotes a blocked decomposed parent when all subtasks are done", async () => {
+    const sub1 = await backend.createTask({ title: "Subtask 1", description: "desc" });
+    const sub2 = await backend.createTask({ title: "Subtask 2", description: "desc" });
+    await backend.updateTask(sub1.id, { state: "done" });
+    await backend.updateTask(sub2.id, { state: "done" });
+
+    const parent = await backend.createTask({ title: "Parent Task", description: "desc" });
+    await backend.updateTask(parent.id, {
+      state: "blocked",
+      blockers: [`Decomposed into subtasks: ${sub1.id}, ${sub2.id}`],
+    });
+
+    const result = await reconcileTasks(backend, { deps: quietDeps });
+
+    const found = result.reconciled.find((r) => r.id === parent.id);
+    assert.ok(found !== undefined);
+    assert.ok(found.action.includes("subtasks complete"));
+
+    const updated = await backend.getTask(parent.id);
+    assert.equal(updated.state, "done");
+  });
+
+  it("does not promote when some subtasks are not done", async () => {
+    const sub1 = await backend.createTask({ title: "Done Sub", description: "desc" });
+    const sub2 = await backend.createTask({ title: "Not Done Sub", description: "desc" });
+    await backend.updateTask(sub1.id, { state: "done" });
+    await backend.updateTask(sub2.id, { state: "in_progress" });
+
+    const parent = await backend.createTask({ title: "Partial Parent", description: "desc" });
+    await backend.updateTask(parent.id, {
+      state: "blocked",
+      blockers: [`Decomposed into subtasks: ${sub1.id}, ${sub2.id}`],
+    });
+
+    const result = await reconcileTasks(backend, { deps: quietDeps });
+
+    const found = result.reconciled.find((r) => r.id === parent.id);
+    assert.equal(found, undefined);
+
+    const updated = await backend.getTask(parent.id);
+    assert.equal(updated.state, "blocked");
+  });
+
+  it("handles remediation decomposition pattern", async () => {
+    const sub1 = await backend.createTask({ title: "Remediation 1", description: "desc" });
+    await backend.updateTask(sub1.id, { state: "done" });
+
+    const parent = await backend.createTask({ title: "Remediation Parent", description: "desc" });
+    await backend.updateTask(parent.id, {
+      state: "blocked",
+      blockers: [`Decomposed remediation into subtasks: ${sub1.id}`],
+    });
+
+    const result = await reconcileTasks(backend, { deps: quietDeps });
+
+    const found = result.reconciled.find((r) => r.id === parent.id);
+    assert.ok(found !== undefined);
+    assert.ok(found.action.includes("subtasks complete"));
+
+    const updated = await backend.getTask(parent.id);
+    assert.equal(updated.state, "done");
+  });
+
+  it("skips non-blocked tasks even if they have decomposition blockers", async () => {
+    const sub = await backend.createTask({ title: "Sub Ready", description: "desc" });
+    await backend.updateTask(sub.id, { state: "done" });
+
+    const parent = await backend.createTask({ title: "Ready Parent", description: "desc" });
+    await backend.updateTask(parent.id, {
+      state: "ready",
+      blockers: [`Decomposed into subtasks: ${sub.id}`],
+    });
+
+    const result = await reconcileTasks(backend, { deps: quietDeps });
+
+    const found = result.reconciled.find((r) => r.id === parent.id);
+    assert.equal(found, undefined);
+
+    const updated = await backend.getTask(parent.id);
+    assert.equal(updated.state, "ready");
+  });
+
+  it("cascades: promotes grandparent when child promotion makes all subtasks done", async () => {
+    const leaf = await backend.createTask({ title: "Leaf", description: "desc" });
+    await backend.updateTask(leaf.id, { state: "done" });
+
+    const child = await backend.createTask({ title: "Child", description: "desc" });
+    await backend.updateTask(child.id, {
+      state: "blocked",
+      blockers: [`Decomposed into subtasks: ${leaf.id}`],
+    });
+
+    const grandparent = await backend.createTask({ title: "Grandparent", description: "desc" });
+    await backend.updateTask(grandparent.id, {
+      state: "blocked",
+      blockers: [`Decomposed into subtasks: ${child.id}`],
+    });
+
+    const result = await reconcileTasks(backend, { deps: quietDeps });
+
+    // Both child and grandparent should be promoted
+    const childFound = result.reconciled.find((r) => r.id === child.id);
+    const gpFound = result.reconciled.find((r) => r.id === grandparent.id);
+    assert.ok(childFound !== undefined, "child should be promoted");
+    assert.ok(gpFound !== undefined, "grandparent should be promoted");
+
+    assert.equal((await backend.getTask(child.id)).state, "done");
+    assert.equal((await backend.getTask(grandparent.id)).state, "done");
+  });
+
+  it("dry-run reports decomposed promotions without changing state", async () => {
+    const sub = await backend.createTask({ title: "DryRun Sub", description: "desc" });
+    await backend.updateTask(sub.id, { state: "done" });
+
+    const parent = await backend.createTask({ title: "DryRun Parent", description: "desc" });
+    await backend.updateTask(parent.id, {
+      state: "blocked",
+      blockers: [`Decomposed into subtasks: ${sub.id}`],
+    });
+
+    const result = await reconcileTasks(backend, { dryRun: true, deps: quietDeps });
+
+    const found = result.reconciled.find((r) => r.id === parent.id);
+    assert.ok(found !== undefined);
+
+    const updated = await backend.getTask(parent.id);
+    assert.equal(updated.state, "blocked", "state should not change in dry-run");
   });
 });
 
