@@ -511,6 +511,7 @@ export function buildTestHookContext(
     branch: branchName,
     worktree: null,
     userPriority: null,
+    effort: null,
     goal: null,
     blockers: [],
     createdAt: now,

@@ -140,6 +140,7 @@ export class LocalTaskBackend implements TaskBackend {
       branch: null,
       worktree: null,
       userPriority: null,
+      effort: input.effort ?? null,
       goal: null,
       blockers: [],
       createdAt: now,

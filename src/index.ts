@@ -27,7 +27,7 @@ import { autoInit } from "./init.js";
 import { registerInstance, deregisterInstanceSync } from "./instances.js";
 import { checkGlobalBudget } from "./budget.js";
 import { discussCommand } from "./discuss.js";
-import { findRunnableTask, findAndClaimTask, filterTasksByGoal, isGoalComplete, countBlockedInGoal } from "./selection.js";
+import { findRunnableTask, findAndClaimTask, filterTasksByGoal, isGoalComplete, countBlockedInGoal, getNextTask } from "./selection.js";
 import { syncReviewTasks } from "./sync.js";
 import { reconcileTasks, printReconcileReport } from "./reconcile.js";
 import { notifyWebhook } from "./notify.js";
@@ -487,10 +487,8 @@ program
     }
   });
 
-async function selectFromState(state: TaskState, backend: TaskBackend, goalId?: string): Promise<Task | undefined> {
-  const tasks = filterTasksByGoal(await backend.listTasks({ state }), goalId);
-  if (tasks.length === 0) return undefined;
-  const { task, skipped } = await findAndClaimTask(tasks, backend);
+async function selectFromState(state: TaskState, backend: TaskBackend, config: Config, goalId?: string): Promise<Task | undefined> {
+  const { task, skipped } = await getNextTask(backend, config, { state, goalId });
   for (const s of skipped) {
     uiWarn(`Skipping ${s.id} (${s.reason})`);
   }
@@ -588,11 +586,11 @@ export async function autoCommand(
     }
 
     // Pick next task: prefer in-progress (resume), then ready
-    let targetTask = await selectFromState("in_progress", backend, goalId);
+    let targetTask = await selectFromState("in_progress", backend, config, goalId);
     if (targetTask !== undefined) {
       uiInfo(`Resuming in-progress task: ${targetTask.id}`);
     } else {
-      targetTask = await selectFromState("ready", backend, goalId);
+      targetTask = await selectFromState("ready", backend, config, goalId);
     }
 
     if (targetTask === undefined) {
@@ -680,10 +678,10 @@ async function runCommand(taskId?: string, cliFlags?: { merge?: boolean; noMerge
     }
   } else {
     // Prioritize in-progress tasks: finish started work before picking up new work
-    targetTask = await selectFromState("in_progress", backend);
+    targetTask = await selectFromState("in_progress", backend, config);
     if (targetTask) uiInfo(`Resuming in-progress task: ${targetTask.id}`);
     if (targetTask === undefined) {
-      targetTask = await selectFromState("ready", backend);
+      targetTask = await selectFromState("ready", backend, config);
     }
   }
 
