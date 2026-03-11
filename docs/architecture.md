@@ -179,7 +179,7 @@ The `auto` command runs tasks sequentially until the queue drains or the global 
 
 1. **Sync** — calls `syncReviewTasks()` to promote externally merged branches
 2. **Budget gate** — calls `checkGlobalBudget()` and breaks if exceeded
-3. **Task selection** — prefers `in_progress` tasks (resume), then `ready` tasks, both via `selectFromState()` which enforces dependencies
+3. **Task selection** — prefers `in_progress` tasks (resume), then `ready` tasks, both via `selectFromState()` which delegates to `getNextTask()` to apply the configured ordering strategy (see [Task Selection & Priority](#task-selection--priority)) before claiming
 4. **Execution** — calls `runCompletionLoop()` which handles max attempts, blocking, and state transitions
 5. **Loop** — repeats until no runnable tasks remain
 
@@ -361,12 +361,30 @@ proposed --> ready --> in_progress --> review --> done
 
 ## Task Selection & Priority
 
-Tasks have two priority fields: `priority` (planner-assigned: critical/high/medium/low) and `userPriority` (user override: number or null). Sort order for `listTasks()`:
+Tasks have two priority fields: `priority` (planner-assigned: critical/high/medium/low) and `userPriority` (user override: number or null). Tasks also have an optional `effort` field (1–5, nullable, defaults to null) used for ordering strategy tiebreaking within the same priority tier.
+
+Sort order for `listTasks()`:
 1. `userPriority` non-null first, ascending (1 before 2)
 2. `priority` (critical→low)
 3. `createdAt`
 
-When `hootl run` selects the next task, it enforces dependencies: a task is skipped if any of its `dependencies` are not in `done` or `review` state. The logic lives in `findRunnableTask()` in `src/selection.ts`.
+When `hootl run` or `hootl auto` selects the next task, the consolidated entry point is `getNextTask(backend, config, opts?)` in `src/selection.ts`. It:
+1. Lists ready tasks via `backend.listTasks()` (already sorted by priority)
+2. Filters by goal if `opts.goalId` is provided
+3. Applies the configured ordering strategy via `sortByStrategy()` — this only affects tiebreaking within the same priority tier (same `userPriority` + `priority` combination)
+4. Calls `findAndClaimTask()` to atomically claim the first runnable task, enforcing dependencies (a task is skipped if any of its `dependencies` are not in `done` or `review` state)
+
+### Configurable Ordering Strategy
+
+The `auto.orderingStrategy` config field controls how tasks within the same priority tier are ordered. Three values are supported:
+
+- **`fifo`** (default) — preserves the existing creation-time order; no reordering within tiers
+- **`quick-wins-first`** — lower `effort` values sort first within each tier, so small tasks complete before large ones
+- **`big-items-first`** — higher `effort` values sort first within each tier, so large tasks are tackled early
+
+Tasks with `effort: null` always sort last within their tier regardless of strategy. Cross-tier ordering is never affected — a critical task always runs before a medium task, even if the medium task has lower effort.
+
+The strategy can be set in config files (`auto.orderingStrategy`) or via the `HOOTL_AUTO_ORDERING_STRATEGY` environment variable.
 
 ## CLI Commands
 

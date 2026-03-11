@@ -440,7 +440,7 @@ describe("getNextTask", () => {
     assert.equal(task!.id, critical.id, "should select the critical-priority task");
   });
 
-  it("respects ordering strategy from config", async () => {
+  it("respects ordering strategy from config (quick-wins-first)", async () => {
     // Two same-priority tasks with different efforts
     const big = await backend.createTask({ title: "Big task", description: "B", effort: 5 });
     const small = await backend.createTask({ title: "Small task", description: "S", effort: 1 });
@@ -449,6 +449,17 @@ describe("getNextTask", () => {
     const config = makeConfig({ orderingStrategy: "quick-wins-first" });
     const { task } = await getNextTask(backend, config);
     assert.equal(task!.id, small.id, "quick-wins-first should pick the lower-effort task");
+  });
+
+  it("respects ordering strategy from config (big-items-first)", async () => {
+    // Two same-priority tasks with different efforts
+    const big = await backend.createTask({ title: "Big task", description: "B", effort: 5 });
+    const small = await backend.createTask({ title: "Small task", description: "S", effort: 1 });
+
+    // With big-items-first, the higher-effort task should be selected
+    const config = makeConfig({ orderingStrategy: "big-items-first" });
+    const { task } = await getNextTask(backend, config);
+    assert.equal(task!.id, big.id, "big-items-first should pick the higher-effort task");
   });
 
   it("filters by goal when goalId provided", async () => {
