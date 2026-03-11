@@ -27,7 +27,7 @@ import { autoInit } from "./init.js";
 import { registerInstance, deregisterInstanceSync } from "./instances.js";
 import { checkGlobalBudget } from "./budget.js";
 import { discussCommand } from "./discuss.js";
-import { findRunnableTask, findAndClaimTask } from "./selection.js";
+import { findRunnableTask, findAndClaimTask, filterTasksByGoal, isGoalComplete, countBlockedInGoal } from "./selection.js";
 import { syncReviewTasks } from "./sync.js";
 import { reconcileTasks, printReconcileReport } from "./reconcile.js";
 import { notifyWebhook } from "./notify.js";
@@ -487,8 +487,8 @@ program
     }
   });
 
-async function selectFromState(state: TaskState, backend: TaskBackend): Promise<Task | undefined> {
-  const tasks = await backend.listTasks({ state });
+async function selectFromState(state: TaskState, backend: TaskBackend, goalId?: string): Promise<Task | undefined> {
+  const tasks = filterTasksByGoal(await backend.listTasks({ state }), goalId);
   if (tasks.length === 0) return undefined;
   const { task, skipped } = await findAndClaimTask(tasks, backend);
   for (const s of skipped) {
@@ -503,6 +503,7 @@ async function selectFromState(state: TaskState, backend: TaskBackend): Promise<
 export async function autoCommand(
   cliLevel?: string,
   cliFlags?: { merge?: boolean; noMerge?: boolean },
+  goalId?: string,
   deps?: {
     sleep?: (ms: number) => Promise<void>;
     checkParallelGate?: (tasksDir: string, useWorktrees: boolean) => Promise<{ blocked: boolean; activeCount: number }>;
@@ -558,6 +559,17 @@ export async function autoCommand(
     process.exit(1);
   }
 
+  // Goal-scoped mode: validate goalId early and inform user
+  if (goalId) {
+    const goalTasks = filterTasksByGoal(await backend.listTasks(), goalId);
+    if (goalTasks.length === 0) {
+      uiError(`No tasks found for goal "${goalId}". Check goal ID and ensure tasks are assigned.`);
+      deregisterInstanceSync();
+      return;
+    }
+    uiInfo(`Goal-scoped mode: ${goalTasks.length} task(s) for goal "${goalId}"`);
+  }
+
   // eslint-disable-next-line no-constant-condition
   while (true) {
     // Sync externally merged branches before each iteration
@@ -576,14 +588,28 @@ export async function autoCommand(
     }
 
     // Pick next task: prefer in-progress (resume), then ready
-    let targetTask = await selectFromState("in_progress", backend);
+    let targetTask = await selectFromState("in_progress", backend, goalId);
     if (targetTask !== undefined) {
       uiInfo(`Resuming in-progress task: ${targetTask.id}`);
     } else {
-      targetTask = await selectFromState("ready", backend);
+      targetTask = await selectFromState("ready", backend, goalId);
     }
 
     if (targetTask === undefined) {
+      // Goal-scoped exit: check if entire goal is finished before idle retry
+      if (goalId) {
+        const goalTasks = filterTasksByGoal(await backend.listTasks(), goalId);
+        if (isGoalComplete(goalTasks)) {
+          const blockedCount = countBlockedInGoal(goalTasks);
+          if (blockedCount > 0) {
+            uiWarn(`Goal "${goalId}" finished — ${blockedCount} task(s) blocked.`);
+          } else {
+            uiSuccess(`Goal "${goalId}" complete — all tasks done.`);
+          }
+          break;
+        }
+      }
+
       const decision = await shouldRetryOnNoTask(tasksDir, idleRetries, MAX_IDLE_RETRIES);
       if (decision === "retry") {
         idleRetries++;
@@ -718,11 +744,13 @@ program
   )
   .option("--merge", "Force auto-merge on confidence met")
   .option("--no-merge", "Disable auto-merge/PR on confidence met")
+  .option("--goal <goalId>", "Only run tasks belonging to this goal")
   .action(
     async (options: {
       level?: string;
       merge?: boolean;
       noMerge?: boolean;
+      goal?: string;
     }) => {
       try {
         const cliFlags: { merge?: boolean; noMerge?: boolean } = {};
@@ -731,7 +759,7 @@ program
         } else if (options.merge === false) {
           cliFlags.noMerge = true;
         }
-        await autoCommand(options.level, cliFlags);
+        await autoCommand(options.level, cliFlags, options.goal);
       } catch (err: unknown) {
         uiError(errorMsg(err));
         process.exitCode = 1;

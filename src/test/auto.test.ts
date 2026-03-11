@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { LocalTaskBackend } from "../tasks/local.js";
 import { checkGlobalBudget } from "../budget.js";
-import { findRunnableTask } from "../selection.js";
+import { findRunnableTask, findAndClaimTask, filterTasksByGoal, isGoalComplete, countBlockedInGoal } from "../selection.js";
 import { ConfigSchema } from "../config.js";
 import { shouldRetryOnNoTask, MAX_IDLE_RETRIES, IDLE_SLEEP_MS } from "../idle-wait.js";
 import { checkParallelGate } from "../status.js";
@@ -280,5 +280,112 @@ describe("auto command — parallel worktree gate", () => {
       () => checkParallelGate("/tmp/tasks", false, { getActiveInstances: mockGetActiveInstances }),
       { message: "tasks directory is corrupt" },
     );
+  });
+});
+
+describe("auto command — goal-scoped selection", () => {
+  let tmpDir: string;
+  let backend: LocalTaskBackend;
+
+  beforeEach(async () => {
+    tmpDir = makeTmpDir();
+    const tasksDir = join(tmpDir, "tasks");
+    await mkdir(tasksDir, { recursive: true });
+    backend = new LocalTaskBackend(tasksDir);
+  });
+
+  afterEach(async () => {
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it("filters tasks to only the matching goal", async () => {
+    const t1 = await backend.createTask({ title: "Goal A task 1", description: "First" });
+    await backend.updateTask(t1.id, { goal: "my-goal" });
+    const t2 = await backend.createTask({ title: "Goal A task 2", description: "Second" });
+    await backend.updateTask(t2.id, { goal: "my-goal" });
+    const t3 = await backend.createTask({ title: "Other goal task", description: "Third" });
+    await backend.updateTask(t3.id, { goal: "other-goal" });
+
+    const readyTasks = await backend.listTasks({ state: "ready" });
+    const goalTasks = filterTasksByGoal(readyTasks, "my-goal");
+    assert.equal(goalTasks.length, 2);
+
+    const { task } = await findAndClaimTask(goalTasks, backend);
+    assert.ok(task);
+    assert.equal(task.goal, "my-goal");
+    assert.equal(task.id, t1.id);
+  });
+
+  it("returns no task when goal has no ready tasks", async () => {
+    await backend.createTask({ title: "Other goal task 1", description: "First" });
+    await backend.createTask({ title: "Other goal task 2", description: "Second" });
+
+    const readyTasks = await backend.listTasks({ state: "ready" });
+    const goalTasks = filterTasksByGoal(readyTasks, "my-goal");
+    assert.equal(goalTasks.length, 0);
+
+    const { task } = await findRunnableTask(goalTasks, backend);
+    assert.equal(task, undefined);
+  });
+
+  it("goal-scoped exit when all goal tasks done", async () => {
+    const t1 = await backend.createTask({ title: "Target task 1", description: "First" });
+    await backend.updateTask(t1.id, { goal: "target", state: "done" });
+    const t2 = await backend.createTask({ title: "Target task 2", description: "Second" });
+    await backend.updateTask(t2.id, { goal: "target", state: "done" });
+    const t3 = await backend.createTask({ title: "Unrelated task", description: "Third" });
+    await backend.updateTask(t3.id, { goal: "other", state: "ready" });
+
+    const allTasks = await backend.listTasks();
+    const goalTasks = filterTasksByGoal(allTasks, "target");
+    assert.equal(isGoalComplete(goalTasks), true);
+
+    // Unrelated tasks are still ready — but goal-scoped exit should fire
+    const otherTasks = filterTasksByGoal(allTasks, "other");
+    assert.equal(otherTasks.length, 1);
+    assert.equal(otherTasks[0]?.state, "ready");
+  });
+
+  it("goal-scoped exit when mix of done and blocked", async () => {
+    const t1 = await backend.createTask({ title: "Done task", description: "Finished" });
+    await backend.updateTask(t1.id, { goal: "target", state: "done" });
+    const t2 = await backend.createTask({ title: "Blocked task", description: "Stuck" });
+    await backend.updateTask(t2.id, { goal: "target", state: "blocked" });
+
+    const allTasks = await backend.listTasks();
+    const goalTasks = filterTasksByGoal(allTasks, "target");
+    assert.equal(isGoalComplete(goalTasks), true);
+    assert.equal(countBlockedInGoal(goalTasks), 1);
+  });
+
+  it("goal-scoped does NOT exit when tasks still in_progress", async () => {
+    const t1 = await backend.createTask({ title: "Done task", description: "Finished" });
+    await backend.updateTask(t1.id, { goal: "target", state: "done" });
+    const t2 = await backend.createTask({ title: "Running task", description: "In progress" });
+    await backend.updateTask(t2.id, { goal: "target", state: "in_progress" });
+
+    const allTasks = await backend.listTasks();
+    const goalTasks = filterTasksByGoal(allTasks, "target");
+    assert.equal(isGoalComplete(goalTasks), false, "Should NOT be terminal when tasks are still in_progress");
+  });
+
+  it("no goal filter returns all tasks", async () => {
+    const t1 = await backend.createTask({ title: "Goal A", description: "First" });
+    await backend.updateTask(t1.id, { goal: "goal-a" });
+    const t2 = await backend.createTask({ title: "Goal B", description: "Second" });
+    await backend.updateTask(t2.id, { goal: "goal-b" });
+    const t3 = await backend.createTask({ title: "No goal", description: "Third" });
+
+    // Without goal filter, all tasks are returned (existing behavior)
+    const readyTasks = filterTasksByGoal(await backend.listTasks({ state: "ready" }));
+    assert.equal(readyTasks.length, 3);
+
+    const { task } = await findRunnableTask(readyTasks, backend);
+    assert.ok(task);
+    assert.equal(task.id, t1.id);
+
+    // Verify t3 has no goal (backward compat)
+    const t3Fresh = await backend.getTask(t3.id);
+    assert.equal(t3Fresh.goal, null);
   });
 });
