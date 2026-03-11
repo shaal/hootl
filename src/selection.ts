@@ -1,4 +1,5 @@
-import type { Task, TaskBackend } from "./tasks/types.js";
+import type { Task, TaskBackend, TaskState } from "./tasks/types.js";
+import type { OrderingStrategy, Config } from "./config.js";
 
 /**
  * Filter a task list to only those belonging to a specific goal.
@@ -125,4 +126,80 @@ export async function findAndClaimTask(
   }
 
   return { task: undefined, skipped };
+}
+
+/**
+ * Priority tier key for grouping tasks that should be treated as equals
+ * when applying within-tier effort-based tiebreaking. Two tasks share a tier
+ * when they have the same (userPriority, priority) combination.
+ */
+function tierKey(t: Task): string {
+  return `${t.userPriority ?? "null"}:${t.priority}`;
+}
+
+/**
+ * Re-sort an already priority-sorted task list using a configurable
+ * ordering strategy. The strategy only affects tiebreaking within the
+ * same priority tier (userPriority + priority). Cross-tier ordering is
+ * always preserved.
+ *
+ * Strategies:
+ * - "fifo": keep existing order (createdAt ascending) — no-op
+ * - "quick-wins-first": lower effort first within tier (nulls last)
+ * - "big-items-first": higher effort first within tier (nulls last)
+ */
+export function sortByStrategy(tasks: Task[], strategy: OrderingStrategy): Task[] {
+  if (strategy === "fifo") return tasks;
+
+  const result = [...tasks];
+  result.sort((a, b) => {
+    // Preserve cross-tier ordering: only re-sort within the same tier
+    const aTier = tierKey(a);
+    const bTier = tierKey(b);
+    if (aTier !== bTier) {
+      // Maintain original relative order for different tiers.
+      // Since the input is already sorted by priority, we preserve that
+      // by returning 0 (stable sort keeps original positions).
+      return 0;
+    }
+
+    // Within the same tier, sort by effort according to strategy.
+    // Null effort always sorts last (tasks without estimates yield to those with).
+    const aEffort = a.effort;
+    const bEffort = b.effort;
+
+    if (aEffort === null && bEffort === null) return 0;
+    if (aEffort === null) return 1;
+    if (bEffort === null) return -1;
+
+    if (strategy === "quick-wins-first") {
+      return aEffort - bEffort;
+    }
+    // strategy === "big-items-first"
+    return bEffort - aEffort;
+  });
+
+  return result;
+}
+
+export interface GetNextTaskOpts {
+  state?: TaskState;
+  goalId?: string;
+}
+
+/**
+ * Consolidated task selection: lists tasks from the backend, filters by goal,
+ * applies the configured ordering strategy, then finds and claims the first
+ * runnable task (respecting dependencies and cross-process claiming).
+ */
+export async function getNextTask(
+  backend: TaskBackend,
+  config: Config,
+  opts?: GetNextTaskOpts,
+): Promise<{ task: Task | undefined; skipped: Array<{ id: string; reason: string }> }> {
+  const state = opts?.state ?? "ready";
+  const tasks = await backend.listTasks({ state });
+  const goalFiltered = filterTasksByGoal(tasks, opts?.goalId);
+  const sorted = sortByStrategy(goalFiltered, config.auto.orderingStrategy);
+  return findAndClaimTask(sorted, backend);
 }

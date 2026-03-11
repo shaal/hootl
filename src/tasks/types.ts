@@ -25,6 +25,7 @@ export const TaskSchema = z.object({
   branch: z.string().nullable(),
   worktree: z.string().nullable(),
   userPriority: z.number().nullable().default(null),
+  effort: z.number().min(1).max(5).nullable().default(null),
   goal: z.string().nullable().default(null),
   blockers: z.array(z.string()),
   createdAt: z.string(),
@@ -38,6 +39,7 @@ export interface CreateTaskInput {
   priority?: TaskPriority;
   type?: TaskType;
   dependencies?: string[];
+  effort?: number | null;
 }
 
 export interface TaskFilter {

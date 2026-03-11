@@ -25,9 +25,13 @@ const GitSchema = z.object({
   staleBranchThreshold: z.number().default(5),
 });
 
+const OrderingStrategySchema = z.enum(["quick-wins-first", "big-items-first", "fifo"]).default("fifo");
+export type OrderingStrategy = z.infer<typeof OrderingStrategySchema>;
+
 const AutoSchema = z.object({
   defaultLevel: z.enum(["conservative", "moderate", "proactive", "full"]).default("proactive"),
   maxParallel: z.number().default(1),
+  orderingStrategy: OrderingStrategySchema,
 });
 
 const RemediationSchema = z.object({
@@ -108,6 +112,7 @@ const ENV_MAP: Record<string, string[]> = {
   HOOTL_GIT_STALE_BRANCH_THRESHOLD: ["git", "staleBranchThreshold"],
   HOOTL_AUTO_LEVEL: ["auto", "defaultLevel"],
   HOOTL_AUTO_MAX_PARALLEL: ["auto", "maxParallel"],
+  HOOTL_AUTO_ORDERING_STRATEGY: ["auto", "orderingStrategy"],
   HOOTL_NOTIFICATIONS_TERMINAL: ["notifications", "terminal"],
   HOOTL_NOTIFICATIONS_OS_NOTIFY: ["notifications", "osNotify"],
   HOOTL_NOTIFICATIONS_SUMMARY_FILE: ["notifications", "summaryFile"],
