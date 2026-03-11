@@ -10,12 +10,14 @@
  * Covers:
  *   - Goal string appears in the prompt sent to Claude ("Break down" + "Goal: my-feature")
  *   - Tasks are created from the Claude response with correct titles and ready state
- *   - Goals are auto-created from group labels in the task response
+ *   - Goal is auto-created from --goal flag via ensureGoalFromFlag (overrides group-label clustering)
+ *   - All tasks assigned to the --goal flag goal, not individual group labels
  */
 
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
+import { loadGoals } from "../goals.js";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execa } from "execa";
@@ -147,25 +149,24 @@ process.stdout.write(JSON.stringify({
       assert.equal(task.state, "ready", `task '${task.title}' should be in ready state`);
     }
 
-    // --- Verify goals were auto-created from group labels ---
-    const goalsPath = join(tmpDir, ".hootl", "goals.json");
-    const goalsRaw = await readFile(goalsPath, "utf-8");
-    const goals: Array<{ id: string; title: string }> = JSON.parse(goalsRaw);
+    // --- Verify goal was auto-created from --goal flag (overrides group labels) ---
+    // When --goal is provided, ensureGoalFromFlag creates a goal from the flag text
+    // and assigns all tasks to it. Group-based createGoalsFromGroups is skipped.
+    const goals = await loadGoals(join(tmpDir, ".hootl"));
 
     assert.ok(goals.length > 0, "should create at least one goal");
-    const authGoal = goals.find((g) => g.id === "auth-system");
-    assert.ok(authGoal !== undefined, "should create goal with slugified id 'auth-system'");
-    assert.equal(authGoal?.title, "Auth System", "goal title should match group label");
+    const flagGoal = goals.find((g) => g.id === "my-feature");
+    assert.ok(flagGoal !== undefined, "should create goal with slugified id 'my-feature' from --goal flag");
+    assert.equal(flagGoal?.title, "my-feature", "goal title should match --goal flag text");
 
-    // Tasks should be assigned to the goal
-    const updatedTasks = await backend.listTasks({});
-    for (const task of updatedTasks) {
-      assert.equal(task.goal, "auth-system", `task '${task.title}' should be assigned to 'auth-system' goal`);
+    // Tasks should be assigned to the --goal flag goal, not the group label
+    for (const task of tasks) {
+      assert.equal(task.goal, "my-feature", `task '${task.title}' should be assigned to 'my-feature' goal`);
     }
 
     // --- Verify dependencies were wired (task 1 depends on task 0) ---
-    const loginTask = updatedTasks.find((t) => t.title === "Add login endpoint");
-    const authTask = updatedTasks.find((t) => t.title === "Set up authentication module");
+    const loginTask = tasks.find((t) => t.title === "Add login endpoint");
+    const authTask = tasks.find((t) => t.title === "Set up authentication module");
     assert.ok(loginTask !== undefined, "login task should exist");
     assert.ok(authTask !== undefined, "auth task should exist");
     assert.ok(
