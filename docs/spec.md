@@ -460,9 +460,12 @@ When a task's confidence reaches 95%, hootl:
 | Layer | Default | Behavior when exceeded |
 |-------|---------|----------------------|
 | Global (daily) | $50.00 | All work stops, human notified |
+| Context window | 60% | Attempt restarts after plan phase (plan already saved to disk) |
 | Max attempts/task | 10 | Task moves to `blocked` |
 
 Cost is tracked in `.hootl/logs/cost.csv`. The `claude -p` output includes cost data which hootl parses and accumulates against the global daily budget.
+
+> **Why context window % instead of per-session dollar cost?** Context window utilisation directly measures session quality degradation — as the window fills up, the model loses the ability to hold the full task context, leading to worse outputs. Dollar cost is only a proxy for this effect, and a noisy one: cost varies by model, prompt caching, and pricing changes. A 60% context window limit ensures the review phase always runs with enough headroom to evaluate the work accurately.
 
 ### Rollback on Broken State
 
