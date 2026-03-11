@@ -432,6 +432,8 @@ All planning modes include a `"group"` field in the JSON schema instruction sent
 
 This means tasks planned via any mode (from-spec, break-down-a-goal, analyze, suggest) are automatically organized under goal headings in `hootl status` output without any manual grouping step.
 
+When the `--goal` flag is provided explicitly, `ensureGoalFromFlag()` takes precedence over group-based clustering. It slugifies the goal text, creates a new goal entry in `goals.json` if one with that slug doesn't already exist (reusing the existing entry if it does), and assigns all created tasks to that goal. The group-based `createGoalsFromGroups()` pass is skipped entirely when `--goal` is active, since all tasks already have an explicit goal assignment.
+
 ## Auto-detected Task Dependencies
 
 When the planner generates a batch of tasks, dependencies are automatically wired up via a two-pass process in `planCommand()`:
