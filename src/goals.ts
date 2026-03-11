@@ -55,6 +55,41 @@ export function slugifyGoalId(title: string): string {
 }
 
 /**
+ * Ensure a goal exists for an explicit `--goal` flag value, and assign all created tasks to it.
+ * If a goal with the slugified ID already exists, it is reused (title/description preserved).
+ * Otherwise a new goal entry is created with the original text as title.
+ *
+ * @param goalText - The raw goal text from `--goal` flag
+ * @param indexToId - Map from task index to created task ID
+ * @param backend - Task backend for updating task goal assignments
+ * @param hootlDir - Path to the .hootl directory (for goals.json)
+ * @returns The slugified goal ID, whether it was created, and how many tasks were assigned
+ */
+export async function ensureGoalFromFlag(
+  goalText: string,
+  indexToId: ReadonlyMap<number, string>,
+  backend: { updateTask: (id: string, updates: { goal: string }) => Promise<unknown> },
+  hootlDir: string,
+): Promise<{ goalId: string; created: boolean; assigned: number }> {
+  const goalId = slugifyGoalId(goalText);
+  const existingGoals = await loadGoals(hootlDir);
+  const alreadyExists = existingGoals.some((g) => g.id === goalId);
+
+  if (!alreadyExists) {
+    const newGoal: Goal = { id: goalId, title: goalText.trim(), description: "" };
+    await saveGoals(hootlDir, [...existingGoals, newGoal]);
+  }
+
+  let assigned = 0;
+  for (const taskId of indexToId.values()) {
+    await backend.updateTask(taskId, { goal: goalId });
+    assigned++;
+  }
+
+  return { goalId, created: !alreadyExists, assigned };
+}
+
+/**
  * Create goals from task group labels and assign tasks to their corresponding goals.
  * Loads existing goals to avoid duplicates, creates new ones for unknown groups,
  * and updates each task's `goal` field via the backend.

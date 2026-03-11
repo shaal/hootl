@@ -42,7 +42,7 @@ import { critiquePlan } from "./plan-review.js";
 import { generatePlanSummary, confirmPlan } from "./plan-summary.js";
 import { formatPlanningMemoryContext } from "./plan-memory.js";
 import { extractTaskArray } from "./parse-tasks.js";
-import { loadGoals, saveGoals, createGoalsFromGroups } from "./goals.js";
+import { loadGoals, saveGoals, createGoalsFromGroups, ensureGoalFromFlag } from "./goals.js";
 import { logsCommand } from "./logs.js";
 import { JSON_SCHEMA_INSTRUCTION } from "./plan-prompt.js";
 
@@ -434,13 +434,28 @@ export async function planCommand(cliMode?: { fromSpec?: boolean; goal?: string;
     uiInfo(`Created task ${created.id}: ${created.title} [${label}]`);
   }
 
-  // Pass 1.5: Create goals from group labels and assign tasks
-  const goalResult = await createGoalsFromGroups(tasks, indexToId, backend, hootlDir);
-  for (const goalId of goalResult.created) {
-    uiInfo(`Created goal: ${goalId}`);
+  // Pass 1.25: If --goal flag provided, auto-create/reuse goal and assign all tasks
+  if (cliMode?.goal) {
+    const flagResult = await ensureGoalFromFlag(cliMode.goal, indexToId, backend, hootlDir);
+    if (flagResult.created) {
+      uiInfo(`Created goal: ${flagResult.goalId}`);
+    } else {
+      uiInfo(`Reusing existing goal: ${flagResult.goalId}`);
+    }
+    if (flagResult.assigned > 0) {
+      uiInfo(`Assigned ${flagResult.assigned} task(s) to goal "${flagResult.goalId}".`);
+    }
   }
-  if (goalResult.assigned > 0) {
-    uiInfo(`Assigned ${goalResult.assigned} task(s) to goals.`);
+
+  // Pass 1.5: Create goals from group labels and assign tasks (skip when --goal overrides)
+  if (!cliMode?.goal) {
+    const goalResult = await createGoalsFromGroups(tasks, indexToId, backend, hootlDir);
+    for (const goalId of goalResult.created) {
+      uiInfo(`Created goal: ${goalId}`);
+    }
+    if (goalResult.assigned > 0) {
+      uiInfo(`Assigned ${goalResult.assigned} task(s) to goals.`);
+    }
   }
 
   // Pass 2: Wire up dependencies now that all IDs are known
