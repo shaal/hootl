@@ -10,8 +10,8 @@ import {
   getActiveInstances,
   writeStatusSummary,
 } from "../status.js";
-import type { Task } from "../tasks/types.js";
 import type { Goal } from "../goals.js";
+import { makeTask } from "./helpers.js";
 
 let tempDir: string;
 
@@ -216,30 +216,6 @@ describe("writeStatusSummary with claim info", () => {
     await rm(tempDir, { recursive: true, force: true });
   });
 
-  function makeTask(overrides: Partial<Task> & { id: string; title: string }): Task {
-    return {
-      state: "ready",
-      description: "",
-      priority: "medium",
-      type: "feature",
-      backend: "local",
-      backendRef: null,
-      confidence: 0,
-      attempts: 0,
-      totalCost: 0,
-      branch: null,
-      worktree: null,
-      blockers: [],
-      dependencies: [],
-      userPriority: null,
-      effort: null,
-      goal: null,
-      createdAt: "2025-01-01T00:00:00.000Z",
-      updatedAt: "2025-01-01T00:00:00.000Z",
-      ...overrides,
-    };
-  }
-
   it("includes Active instances line when claimInfo is provided", async () => {
     const tasks = [makeTask({ id: "task-001", title: "Something", state: "ready" })];
     const claimInfo = { count: 2, pids: new Map<string, number>() };
@@ -312,30 +288,6 @@ describe("writeStatusSummary with goals", () => {
   afterEach(async () => {
     await rm(tempDir, { recursive: true, force: true });
   });
-
-  function makeTask(overrides: Partial<Task> & { id: string; title: string }): Task {
-    return {
-      state: "ready",
-      description: "",
-      priority: "medium",
-      type: "feature",
-      backend: "local",
-      backendRef: null,
-      confidence: 0,
-      attempts: 0,
-      totalCost: 0,
-      branch: null,
-      worktree: null,
-      blockers: [],
-      dependencies: [],
-      userPriority: null,
-      effort: null,
-      goal: null,
-      createdAt: "2025-01-01T00:00:00.000Z",
-      updatedAt: "2025-01-01T00:00:00.000Z",
-      ...overrides,
-    };
-  }
 
   it("groups tasks under goal headers with done counts", async () => {
     const goals: Goal[] = [

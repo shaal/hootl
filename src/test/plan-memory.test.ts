@@ -11,37 +11,11 @@ import {
   computeMetrics,
   formatPlanningMemoryContext,
 } from "../plan-memory.js";
-import type { Task } from "../tasks/types.js";
-
-function makeTask(overrides: Partial<Task> = {}): Task {
-  return {
-    id: "t001",
-    title: "Test task",
-    description: "A test task",
-    priority: "medium",
-    type: "feature",
-    state: "done",
-    dependencies: [],
-    backend: "local",
-    backendRef: null,
-    confidence: 95,
-    attempts: 1,
-    totalCost: 0.10,
-    branch: null,
-    worktree: null,
-    userPriority: null,
-    effort: null,
-    goal: null,
-    blockers: [],
-    createdAt: "2025-01-01T00:00:00Z",
-    updatedAt: "2025-01-01T00:00:00Z",
-    ...overrides,
-  };
-}
+import { makeTask } from "./helpers.js";
 
 describe("generateMemoryEntry", () => {
   it("generates success insight for 1-attempt completion", () => {
-    const task = makeTask({ state: "done", attempts: 1 });
+    const task = makeTask({ id: "t001", state: "done", attempts: 1 });
     const entry = generateMemoryEntry(task);
     assert.ok(entry.includes("t001"));
     assert.ok(entry.includes("done, 1 attempt"));

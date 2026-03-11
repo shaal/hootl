@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { loadGoals, saveGoals, GoalSchema, slugifyGoalId } from "../goals.js";
 import { TaskSchema } from "../tasks/types.js";
+import { makeTask } from "./helpers.js";
 
 let tempDir: string;
 
@@ -76,76 +77,20 @@ describe("slugifyGoalId", () => {
 
 describe("TaskSchema goal backward compat", () => {
   it("defaults goal to null when field is absent", () => {
-    const input = {
-      id: "t1",
-      title: "Test",
-      description: "A test task",
-      priority: "medium",
-      type: "feature",
-      state: "ready",
-      dependencies: [],
-      backend: "local",
-      backendRef: null,
-      confidence: 0,
-      attempts: 0,
-      totalCost: 0,
-      branch: null,
-      worktree: null,
-      blockers: [],
-      createdAt: "2025-01-01T00:00:00Z",
-      updatedAt: "2025-01-01T00:00:00Z",
-    };
     // No 'goal' field in input
+    const { goal: _, ...input } = makeTask();
     const parsed = TaskSchema.parse(input);
     assert.equal(parsed.goal, null);
   });
 
   it("preserves explicit goal string", () => {
-    const input = {
-      id: "t1",
-      title: "Test",
-      description: "A test task",
-      priority: "medium",
-      type: "feature",
-      state: "ready",
-      dependencies: [],
-      backend: "local",
-      backendRef: null,
-      confidence: 0,
-      attempts: 0,
-      totalCost: 0,
-      branch: null,
-      worktree: null,
-      goal: "my-goal",
-      blockers: [],
-      createdAt: "2025-01-01T00:00:00Z",
-      updatedAt: "2025-01-01T00:00:00Z",
-    };
+    const input = makeTask({ goal: "my-goal" });
     const parsed = TaskSchema.parse(input);
     assert.equal(parsed.goal, "my-goal");
   });
 
   it("preserves explicit goal null", () => {
-    const input = {
-      id: "t1",
-      title: "Test",
-      description: "A test task",
-      priority: "medium",
-      type: "feature",
-      state: "ready",
-      dependencies: [],
-      backend: "local",
-      backendRef: null,
-      confidence: 0,
-      attempts: 0,
-      totalCost: 0,
-      branch: null,
-      worktree: null,
-      goal: null,
-      blockers: [],
-      createdAt: "2025-01-01T00:00:00Z",
-      updatedAt: "2025-01-01T00:00:00Z",
-    };
+    const input = makeTask({ goal: null });
     const parsed = TaskSchema.parse(input);
     assert.equal(parsed.goal, null);
   });

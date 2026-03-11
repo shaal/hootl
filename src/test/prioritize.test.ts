@@ -9,6 +9,7 @@ import type { Task } from "../tasks/types.js";
 import { findRunnableTask, sortByStrategy, getNextTask } from "../selection.js";
 import { ConfigSchema } from "../config.js";
 import type { Config } from "../config.js";
+import { makeTask } from "./helpers.js";
 
 let tempDir: string;
 
@@ -18,49 +19,14 @@ async function freshDir(): Promise<string> {
 
 describe("userPriority schema", () => {
   it("defaults to null when field is missing from JSON", () => {
-    const raw = {
-      id: "task-001",
-      title: "Test",
-      description: "Desc",
-      priority: "medium",
-      state: "ready",
-      dependencies: [],
-      backend: "local",
-      backendRef: null,
-      confidence: 0,
-      attempts: 0,
-      totalCost: 0,
-      branch: null,
-      worktree: null,
-      blockers: [],
-      createdAt: "2024-01-01T00:00:00.000Z",
-      updatedAt: "2024-01-01T00:00:00.000Z",
-    };
     // No userPriority field — Zod's .default(null) should handle it
+    const { userPriority: _, ...raw } = makeTask();
     const parsed = TaskSchema.parse(raw);
     assert.equal(parsed.userPriority, null);
   });
 
   it("preserves explicit userPriority value", () => {
-    const raw = {
-      id: "task-001",
-      title: "Test",
-      description: "Desc",
-      priority: "medium",
-      state: "ready",
-      dependencies: [],
-      backend: "local",
-      backendRef: null,
-      confidence: 0,
-      attempts: 0,
-      totalCost: 0,
-      branch: null,
-      worktree: null,
-      userPriority: 3,
-      blockers: [],
-      createdAt: "2024-01-01T00:00:00.000Z",
-      updatedAt: "2024-01-01T00:00:00.000Z",
-    };
+    const raw = makeTask({ userPriority: 3 });
     const parsed = TaskSchema.parse(raw);
     assert.equal(parsed.userPriority, 3);
   });

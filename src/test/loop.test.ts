@@ -16,6 +16,9 @@ import { _setSessionId, getSessionId } from "../logger.js";
 import { getProjectDir } from "../config.js";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
+import { makeTask } from "./helpers.js";
+
+const confidenceMetDefaults = { state: "in_progress" as const, confidence: 95, attempts: 1, totalCost: 0.10, branch: "hootl/task-001-test" };
 
 describe("parseReviewResult", () => {
   it("extracts fields from clean JSON", () => {
@@ -516,29 +519,6 @@ describe("verifyRemediationMarkers", () => {
 });
 
 describe("buildPlanPrompt", () => {
-  const makeTask = (overrides: Partial<Task> = {}): Task => ({
-    id: "task-001",
-    title: "Test task",
-    description: "A test task description",
-    priority: "medium",
-    type: "feature",
-    state: "in_progress",
-    dependencies: [],
-    backend: "local",
-    backendRef: null,
-    confidence: 0,
-    attempts: 0,
-    totalCost: 0,
-    branch: null,
-    worktree: null,
-    userPriority: null,
-    effort: null,
-    goal: null,
-    blockers: [],
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    ...overrides,
-  });
 
   it("includes task title and description", async () => {
     const dir = await mkdtemp(join(tmpdir(), "hootl-plan-"));
@@ -642,29 +622,6 @@ describe("isContextWindowExceeded", () => {
 });
 
 describe("applyContextWindowExceeded", () => {
-  const makeTask = (overrides: Partial<Task> = {}): Task => ({
-    id: "task-001",
-    title: "Test task",
-    description: "A test task",
-    priority: "medium",
-    type: "feature",
-    state: "in_progress",
-    dependencies: [],
-    backend: "local",
-    backendRef: null,
-    confidence: 0,
-    attempts: 1,
-    totalCost: 0.10,
-    branch: null,
-    worktree: null,
-    userPriority: null,
-    effort: null,
-    goal: null,
-    blockers: [],
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    ...overrides,
-  });
 
   it("returns null when context window is not exceeded", async () => {
     const mockBackend: Pick<TaskBackend, "updateTask"> = {
@@ -787,39 +744,17 @@ describe("global budget integration with loop", () => {
 });
 
 describe("handleConfidenceMet", () => {
-  const makeTask = (overrides: Partial<Task> = {}): Task => ({
-    id: "task-001",
-    title: "Test task",
-    description: "A test task description",
-    priority: "medium",
-    type: "feature",
-    state: "in_progress",
-    dependencies: [],
-    backend: "local",
-    backendRef: null,
-    confidence: 95,
-    attempts: 1,
-    totalCost: 0.10,
-    branch: "hootl/task-001-test",
-    worktree: null,
-    userPriority: null,
-    effort: null,
-    goal: null,
-    blockers: [],
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    ...overrides,
-  });
+  const makeHcmTask = (overrides: Partial<Task> = {}) => makeTask({ ...confidenceMetDefaults, ...overrides });
 
   function makeMockBackend(): { backend: TaskBackend; state: { lastUpdate: { id: string; updates: Partial<Task> } | null } } {
     const state = { lastUpdate: null as { id: string; updates: Partial<Task> } | null };
     const backend = {
       updateTask: async (id: string, updates: Partial<Task>) => {
         state.lastUpdate = { id, updates };
-        return { ...makeTask(), ...updates } as Task;
+        return { ...makeHcmTask(), ...updates } as Task;
       },
-      createTask: async () => makeTask(),
-      getTask: async () => makeTask(),
+      createTask: async () => makeHcmTask(),
+      getTask: async () => makeHcmTask(),
       listTasks: async () => [],
       deleteTask: async () => {},
       claimTask: async () => true,
@@ -841,7 +776,7 @@ describe("handleConfidenceMet", () => {
       const { backend, state: mockState } = makeMockBackend();
       const config = ConfigSchema.parse({ git: { onConfidence: "none" } });
       const result = await handleConfidenceMet(
-        makeTask(), config, backend, "hootl/task-001-test", "main", dir, {}, noopHookDeps,
+        makeHcmTask(), config, backend, "hootl/task-001-test", "main", dir, {}, noopHookDeps,
       );
       assert.equal(result.state, "review");
       assert.equal(result.mergedSuccessfully, false);
@@ -858,7 +793,7 @@ describe("handleConfidenceMet", () => {
       const config = ConfigSchema.parse({ git: { onConfidence: "none" } });
       // Without a real git repo, mergeBranch will fail and fall back to review
       const result = await handleConfidenceMet(
-        makeTask(), config, backend, "hootl/task-001-test", "main", dir, { merge: true }, noopHookDeps,
+        makeHcmTask(), config, backend, "hootl/task-001-test", "main", dir, { merge: true }, noopHookDeps,
       );
       // merge will fail (no real git repo) so it falls back to review
       assert.equal(result.state, "review");
@@ -874,7 +809,7 @@ describe("handleConfidenceMet", () => {
       const { backend, state: mockState } = makeMockBackend();
       const config = ConfigSchema.parse({ git: { onConfidence: "merge" } });
       const result = await handleConfidenceMet(
-        makeTask(), config, backend, "hootl/task-001-test", "main", dir, { noMerge: true }, noopHookDeps,
+        makeHcmTask(), config, backend, "hootl/task-001-test", "main", dir, { noMerge: true }, noopHookDeps,
       );
       assert.equal(result.state, "review");
       assert.equal(result.mergedSuccessfully, false);
@@ -891,7 +826,7 @@ describe("handleConfidenceMet", () => {
       const config = ConfigSchema.parse({ git: { onConfidence: "pr" } });
       // pushBranch will fail (no remote) but state should still be review
       const result = await handleConfidenceMet(
-        makeTask(), config, backend, "hootl/task-001-test", "main", dir, {}, noopHookDeps,
+        makeHcmTask(), config, backend, "hootl/task-001-test", "main", dir, {}, noopHookDeps,
       );
       assert.equal(result.state, "review");
       assert.equal(result.mergedSuccessfully, false);
@@ -908,7 +843,7 @@ describe("handleConfidenceMet", () => {
       const config = ConfigSchema.parse({ git: { onConfidence: "merge" } });
       // With null branch, merge mode can't do anything — falls through to none
       const result = await handleConfidenceMet(
-        makeTask(), config, backend, null, null, dir, {}, noopHookDeps,
+        makeHcmTask(), config, backend, null, null, dir, {}, noopHookDeps,
       );
       assert.equal(result.state, "review");
       assert.equal(result.mergedSuccessfully, false);
@@ -939,7 +874,7 @@ describe("handleConfidenceMet", () => {
         warn: () => {},
       };
       const result = await handleConfidenceMet(
-        makeTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
+        makeHcmTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
       );
       assert.equal(result.state, "in_progress");
       assert.equal(result.mergedSuccessfully, false);
@@ -971,7 +906,7 @@ describe("handleConfidenceMet", () => {
         warn: () => {},
       };
       const result = await handleConfidenceMet(
-        makeTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
+        makeHcmTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
       );
       // Hook passed, so normal 'none' mode behavior: task goes to review
       assert.equal(result.state, "review");
@@ -998,7 +933,7 @@ describe("handleConfidenceMet", () => {
         warn: () => {},
       };
       const result = await handleConfidenceMet(
-        makeTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
+        makeHcmTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
       );
       // Hook threw — moves task to blocked (retrying won't fix an error)
       assert.equal(result.state, "blocked");
@@ -1022,7 +957,7 @@ describe("handleConfidenceMet", () => {
         warn: () => {},
       };
       const result = await handleConfidenceMet(
-        makeTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
+        makeHcmTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
       );
       assert.equal(hookInvoked, true, "default simplify hook should be invoked when config.hooks is empty");
       assert.equal(result.state, "review"); // onConfidence: "none" → review
@@ -1158,29 +1093,13 @@ describe("parsePreflightResult subtask type", () => {
 });
 
 describe("handleTooBroad subtask auto-creation", () => {
-  const makeTooBroadTask = (overrides: Partial<Task> = {}): Task => ({
+  const tooBroadDefaults = {
     id: "task-001",
     title: "Broad task",
     description: "A task that is too broad",
-    priority: "medium",
-    type: "feature",
-    state: "in_progress",
-    dependencies: [],
-    backend: "local",
-    backendRef: null,
-    confidence: 0,
-    attempts: 0,
-    totalCost: 0,
-    branch: null,
-    worktree: null,
-    userPriority: null,
-    effort: null,
-    goal: null,
-    blockers: [],
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    ...overrides,
-  });
+    state: "in_progress" as const,
+  };
+  const makeTooBroadTask = (overrides: Partial<Task> = {}) => makeTask({ ...tooBroadDefaults, ...overrides });
 
   function makeSubtaskMockBackend() {
     let nextId = 1;
@@ -1478,29 +1397,17 @@ describe("handleTooBroad subtask auto-creation", () => {
 });
 
 describe("handleRemediationDecomposition", () => {
-  const makeDecompTask = (overrides: Partial<Task> = {}): Task => ({
+  const decompDefaults = {
     id: "task-001",
     title: "Fix auth system",
     description: "Fix the authentication bugs",
-    priority: "high",
-    type: "bug",
-    state: "in_progress",
-    dependencies: [],
-    backend: "local",
-    backendRef: null,
-    confidence: 0,
+    priority: "high" as const,
+    type: "bug" as const,
+    state: "in_progress" as const,
     attempts: 1,
     totalCost: 0.5,
-    branch: null,
-    worktree: null,
-    userPriority: null,
-    effort: null,
-    goal: null,
-    blockers: [],
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    ...overrides,
-  });
+  };
+  const makeDecompTask = (overrides: Partial<Task> = {}) => makeTask({ ...decompDefaults, ...overrides });
 
   function makeDecompMockBackend() {
     let nextId = 1;
@@ -1923,39 +1830,17 @@ describe("handleRemediationDecomposition config gate", () => {
 });
 
 describe("handleConfidenceMet hook integration", () => {
-  const makeTask = (overrides: Partial<Task> = {}): Task => ({
-    id: "task-001",
-    title: "Test task",
-    description: "A test task description",
-    priority: "medium",
-    type: "feature",
-    state: "in_progress",
-    dependencies: [],
-    backend: "local",
-    backendRef: null,
-    confidence: 95,
-    attempts: 1,
-    totalCost: 0.10,
-    branch: "hootl/task-001-test",
-    worktree: null,
-    userPriority: null,
-    effort: null,
-    goal: null,
-    blockers: [],
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    ...overrides,
-  });
+  const makeHookTask = (overrides: Partial<Task> = {}) => makeTask({ ...confidenceMetDefaults, ...overrides });
 
   function makeMockBackend(): { backend: TaskBackend; updates: Array<{ id: string; updates: Partial<Task> }> } {
     const updates: Array<{ id: string; updates: Partial<Task> }> = [];
     const backend = {
       updateTask: async (id: string, upd: Partial<Task>) => {
         updates.push({ id, updates: upd });
-        return { ...makeTask(), ...upd } as Task;
+        return { ...makeHookTask(), ...upd } as Task;
       },
-      createTask: async () => makeTask(),
-      getTask: async () => makeTask(),
+      createTask: async () => makeHookTask(),
+      getTask: async () => makeHookTask(),
       listTasks: async () => [],
       deleteTask: async () => {},
       claimTask: async () => true,
@@ -1985,7 +1870,7 @@ describe("handleConfidenceMet hook integration", () => {
         warn: () => {},
       };
       const result = await handleConfidenceMet(
-        makeTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
+        makeHookTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
       );
       // No fixes applied — retrying won't help, task moves to blocked
       assert.equal(result.state, "blocked");
@@ -2000,7 +1885,7 @@ describe("handleConfidenceMet hook integration", () => {
     const dir = await mkdtemp(join(tmpdir(), "hootl-hcm-ctx-"));
     try {
       const { backend } = makeMockBackend();
-      const task = makeTask({ confidence: 97 });
+      const task = makeHookTask({ confidence: 97 });
       const config = ConfigSchema.parse({
         git: { onConfidence: "none" },
         hooks: [
@@ -2056,7 +1941,7 @@ describe("handleConfidenceMet hook integration", () => {
         warn: () => {},
       };
       await handleConfidenceMet(
-        makeTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
+        makeHookTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
       );
       assert.equal(logCalls.length, 1);
       assert.equal(logCalls[0]?.phase, "hook:on_confidence_met");
@@ -2111,7 +1996,7 @@ describe("handleConfidenceMet hook integration", () => {
         commit: async () => false,
       };
       const result = await handleConfidenceMet(
-        makeTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
+        makeHookTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
       );
       // Should proceed to review since confidence stayed above target
       assert.equal(result.state, "review");
@@ -2159,7 +2044,7 @@ describe("handleConfidenceMet hook integration", () => {
         commit: async () => false,
       };
       const result = await handleConfidenceMet(
-        makeTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
+        makeHookTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
       );
       // Should return in_progress because confidence dropped
       assert.equal(result.state, "in_progress");
@@ -2210,7 +2095,7 @@ describe("handleConfidenceMet hook integration", () => {
         commit: async () => false,
       };
       const result = await handleConfidenceMet(
-        makeTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
+        makeHookTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
       );
       // Should eventually proceed (capped at MAX_REVERIFICATIONS)
       assert.equal(result.state, "review");
@@ -2247,7 +2132,7 @@ describe("handleConfidenceMet hook integration", () => {
         commit: async () => false,
       };
       const result = await handleConfidenceMet(
-        makeTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
+        makeHookTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
       );
       // Should proceed directly — no re-verification
       assert.equal(result.state, "review");
@@ -2301,7 +2186,7 @@ describe("handleConfidenceMet hook integration", () => {
       };
       // The key assertion is that the re-verify loop runs and proceeds
       const result = await handleConfidenceMet(
-        makeTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
+        makeHookTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
       );
       assert.equal(result.state, "review");
       // 3 calls: hook (fixes), re-review, re-hook (no fixes)
@@ -2354,7 +2239,7 @@ describe("handleConfidenceMet hook integration", () => {
         commit: async () => false,
       };
       await handleConfidenceMet(
-        makeTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
+        makeHookTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
       );
       // Should have: hook:on_confidence_met (0.03), re-verify (0.04), hook:on_confidence_met (0.01)
       const reVerifyCalls = logCalls.filter((c) => c.phase === "re-verify");
@@ -2383,7 +2268,7 @@ describe("handleConfidenceMet hook integration", () => {
         warn: () => {},
       };
       const result = await handleConfidenceMet(
-        makeTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
+        makeHookTask(), config, backend, "hootl/task-001-test", "main", dir, {}, hookDeps,
       );
       assert.equal(result.state, "blocked");
       assert.equal(result.mergedSuccessfully, false);
@@ -2397,32 +2282,19 @@ describe("handleConfidenceMet hook integration", () => {
 });
 
 describe("fireHooks", () => {
-  const makeTask = (overrides: Partial<Task> = {}): Task => ({
+  const fhDefaults = {
     id: "task-fh",
     title: "Fire hooks task",
     description: "Testing fireHooks helper",
-    priority: "medium",
-    type: "feature",
-    state: "in_progress",
-    dependencies: [],
-    backend: "local",
-    backendRef: null,
+    state: "in_progress" as const,
     confidence: 80,
     attempts: 1,
-    totalCost: 0,
     branch: "hootl/task-fh",
-    worktree: null,
-    userPriority: null,
-    effort: null,
-    goal: null,
-    blockers: [],
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    ...overrides,
-  });
+  };
+  const makeFhTask = (overrides: Partial<Task> = {}) => makeTask({ ...fhDefaults, ...overrides });
 
   it("calls runHooks with correct trigger and HookContext", async () => {
-    const task = makeTask({ confidence: 80 });
+    const task = makeFhTask({ confidence: 80 });
     const config = ConfigSchema.parse({
       hooks: [
         { trigger: "on_execute_start", prompt: "pre-execute check", blocking: false },
@@ -2451,7 +2323,7 @@ describe("fireHooks", () => {
   });
 
   it("calls runHooks for on_review_complete with review confidence", async () => {
-    const task = makeTask({ confidence: 92 });
+    const task = makeFhTask({ confidence: 92 });
     const config = ConfigSchema.parse({
       hooks: [
         { trigger: "on_review_complete", prompt: "post-review", blocking: false },
@@ -2483,7 +2355,7 @@ describe("fireHooks", () => {
       log: async () => {},
       warn: () => {},
     };
-    await fireHooks("on_execute_start", makeTask(), "hootl/task-fh", "main", 0, config, hookDeps);
+    await fireHooks("on_execute_start", makeFhTask(), "hootl/task-fh", "main", 0, config, hookDeps);
     assert.equal(invoked, false, "invoke should not be called when hooks array is empty");
   });
 
@@ -2499,44 +2371,32 @@ describe("fireHooks", () => {
       warn: () => {},
     };
     // Should not throw
-    await fireHooks("on_blocked", makeTask(), "hootl/task-fh", "main", 50, config, hookDeps);
+    await fireHooks("on_blocked", makeFhTask(), "hootl/task-fh", "main", 50, config, hookDeps);
   });
 });
 
 describe("moveToBlocked", () => {
-  const makeTask = (overrides: Partial<Task> = {}): Task => ({
+  const mbDefaults = {
     id: "task-mb",
     title: "Move to blocked task",
     description: "Testing moveToBlocked helper",
-    priority: "medium",
-    type: "feature",
-    state: "in_progress",
-    dependencies: [],
-    backend: "local",
-    backendRef: null,
+    state: "in_progress" as const,
     confidence: 50,
     attempts: 3,
     totalCost: 0.50,
     branch: "hootl/task-mb",
-    worktree: null,
-    userPriority: null,
-    effort: null,
-    goal: null,
-    blockers: [],
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    ...overrides,
-  });
+  };
+  const makeMbTask = (overrides: Partial<Task> = {}) => makeTask({ ...mbDefaults, ...overrides });
 
   function makeMockBackend(): { backend: TaskBackend; updates: Array<{ id: string; updates: Partial<Task> }> } {
     const updates: Array<{ id: string; updates: Partial<Task> }> = [];
     const backend = {
       updateTask: async (id: string, upd: Partial<Task>) => {
         updates.push({ id, updates: upd });
-        return { ...makeTask(), ...upd } as Task;
+        return { ...makeMbTask(), ...upd } as Task;
       },
-      createTask: async () => makeTask(),
-      getTask: async () => makeTask(),
+      createTask: async () => makeMbTask(),
+      getTask: async () => makeMbTask(),
       listTasks: async () => [],
       deleteTask: async () => {},
       claimTask: async () => true,
@@ -2574,7 +2434,7 @@ describe("moveToBlocked", () => {
     };
 
     const blockers = ["Budget exhausted"];
-    await moveToBlocked(backend, makeTask(), blockers, "hootl/task-mb", "main", 50, config, hookDeps);
+    await moveToBlocked(backend, makeMbTask(), blockers, "hootl/task-mb", "main", 50, config, hookDeps);
 
     assert.ok(callOrder.indexOf("hook_invoked") < callOrder.indexOf("backend_update"),
       "hook should fire before backend state update");
@@ -2595,7 +2455,7 @@ describe("moveToBlocked", () => {
       warn: () => {},
     };
     const blockers = ["Max attempts exhausted"];
-    const result = await moveToBlocked(backend, makeTask(), blockers, "hootl/task-mb", "main", 50, config, hookDeps);
+    const result = await moveToBlocked(backend, makeMbTask(), blockers, "hootl/task-mb", "main", 50, config, hookDeps);
     assert.equal(result.state, "blocked");
     assert.equal(updates.length, 1);
     assert.equal(updates[0]?.updates.state, "blocked");
@@ -2610,36 +2470,13 @@ describe("moveToBlocked", () => {
       warn: () => {},
     };
     const blockers = ["Confidence regression: 60% < 80%", "Tests failing"];
-    await moveToBlocked(backend, makeTask(), blockers, "hootl/task-mb", "main", 60, config, hookDeps);
+    await moveToBlocked(backend, makeMbTask(), blockers, "hootl/task-mb", "main", 60, config, hookDeps);
     assert.equal(updates.length, 1);
     assert.deepEqual(updates[0]?.updates.blockers, blockers);
   });
 });
 
 describe("buildReviewPrompt", () => {
-  const makeTask = (overrides: Partial<Task> = {}): Task => ({
-    id: "task-001",
-    title: "Test task",
-    description: "A test task description",
-    priority: "medium",
-    type: "feature",
-    state: "in_progress",
-    dependencies: [],
-    backend: "local",
-    backendRef: null,
-    confidence: 0,
-    attempts: 0,
-    totalCost: 0,
-    branch: null,
-    worktree: null,
-    userPriority: null,
-    effort: null,
-    goal: null,
-    blockers: [],
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    ...overrides,
-  });
 
   it("includes branch checkout and three-dot diff when opts provided", async () => {
     const dir = await mkdtemp(join(tmpdir(), "hootl-review-"));
@@ -2705,32 +2542,11 @@ describe("buildReviewPrompt", () => {
 // ---------------------------------------------------------------------------
 
 describe("checkAllDependenciesDone", () => {
-  const makeTask = (state: string): Task => ({
-    id: "dep-001",
-    title: "Dep",
-    description: "A dependency",
-    priority: "medium",
-    type: "feature",
-    state: state as Task["state"],
-    dependencies: [],
-    backend: "local",
-    backendRef: null,
-    confidence: 0,
-    attempts: 0,
-    totalCost: 0,
-    branch: null,
-    worktree: null,
-    userPriority: null,
-    effort: null,
-    goal: null,
-    blockers: [],
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  });
+  const makeDep = (state: Task["state"]) => makeTask({ id: "dep-001", title: "Dep", description: "A dependency", state });
 
   it("returns true when all dependencies are done", async () => {
     const backend = {
-      getTask: async () => makeTask("done"),
+      getTask: async () => makeDep("done"),
     } as unknown as TaskBackend;
     assert.equal(await checkAllDependenciesDone(backend, ["dep-001", "dep-002"]), true);
   });
@@ -2740,7 +2556,7 @@ describe("checkAllDependenciesDone", () => {
     const backend = {
       getTask: async () => {
         callCount++;
-        return makeTask(callCount === 1 ? "done" : "in_progress");
+        return makeDep(callCount === 1 ? "done" : "in_progress");
       },
     } as unknown as TaskBackend;
     assert.equal(await checkAllDependenciesDone(backend, ["dep-001", "dep-002"]), false);
@@ -2755,7 +2571,7 @@ describe("checkAllDependenciesDone", () => {
 
   it("returns true for empty dependencies array", async () => {
     const backend = {
-      getTask: async () => makeTask("done"),
+      getTask: async () => makeDep("done"),
     } as unknown as TaskBackend;
     assert.equal(await checkAllDependenciesDone(backend, []), true);
   });
@@ -2784,39 +2600,18 @@ async function readEventsForSession(sessionId: string): Promise<LogEntry[]> {
 }
 
 describe("logEvent integration in handleConfidenceMet", () => {
-  const makeTask = (overrides: Partial<Task> = {}): Task => ({
-    id: "task-log-001",
-    title: "Log test task",
-    description: "Testing logEvent integration",
-    priority: "medium",
-    type: "feature",
-    state: "in_progress",
-    dependencies: [],
-    backend: "local",
-    backendRef: null,
-    confidence: 95,
-    attempts: 1,
-    totalCost: 0.10,
-    branch: "hootl/task-log-001-test",
-    worktree: null,
-    userPriority: null,
-    effort: null,
-    goal: null,
-    blockers: [],
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    ...overrides,
-  });
+  const logHcmDefaults = { id: "task-log-001", title: "Log test task", description: "Testing logEvent integration", state: "in_progress" as const, confidence: 95, attempts: 1, totalCost: 0.10, branch: "hootl/task-log-001-test" };
+  const makeLogHcmTask = (overrides: Partial<Task> = {}) => makeTask({ ...logHcmDefaults, ...overrides });
 
   function makeMockBackend(): { backend: TaskBackend; updates: Array<{ id: string; updates: Partial<Task> }> } {
     const updates: Array<{ id: string; updates: Partial<Task> }> = [];
     const backend = {
       updateTask: async (id: string, upd: Partial<Task>) => {
         updates.push({ id, updates: upd });
-        return { ...makeTask(), ...upd } as Task;
+        return { ...makeLogHcmTask(), ...upd } as Task;
       },
-      createTask: async () => makeTask(),
-      getTask: async () => makeTask(),
+      createTask: async () => makeLogHcmTask(),
+      getTask: async () => makeLogHcmTask(),
       listTasks: async () => [],
       deleteTask: async () => {},
       claimTask: async () => true,
@@ -2851,7 +2646,7 @@ describe("logEvent integration in handleConfidenceMet", () => {
       const { backend } = makeMockBackend();
       const config = ConfigSchema.parse({ git: { onConfidence: "none" } });
       await handleConfidenceMet(
-        makeTask(), config, backend, "hootl/task-log-001-test", "main", dir, {}, noopHookDeps,
+        makeLogHcmTask(), config, backend, "hootl/task-log-001-test", "main", dir, {}, noopHookDeps,
       );
 
       const events = await readEventsForSession(testSessionId);
@@ -2885,7 +2680,7 @@ describe("logEvent integration in handleConfidenceMet", () => {
       const config = ConfigSchema.parse({ git: { onConfidence: "merge" } });
       // Without a real git repo, mergeBranch fails and falls back to review
       await handleConfidenceMet(
-        makeTask(), config, backend, "hootl/task-log-001-test", "main", dir, {}, noopHookDeps,
+        makeLogHcmTask(), config, backend, "hootl/task-log-001-test", "main", dir, {}, noopHookDeps,
       );
 
       const events = await readEventsForSession(testSessionId);
@@ -2931,7 +2726,7 @@ describe("logEvent integration in handleConfidenceMet", () => {
         warn: () => {},
       };
       await handleConfidenceMet(
-        makeTask(), config, backend, "hootl/task-log-001-test", "main", dir, {}, hookDeps,
+        makeLogHcmTask(), config, backend, "hootl/task-log-001-test", "main", dir, {}, hookDeps,
       );
 
       const events = await readEventsForSession(testSessionId);
@@ -2996,7 +2791,7 @@ describe("logEvent integration in handleConfidenceMet", () => {
         commit: async () => false,
       };
       await handleConfidenceMet(
-        makeTask(), config, backend, "hootl/task-log-001-test", "main", dir, {}, hookDeps,
+        makeLogHcmTask(), config, backend, "hootl/task-log-001-test", "main", dir, {}, hookDeps,
       );
 
       const events = await readEventsForSession(testSessionId);
@@ -3058,7 +2853,7 @@ describe("logEvent integration in handleConfidenceMet", () => {
         commit: async () => false,
       };
       await handleConfidenceMet(
-        makeTask(), config, backend, "hootl/task-log-001-test", "main", dir, {}, hookDeps,
+        makeLogHcmTask(), config, backend, "hootl/task-log-001-test", "main", dir, {}, hookDeps,
       );
 
       const events = await readEventsForSession(testSessionId);
@@ -3086,7 +2881,7 @@ describe("logEvent integration in handleConfidenceMet", () => {
       // pushBranch will fail (no remote), but the pr_created events are emitted
       // regardless because the code always transitions to review in pr mode.
       await handleConfidenceMet(
-        makeTask(), config, backend, "hootl/task-log-001-test", "main", dir, {}, noopHookDeps,
+        makeLogHcmTask(), config, backend, "hootl/task-log-001-test", "main", dir, {}, noopHookDeps,
       );
 
       const events = await readEventsForSession(testSessionId);
@@ -3117,35 +2912,23 @@ describe("logEvent integration in handleConfidenceMet", () => {
 });
 
 describe("logEvent integration in moveToBlocked", () => {
-  const makeTask = (overrides: Partial<Task> = {}): Task => ({
+  const logMbDefaults = {
     id: "task-log-mb",
     title: "Move to blocked log test",
     description: "Testing logEvent in moveToBlocked",
-    priority: "medium",
-    type: "feature",
-    state: "in_progress",
-    dependencies: [],
-    backend: "local",
-    backendRef: null,
+    state: "in_progress" as const,
     confidence: 50,
     attempts: 3,
     totalCost: 0.50,
     branch: "hootl/task-log-mb",
-    worktree: null,
-    userPriority: null,
-    effort: null,
-    goal: null,
-    blockers: [],
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    ...overrides,
-  });
+  };
+  const makeLogMbTask = (overrides: Partial<Task> = {}) => makeTask({ ...logMbDefaults, ...overrides });
 
   function makeMockBackend(): TaskBackend {
     return {
-      updateTask: async (_id: string, upd: Partial<Task>) => ({ ...makeTask(), ...upd } as Task),
-      createTask: async () => makeTask(),
-      getTask: async () => makeTask(),
+      updateTask: async (_id: string, upd: Partial<Task>) => ({ ...makeLogMbTask(), ...upd } as Task),
+      createTask: async () => makeLogMbTask(),
+      getTask: async () => makeLogMbTask(),
       listTasks: async () => [],
       deleteTask: async () => {},
       claimTask: async () => true,
@@ -3175,7 +2958,7 @@ describe("logEvent integration in moveToBlocked", () => {
       warn: () => {},
     };
 
-    await moveToBlocked(backend, makeTask(), ["Budget exhausted"], "hootl/task-log-mb", "main", 50, config, hookDeps);
+    await moveToBlocked(backend, makeLogMbTask(), ["Budget exhausted"], "hootl/task-log-mb", "main", 50, config, hookDeps);
 
     const events = await readEventsForSession(testSessionId);
     const stateChanges = events.filter((e) => e.type === "state_change");
@@ -3201,7 +2984,7 @@ describe("logEvent integration in moveToBlocked", () => {
       warn: () => {},
     };
 
-    await moveToBlocked(backend, makeTask(), ["Test failure"], "hootl/task-log-mb", "main", 50, config, hookDeps);
+    await moveToBlocked(backend, makeLogMbTask(), ["Test failure"], "hootl/task-log-mb", "main", 50, config, hookDeps);
 
     const events = await readEventsForSession(testSessionId);
     assert.ok(events.length > 0, "should emit at least one event");

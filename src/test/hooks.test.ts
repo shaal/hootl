@@ -21,35 +21,9 @@ import {
 } from "../hooks.js";
 import type { HookContext, HookDeps, HookResult } from "../hooks.js";
 import type { Hook } from "../config.js";
-import type { Task } from "../tasks/types.js";
 import type { InvokeOptions, InvokeResult } from "../invoke.js";
 import { ConfigSchema, saveProjectConfig, loadJsonFile, HOOK_TRIGGERS, HookSchema } from "../config.js";
-
-function makeTask(overrides: Partial<Task> = {}): Task {
-  return {
-    id: "t1",
-    title: "Test task",
-    description: "A test task description",
-    priority: "medium",
-    type: "feature",
-    state: "in_progress",
-    dependencies: [],
-    backend: "local",
-    backendRef: null,
-    confidence: 0,
-    attempts: 0,
-    totalCost: 0,
-    branch: null,
-    worktree: null,
-    userPriority: null,
-    effort: null,
-    goal: null,
-    blockers: [],
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    ...overrides,
-  };
-}
+import { makeTask } from "./helpers.js";
 
 function makeContext(overrides: Partial<HookContext> = {}): HookContext {
   return {

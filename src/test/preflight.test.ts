@@ -6,7 +6,7 @@ import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { parsePreflightResult, buildPreflightPrompt, buildExecutePrompt } from "../loop.js";
-import type { Task } from "../tasks/types.js";
+import { makeTask } from "./helpers.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const templatePath = resolve(__dirname, "../../templates/preflight.md");
@@ -62,34 +62,10 @@ describe("templates/preflight.md", () => {
 });
 
 describe("buildPreflightPrompt", () => {
-  const makeTask = (overrides: Partial<Task> = {}): Task => ({
-    id: "task-001",
-    title: "Fix login bug",
-    description: "Users cannot log in when using SSO",
-    priority: "high",
-    type: "feature",
-    state: "ready",
-    dependencies: [],
-    backend: "local",
-    backendRef: null,
-    confidence: 0,
-    attempts: 0,
-    totalCost: 0,
-    branch: null,
-    worktree: null,
-    userPriority: null,
-    effort: null,
-    goal: null,
-    blockers: [],
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    ...overrides,
-  });
-
   it("includes task title and description", async () => {
     const dir = await mkdtemp(join(tmpdir(), "hootl-preflight-"));
     try {
-      const prompt = await buildPreflightPrompt(makeTask(), dir);
+      const prompt = await buildPreflightPrompt(makeTask({ title: "Fix login bug", description: "Users cannot log in when using SSO" }), dir);
       assert.ok(prompt.includes("# Task: Fix login bug"));
       assert.ok(prompt.includes("Users cannot log in when using SSO"));
     } finally {
@@ -318,30 +294,6 @@ Please review.`;
 });
 
 describe("preflight integration — buildExecutePrompt", () => {
-  const makeTask = (overrides: Partial<Task> = {}): Task => ({
-    id: "task-001",
-    title: "Test task",
-    description: "A test task description",
-    priority: "medium",
-    type: "feature",
-    state: "in_progress",
-    dependencies: [],
-    backend: "local",
-    backendRef: null,
-    confidence: 0,
-    attempts: 0,
-    totalCost: 0,
-    branch: null,
-    worktree: null,
-    userPriority: null,
-    effort: null,
-    goal: null,
-    blockers: [],
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    ...overrides,
-  });
-
   it("includes understanding.md content in execute prompt", async () => {
     const dir = await mkdtemp(join(tmpdir(), "hootl-exec-"));
     try {

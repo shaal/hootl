@@ -7,7 +7,7 @@ import {
   parseTaskIdFromChoice,
   type DiscussTaskContext,
 } from "../discuss.js";
-import type { Task } from "../tasks/types.js";
+import { makeTask } from "./helpers.js";
 
 function makeCtx(overrides: Partial<DiscussTaskContext> = {}): DiscussTaskContext {
   return {
@@ -266,31 +266,6 @@ describe("buildDiscussArgs", () => {
   });
 });
 
-function makeTask(overrides: Partial<Task> = {}): Task {
-  return {
-    id: "task-abc",
-    title: "Fix login bug",
-    description: "The login form crashes",
-    priority: "medium",
-    type: "feature",
-    state: "in_progress",
-    dependencies: [],
-    backend: "local",
-    backendRef: null,
-    confidence: 75,
-    attempts: 2,
-    totalCost: 1.5,
-    branch: null,
-    worktree: null,
-    userPriority: null,
-    effort: null,
-    goal: null,
-    blockers: [],
-    createdAt: "2024-01-01T00:00:00.000Z",
-    updatedAt: "2024-01-01T00:00:00.000Z",
-    ...overrides,
-  };
-}
 
 describe("formatTaskChoice", () => {
   it("includes task id, title, state, and confidence", () => {
@@ -313,7 +288,7 @@ describe("formatTaskChoice", () => {
 
   it("handles long titles", () => {
     const longTitle = "A".repeat(200);
-    const task = makeTask({ title: longTitle });
+    const task = makeTask({ id: "task-abc", title: longTitle });
     const result = formatTaskChoice(task);
     assert.ok(result.includes(longTitle));
     assert.ok(result.startsWith("[task-abc]"));
