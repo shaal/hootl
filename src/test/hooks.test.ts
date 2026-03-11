@@ -16,6 +16,7 @@ import {
   runSkillHook,
   buildTestHookContext,
   formatHookLabel,
+  groupHooksByTrigger,
   validateRemoveIndex,
 } from "../hooks.js";
 import type { HookContext, HookDeps, HookResult } from "../hooks.js";
@@ -1390,6 +1391,80 @@ describe("formatHookLabel", () => {
     assert.ok(formatHookLabel(hook, 0).startsWith("1)"));
     assert.ok(formatHookLabel(hook, 4).startsWith("5)"));
     assert.ok(formatHookLabel(hook, 9).startsWith("10)"));
+  });
+
+  it("appends minConfidence condition when present", () => {
+    const hook = makeHook({ skill: "simplify", blocking: true, conditions: { minConfidence: 80 } });
+    const label = formatHookLabel(hook, 0);
+    assert.equal(label, "1) on_confidence_met → skill:simplify [blocking] (minConfidence: 80)");
+  });
+
+  it("omits condition suffix when no conditions are set", () => {
+    const hook = makeHook({ skill: "simplify", blocking: true });
+    const label = formatHookLabel(hook, 0);
+    assert.equal(label, "1) on_confidence_met → skill:simplify [blocking]");
+    assert.ok(!label.includes("minConfidence"));
+  });
+
+  it("omits condition suffix when conditions object exists but minConfidence is undefined", () => {
+    const hook = makeHook({ skill: "simplify", blocking: true, conditions: {} });
+    const label = formatHookLabel(hook, 0);
+    assert.equal(label, "1) on_confidence_met → skill:simplify [blocking]");
+    assert.ok(!label.includes("minConfidence"));
+  });
+});
+
+// --- groupHooksByTrigger ---
+
+describe("groupHooksByTrigger", () => {
+  it("groups hooks by trigger point", () => {
+    const hooks: Hook[] = [
+      makeHook({ trigger: "on_confidence_met", skill: "simplify" }),
+      makeHook({ trigger: "on_review_complete", prompt: "Check code" }),
+      makeHook({ trigger: "on_confidence_met", prompt: "Validate" }),
+    ];
+    const groups = groupHooksByTrigger(hooks);
+    assert.equal(groups.size, 2);
+    assert.equal(groups.get("on_confidence_met")?.length, 2);
+    assert.equal(groups.get("on_review_complete")?.length, 1);
+  });
+
+  it("returns empty map for empty array", () => {
+    const groups = groupHooksByTrigger([]);
+    assert.equal(groups.size, 0);
+  });
+
+  it("preserves insertion order within groups", () => {
+    const hooks: Hook[] = [
+      makeHook({ trigger: "on_confidence_met", skill: "simplify" }),
+      makeHook({ trigger: "on_confidence_met", prompt: "Second" }),
+      makeHook({ trigger: "on_confidence_met", prompt: "Third" }),
+    ];
+    const groups = groupHooksByTrigger(hooks);
+    const group = groups.get("on_confidence_met")!;
+    assert.equal(group.length, 3);
+    assert.equal(group[0]!.skill, "simplify");
+    assert.equal(group[1]!.prompt, "Second");
+    assert.equal(group[2]!.prompt, "Third");
+  });
+
+  it("handles single hook", () => {
+    const hooks: Hook[] = [makeHook({ trigger: "on_blocked", skill: "notify" })];
+    const groups = groupHooksByTrigger(hooks);
+    assert.equal(groups.size, 1);
+    assert.equal(groups.get("on_blocked")?.length, 1);
+  });
+
+  it("preserves group ordering by first occurrence", () => {
+    const hooks: Hook[] = [
+      makeHook({ trigger: "on_review_complete", prompt: "A" }),
+      makeHook({ trigger: "on_confidence_met", prompt: "B" }),
+      makeHook({ trigger: "on_review_complete", prompt: "C" }),
+    ];
+    const groups = groupHooksByTrigger(hooks);
+    const keys = [...groups.keys()];
+    assert.equal(keys[0], "on_review_complete");
+    assert.equal(keys[1], "on_confidence_met");
   });
 });
 

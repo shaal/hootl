@@ -50,7 +50,31 @@ export function formatHookLabel(hook: Hook, index: number): string {
     target = "(no prompt or skill)";
   }
 
-  return `${num}) ${hook.trigger} → ${target} [${mode}]`;
+  let label = `${num}) ${hook.trigger} → ${target} [${mode}]`;
+
+  // Append condition details when present
+  if (hook.conditions?.minConfidence !== undefined) {
+    label += ` (minConfidence: ${hook.conditions.minConfidence})`;
+  }
+
+  return label;
+}
+
+/**
+ * Groups hooks by their trigger point, preserving insertion order within each group.
+ * Used by `hooks list` to display hooks organized by trigger.
+ */
+export function groupHooksByTrigger(hooks: Hook[]): Map<string, Hook[]> {
+  const groups = new Map<string, Hook[]>();
+  for (const hook of hooks) {
+    const existing = groups.get(hook.trigger);
+    if (existing) {
+      existing.push(hook);
+    } else {
+      groups.set(hook.trigger, [hook]);
+    }
+  }
+  return groups;
 }
 
 /**

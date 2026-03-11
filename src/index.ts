@@ -1425,7 +1425,7 @@ hooksCmd
   .description("List all configured hooks")
   .action(async () => {
     try {
-      const { formatHookLabel } = await import("./hooks.js");
+      const { formatHookLabel, groupHooksByTrigger } = await import("./hooks.js");
       const config = await loadConfig();
 
       if (config.hooks.length === 0) {
@@ -1433,9 +1433,20 @@ hooksCmd
         return;
       }
 
-      for (let i = 0; i < config.hooks.length; i++) {
-        const hook = config.hooks[i]!;
-        uiInfo(formatHookLabel(hook, i));
+      const groups = groupHooksByTrigger(config.hooks);
+
+      // Track a global index across all groups so numbering stays consistent
+      // with `hooks remove [index]` which uses 1-based global indexing.
+      let globalIndex = 0;
+      let firstGroup = true;
+      for (const [trigger, hooks] of groups) {
+        if (!firstGroup) uiInfo(""); // blank line between groups
+        uiInfo(`${trigger}:`);
+        for (const hook of hooks) {
+          uiInfo(`  ${formatHookLabel(hook, globalIndex)}`);
+          globalIndex++;
+        }
+        firstGroup = false;
       }
     } catch (err: unknown) {
       uiError(errorMsg(err));
