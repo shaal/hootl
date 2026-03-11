@@ -33,7 +33,7 @@ src/
   git.ts              Git operations: task branches, auto-commit, branch switching, merged-branch detection, branch diff checking
   sync.ts             Review-task sync: auto-promotes tasks to done when branches are merged externally
   reconcile.ts        Reconcile command: detects tasks with work landed on main, marks done, cleans stale branches/worktrees
-  goals.ts            Goals management: load/save goals.json, auto-create goals from plan group labels (slugifyGoalId, createGoalsFromGroups)
+  goals.ts            Goals management: load/save goals.json, auto-create goals from plan group labels (slugifyGoalId, createGoalsFromGroups), --goal flag auto-create/reuse (ensureGoalFromFlag)
   guided.ts           Interactive goal clarification (generates questions via Claude, collects answers via gum)
   ui.ts               Terminal UI helpers using `gum` with stdin fallback
   plan-memory.ts      Planning memory: records lessons from task outcomes, injects into plan prompts
