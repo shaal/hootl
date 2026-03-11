@@ -225,15 +225,14 @@ Edit `.hootl/config.json`:
 ```json
 {
   "budgets": {
-    "perSession": 0.50,
-    "perTask": 10.00,
     "global": 100.00,
-    "maxAttemptsPerTask": 15
+    "maxAttemptsPerTask": 15,
+    "contextWindowLimit": 60
   }
 }
 ```
 
-Increase `perTask` for complex features. Increase `maxAttemptsPerTask` if tasks are getting close but not quite reaching 95%.
+Increase `global` for days with heavy workloads. Increase `maxAttemptsPerTask` if tasks are getting close but not quite reaching 95%.
 
 ## Troubleshooting
 
@@ -242,7 +241,7 @@ Increase `perTask` for complex features. Increase `maxAttemptsPerTask` if tasks 
 Check `.hootl/tasks/<id>/test_results.md` for why. Common causes:
 - Missing test coverage — the reviewer won't score above 80 without tests
 - Task is too broad — split it into smaller tasks
-- Increase `perTask` budget if it's hitting the limit
+- Check if the global daily budget is being exhausted too early
 
 ### Task gets blocked immediately
 

@@ -99,10 +99,9 @@ hootl config              # View/edit configuration
 {
   "taskBackend": "local",
   "budgets": {
-    "perSession": 0.50,
-    "perTask": 10.00,
     "global": 50.00,
-    "maxAttemptsPerTask": 10
+    "maxAttemptsPerTask": 10,
+    "contextWindowLimit": 60
   },
   "confidence": {
     "target": 95,
@@ -135,7 +134,7 @@ hootl config              # View/edit configuration
 }
 ```
 
-Environment variable overrides follow the pattern: `HOOTL_BUDGET_PER_SESSION=1.00`, `HOOTL_AUTO_LEVEL=full`, etc.
+Environment variable overrides follow the pattern: `HOOTL_BUDGET_GLOBAL=50.00`, `HOOTL_AUTO_LEVEL=full`, etc.
 
 ---
 
@@ -357,9 +356,9 @@ hootl scans the project for web framework markers:
 
 When detected, agent-browser CLI becomes available for confidence scoring.
 
-### Per-Session Decision
+### Per-Task Decision
 
-Claude decides each session whether browser testing would help raise confidence. Common triggers:
+Claude decides each task whether browser testing would help raise confidence. Common triggers:
 - UI component changes
 - Route/page additions
 - Form validation logic
@@ -460,12 +459,10 @@ When a task's confidence reaches 95%, hootl:
 
 | Layer | Default | Behavior when exceeded |
 |-------|---------|----------------------|
-| Per-session | $0.50 | Session ends, next session starts |
-| Per-task | $5.00 | Task moves to `blocked` |
 | Global (daily) | $50.00 | All work stops, human notified |
 | Max attempts/task | 10 | Task moves to `blocked` |
 
-Cost is tracked per-session in `.hootl/logs/cost.csv`. The `claude -p` output includes cost data which hootl parses and accumulates.
+Cost is tracked in `.hootl/logs/cost.csv`. The `claude -p` output includes cost data which hootl parses and accumulates against the global daily budget.
 
 ### Rollback on Broken State
 
@@ -586,7 +583,7 @@ The first working version includes:
 - [ ] Task state machine (proposed, ready, in_progress, review, blocked, done)
 - [ ] Knowledge bridging via task-scoped directory (plan.md, progress.md, test_results.md, blockers.md, state.json)
 - [ ] Blocker/clarification flow with multiple-choice questions
-- [ ] Per-session and per-task budget tracking
+- [ ] Global daily budget tracking
 - [ ] Max attempts per task
 - [ ] Basic error recovery (resume from checkpoint)
 - [ ] `.hootl/` project directory with config

@@ -180,7 +180,7 @@ The `auto` command runs tasks sequentially until the queue drains or the global 
 1. **Sync** — calls `syncReviewTasks()` to promote externally merged branches
 2. **Budget gate** — calls `checkGlobalBudget()` and breaks if exceeded
 3. **Task selection** — prefers `in_progress` tasks (resume), then `ready` tasks, both via `selectFromState()` which enforces dependencies
-4. **Execution** — calls `runCompletionLoop()` which handles per-task budget, max attempts, blocking, and state transitions
+4. **Execution** — calls `runCompletionLoop()` which handles max attempts, blocking, and state transitions
 5. **Loop** — repeats until no runnable tasks remain
 
 Currently only the `conservative` level is implemented (sequential, no parallelism). Other levels (`moderate`, `proactive`, `full`) log a warning and fall back to conservative. The `--level` flag overrides `config.auto.defaultLevel`.
@@ -289,7 +289,7 @@ When the execute phase **fails** (exit code != 0) while working from a remediati
 The global daily budget ($50.00 default) prevents runaway spend across all tasks. It is checked at two points:
 
 1. **Pre-run gate** (`src/index.ts` → `runCommand()`) -- Before selecting a task, reads `.hootl/logs/cost.csv`, sums today's entries, and refuses to start if `>= budgets.global`. Prints an error and returns.
-2. **Mid-loop gate** (`src/loop.ts` → `runCompletionLoop()`) -- At the top of each while-loop iteration (alongside the per-task budget check), re-reads the CSV. If the global budget is hit during execution, the current task moves to `blocked` with the blocker `"Global daily budget exhausted"`.
+2. **Mid-loop gate** (`src/loop.ts` → `runCompletionLoop()`) -- At the top of each while-loop iteration, re-reads the CSV. If the global budget is hit during execution, the current task moves to `blocked` with the blocker `"Global daily budget exhausted"`.
 
 Cost data comes from `logCost()` in `src/invoke.ts`, which appends to `cost.csv` after each phase. Both writer (`toISOString()`) and reader (`toISOString().slice(0,10)`) use UTC for consistent daily boundaries. The budget logic lives in `src/budget.ts` with three functions: `getTodaysCost()`, `isGlobalBudgetExceeded()`, and `checkGlobalBudget()`.
 
@@ -300,7 +300,7 @@ Three layers, merged with deep-merge (later wins):
 2. `.hootl/config.json` (project)
 3. `HOOTL_*` environment variables
 
-Key defaults: contextWindowLimit=60%, perTask=$10.00, global=$50.00, maxAttempts=10, confidenceTarget=95%. `git.onConfidence` defaults to null (inferred from `auto.defaultLevel`). Env var: `HOOTL_GIT_ON_CONFIDENCE`. `git.useWorktrees` defaults to `false`. Env var: `HOOTL_GIT_USE_WORKTREES`. `notifications.webhook` — webhook URL for state transition notifications (default: null). Env var: `HOOTL_NOTIFICATIONS_WEBHOOK`. `remediation.decompose` — decompose failed remediation plans into subtasks (default: true). Env var: `HOOTL_REMEDIATION_DECOMPOSE`.
+Key defaults: contextWindowLimit=60%, global=$50.00, maxAttempts=10, confidenceTarget=95%. `git.onConfidence` defaults to null (inferred from `auto.defaultLevel`). Env var: `HOOTL_GIT_ON_CONFIDENCE`. `git.useWorktrees` defaults to `false`. Env var: `HOOTL_GIT_USE_WORKTREES`. `notifications.webhook` — webhook URL for state transition notifications (default: null). Env var: `HOOTL_NOTIFICATIONS_WEBHOOK`. `remediation.decompose` — decompose failed remediation plans into subtasks (default: true). Env var: `HOOTL_REMEDIATION_DECOMPOSE`.
 
 ## Hooks & Skills
 

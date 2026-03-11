@@ -195,12 +195,12 @@ templates/
 .hootl/config.json
 
 # Environment overrides
-HOOTL_BUDGET_PER_TASK=10.00
+HOOTL_BUDGET_GLOBAL=50.00
 HOOTL_CONFIDENCE_TARGET=90
 HOOTL_AUTO_LEVEL=proactive
 ```
 
-Key defaults: $5/task budget, 10 max attempts, 95% confidence target.
+Key defaults: $50/day global budget, 10 max attempts, 95% confidence target.
 
 ## Testing
 
