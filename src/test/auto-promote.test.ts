@@ -107,9 +107,9 @@ process.stdout.write(JSON.stringify({ result, total_cost_usd: 0.01, context_wind
     await backend.updateTask(dep2.id, { state: "done" });
 
     // Create parent task with dependencies on both subtasks.
-    // Set attempts > 0 to simulate a task that has been worked on before —
-    // auto-promote only fires after at least one attempt to prevent false promotion
-    // of fresh tasks whose branches trivially have no diff from main.
+    // Set attempts > 0 and confidence > 0 to simulate a task that has been worked
+    // on before and completed at least one review cycle — auto-promote requires both
+    // guards to prevent false promotion of fresh or failed tasks.
     const parentTask = await backend.createTask({
       title: "Parent feature",
       description: "Parent task that depends on subtask 1 and 2",
@@ -117,6 +117,7 @@ process.stdout.write(JSON.stringify({ result, total_cost_usd: 0.01, context_wind
     await backend.updateTask(parentTask.id, {
       dependencies: [dep1.id, dep2.id],
       attempts: 1,
+      confidence: 50,
     });
     const task = await backend.getTask(parentTask.id);
 
@@ -197,6 +198,60 @@ process.stdout.write(JSON.stringify({ result, total_cost_usd: 0.01, context_wind
     const callCount = parseInt(await readFile(stateFile, "utf-8"), 10);
     assert.ok(callCount > 1,
       `Expected >1 claude calls (loop should run), got ${callCount}`);
+
+    // Clean up branch
+    try {
+      await execa("git", ["checkout", "main"], { cwd: tmpDir });
+      if (updated.branch) {
+        await execa("git", ["branch", "-D", updated.branch], { cwd: tmpDir });
+      }
+    } catch { /* best effort */ }
+  });
+
+  it("does NOT auto-promote when previous attempt failed (confidence=0)", async () => {
+    // A task with attempts > 0 but confidence === 0 means its previous attempt
+    // failed during execute (before review could set confidence). The branch has
+    // no diff because no work was committed — NOT because subtasks did everything.
+    // Auto-promote must NOT fire in this case (the task still has work to do).
+    const dep = await backend.createTask({
+      title: "Done dep for failed-attempt test",
+      description: "Completed",
+    });
+    await backend.updateTask(dep.id, { state: "done" });
+
+    const failedTask = await backend.createTask({
+      title: "Task that failed execute",
+      description: "Previous execute phase failed before committing",
+    });
+    await backend.updateTask(failedTask.id, {
+      dependencies: [dep.id],
+      attempts: 1,
+      // confidence stays at 0 (default) — no review was ever completed
+    });
+    const task = await backend.getTask(failedTask.id);
+
+    const stateFile = join(stateDir, "count-failed-attempt");
+    process.env["HOOTL_FAKE_CLAUDE_STATE"] = stateFile;
+
+    const config = ConfigSchema.parse({
+      git: { onConfidence: "none" },
+      hooks: [{ trigger: "on_confidence_met" as const, prompt: "ok", blocking: false }],
+      // Must be > attempts (1) so the loop actually runs an iteration
+      budgets: { maxAttemptsPerTask: 2 },
+    });
+
+    await runCompletionLoop(task, backend, config);
+
+    const updated = await backend.getTask(failedTask.id);
+
+    // Should NOT have been auto-promoted — confidence is 0 (no successful review)
+    assert.notEqual(updated.confidence, 100,
+      "Task with confidence=0 should not be auto-promoted to 100");
+
+    // More than 1 claude call means the loop ran (not just preflight + auto-promote)
+    const callCount = parseInt(await readFile(stateFile, "utf-8"), 10);
+    assert.ok(callCount > 1,
+      `Expected > 1 claude calls (loop should run, not auto-promote), got ${callCount}`);
 
     // Clean up branch
     try {

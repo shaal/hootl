@@ -1430,9 +1430,13 @@ export async function runCompletionLoop(
 
   // Auto-promote: if all dependencies are done and branch has no diff, the work was
   // already completed by subtasks. Skip the entire completion loop to save budget.
-  // Only check after at least one attempt — a fresh task (attempts === 0) always has
-  // no diff because its branch was just created, and hasn't had a chance to do its own work.
-  if (currentTask.dependencies.length > 0 && currentTask.attempts > 0 && taskBranch !== null && baseBranch !== null) {
+  // Guards:
+  //   attempts > 0  — a fresh task always has no diff (branch just created)
+  //   confidence > 0 — a task whose previous attempt failed during execute never
+  //     reached review, so confidence is still 0. Without this guard, a failed
+  //     attempt (no commits) + completed deps looks identical to "subtasks did
+  //     everything," causing a false auto-promote to done with zero code changes.
+  if (currentTask.dependencies.length > 0 && currentTask.attempts > 0 && currentTask.confidence > 0 && taskBranch !== null && baseBranch !== null) {
     try {
       const allDepsDone = await checkAllDependenciesDone(backend, currentTask.dependencies);
       if (allDepsDone) {
