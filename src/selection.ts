@@ -182,6 +182,108 @@ export function sortByStrategy(tasks: Task[], strategy: OrderingStrategy): Task[
   return result;
 }
 
+/**
+ * Topologically sort tasks by their `dependencies` field using Kahn's algorithm.
+ * Only dependencies within the provided task set are considered — external deps
+ * (referencing tasks not in the array) are ignored for ordering purposes.
+ *
+ * Within the same topological level, tasks are sorted by priority field
+ * (critical > high > medium > low) then by createdAt (earlier first).
+ *
+ * If cycles exist (shouldn't happen given `removeCycles` in planning, but
+ * defensive), remaining tasks are appended in their original priority order.
+ */
+export function topoSortTasks(tasks: Task[]): Task[] {
+  if (tasks.length <= 1) return [...tasks];
+
+  const priorityRank: Record<string, number> = {
+    critical: 0,
+    high: 1,
+    medium: 2,
+    low: 3,
+  };
+
+  function comparePriority(a: Task, b: Task): number {
+    const pa = priorityRank[a.priority] ?? 2;
+    const pb = priorityRank[b.priority] ?? 2;
+    if (pa !== pb) return pa - pb;
+    return a.createdAt.localeCompare(b.createdAt);
+  }
+
+  // Build set of IDs in this task set for fast lookup
+  const idSet = new Set(tasks.map(t => t.id));
+
+  // Build adjacency list and in-degree count (only for internal deps)
+  const inDegree = new Map<string, number>();
+  const dependents = new Map<string, string[]>(); // depId → [tasks that depend on it]
+
+  for (const task of tasks) {
+    inDegree.set(task.id, 0);
+    dependents.set(task.id, []);
+  }
+
+  for (const task of tasks) {
+    for (const depId of task.dependencies) {
+      if (idSet.has(depId)) {
+        inDegree.set(task.id, (inDegree.get(task.id) ?? 0) + 1);
+        const deps = dependents.get(depId);
+        if (deps) deps.push(task.id);
+      }
+    }
+  }
+
+  // Initialize queue with zero-in-degree tasks, sorted by priority
+  const taskMap = new Map(tasks.map(t => [t.id, t]));
+  const queue: Task[] = [];
+  for (const task of tasks) {
+    if ((inDegree.get(task.id) ?? 0) === 0) {
+      queue.push(task);
+    }
+  }
+  queue.sort(comparePriority);
+
+  const result: Task[] = [];
+  while (queue.length > 0) {
+    const task = queue.shift()!;
+    result.push(task);
+
+    const deps = dependents.get(task.id) ?? [];
+    const newlyReady: Task[] = [];
+    for (const depId of deps) {
+      const newDeg = (inDegree.get(depId) ?? 1) - 1;
+      inDegree.set(depId, newDeg);
+      if (newDeg === 0) {
+        const depTask = taskMap.get(depId);
+        if (depTask) newlyReady.push(depTask);
+      }
+    }
+    // Insert newly ready tasks in priority order
+    newlyReady.sort(comparePriority);
+    // Merge into queue maintaining sorted order
+    for (const ready of newlyReady) {
+      let inserted = false;
+      for (let i = 0; i < queue.length; i++) {
+        if (comparePriority(ready, queue[i]!) < 0) {
+          queue.splice(i, 0, ready);
+          inserted = true;
+          break;
+        }
+      }
+      if (!inserted) queue.push(ready);
+    }
+  }
+
+  // Handle cycles: append remaining tasks in priority order
+  if (result.length < tasks.length) {
+    const resultIds = new Set(result.map(t => t.id));
+    const remaining = tasks.filter(t => !resultIds.has(t.id));
+    remaining.sort(comparePriority);
+    result.push(...remaining);
+  }
+
+  return result;
+}
+
 export interface GetNextTaskOpts {
   state?: TaskState;
   goalId?: string;

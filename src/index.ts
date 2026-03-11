@@ -28,7 +28,7 @@ import { autoInit } from "./init.js";
 import { registerInstance, deregisterInstanceSync } from "./instances.js";
 import { checkGlobalBudget } from "./budget.js";
 import { discussCommand } from "./discuss.js";
-import { findRunnableTask, findAndClaimTask, filterTasksByGoal, isGoalComplete, countBlockedInGoal, getNextTask } from "./selection.js";
+import { findRunnableTask, findAndClaimTask, filterTasksByGoal, isGoalComplete, countBlockedInGoal, getNextTask, topoSortTasks } from "./selection.js";
 import { syncReviewTasks } from "./sync.js";
 import { reconcileTasks, printReconcileReport } from "./reconcile.js";
 import { notifyWebhook } from "./notify.js";
@@ -955,6 +955,72 @@ program
     }
   });
 
+async function prioritizeGoal(goalId: string): Promise<void> {
+  await autoInit();
+  const config = await loadConfig();
+  const backend = getBackend(config);
+
+  const allTasks = await backend.listTasks();
+  const goalTasks = allTasks.filter(t => t.goal === goalId && t.state !== "done");
+
+  if (goalTasks.length === 0) {
+    uiError(`No active tasks found for goal "${goalId}".`);
+    process.exitCode = 1;
+    return;
+  }
+
+  const sorted = topoSortTasks(goalTasks);
+  for (let i = 0; i < sorted.length; i++) {
+    const task = sorted[i]!;
+    await backend.updateTask(task.id, { userPriority: i + 1 });
+    uiInfo(`${task.id} → userPriority #${i + 1} (${task.title})`);
+  }
+  uiSuccess(`Set contiguous userPriority on ${sorted.length} task(s) in goal "${goalId}".`);
+}
+
+async function prioritizeGoals(goalIds: string[]): Promise<void> {
+  await autoInit();
+  const config = await loadConfig();
+  const backend = getBackend(config);
+
+  const allTasks = await backend.listTasks();
+  const activeTasks = allTasks.filter(t => t.state !== "done");
+
+  const ordered: Task[] = [];
+  const assigned = new Set<string>();
+
+  // Add tasks per goal in specified order, topologically sorted within each
+  for (const goalId of goalIds) {
+    const goalTasks = activeTasks.filter(t => t.goal === goalId && !assigned.has(t.id));
+    const sorted = topoSortTasks(goalTasks);
+    for (const task of sorted) {
+      ordered.push(task);
+      assigned.add(task.id);
+    }
+  }
+
+  // Append ungrouped tasks (goal is null or not in the specified list)
+  const ungrouped = activeTasks.filter(t => !assigned.has(t.id));
+  // Preserve existing order for ungrouped tasks
+  ordered.push(...ungrouped);
+
+  for (let i = 0; i < ordered.length; i++) {
+    const task = ordered[i]!;
+    await backend.updateTask(task.id, { userPriority: i + 1 });
+  }
+
+  // Print summary
+  for (const goalId of goalIds) {
+    const count = ordered.filter(t => t.goal === goalId).length;
+    uiInfo(`Goal "${goalId}": ${count} task(s)`);
+  }
+  const ungroupedCount = ungrouped.length;
+  if (ungroupedCount > 0) {
+    uiInfo(`Ungrouped: ${ungroupedCount} task(s)`);
+  }
+  uiSuccess(`Set userPriority on ${ordered.length} task(s) across ${goalIds.length} goal(s).`);
+}
+
 async function prioritizeCommand(taskIds?: string[], clear?: boolean): Promise<void> {
   await autoInit();
   const config = await loadConfig();
@@ -1039,12 +1105,33 @@ program
   .command("prioritize [taskIds...]")
   .description("Set user priority override on tasks")
   .option("--clear", "Remove all user priority overrides")
-  .action(async (taskIds: string[], options: { clear?: boolean }) => {
+  .option("--goal <goalId>", "Set contiguous priority on all tasks in a goal")
+  .option("--goals <goalIds...>", "Reorder goals relative to each other")
+  .action(async (taskIds: string[], options: { clear?: boolean; goal?: string; goals?: string[] }) => {
     try {
-      await prioritizeCommand(
-        taskIds.length > 0 ? taskIds : undefined,
-        options.clear,
-      );
+      // Mutual exclusivity check
+      const modes = [
+        options.clear ? "--clear" : null,
+        options.goal ? "--goal" : null,
+        options.goals ? "--goals" : null,
+        taskIds.length > 0 ? "taskIds" : null,
+      ].filter(Boolean);
+      if (modes.length > 1) {
+        uiError(`Cannot combine ${modes.join(" and ")}. Use one mode at a time.`);
+        process.exitCode = 1;
+        return;
+      }
+
+      if (options.goal) {
+        await prioritizeGoal(options.goal);
+      } else if (options.goals) {
+        await prioritizeGoals(options.goals);
+      } else {
+        await prioritizeCommand(
+          taskIds.length > 0 ? taskIds : undefined,
+          options.clear,
+        );
+      }
     } catch (err: unknown) {
       uiError(errorMsg(err));
       process.exitCode = 1;
